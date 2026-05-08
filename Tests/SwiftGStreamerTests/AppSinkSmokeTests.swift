@@ -1,7 +1,7 @@
 import Testing
 @testable import GStreamer
 
-@Suite("AppSink Smoke Tests")
+@Suite("AppSink Smoke Tests", .timeLimit(.minutes(1)))
 struct AppSinkSmokeTests {
 
     init() throws {
@@ -36,6 +36,7 @@ struct AppSinkSmokeTests {
 
         let appSink = try AppSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
         var frameCount = 0
         for try await frame in appSink.frames() {
@@ -55,7 +56,6 @@ struct AppSinkSmokeTests {
         }
 
         #expect(frameCount >= 3)
-        pipeline.stop()
     }
 
     @Test("VideoFrame bytes provides valid data")
@@ -70,15 +70,16 @@ struct AppSinkSmokeTests {
 
         let appSink = try AppSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
+        var firstFrame: VideoFrame?
         for try await frame in appSink.frames() {
-            // White pixels in BGRA = 255, 255, 255, 255
-            // Buffer should have data
-            #expect(frame.bytes.byteCount == 4 * 4 * 4) // width * height * bytesPerPixel
-            break // Just check first frame
+            firstFrame = frame
+            break
         }
 
-        pipeline.stop()
+        let frame = try #require(firstFrame, "Expected videotestsrc to yield one BGRA frame")
+        #expect(frame.bytes.byteCount == 4 * 4 * 4) // width * height * bytesPerPixel
     }
 
     @Test("Pipeline convenience method for AppSink")
@@ -100,6 +101,7 @@ struct AppSinkSmokeTests {
 
         let appSink = try AppSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
         var formats: [PixelFormat] = []
         var count = 0
@@ -112,7 +114,7 @@ struct AppSinkSmokeTests {
         }
 
         // All frames should have same format
+        try #require(formats.count >= 3, "Expected at least three parsed frame formats")
         #expect(formats.allSatisfy { $0 == .rgba })
-        pipeline.stop()
     }
 }

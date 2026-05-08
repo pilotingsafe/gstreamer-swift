@@ -185,7 +185,7 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
     /// ## Example
     ///
     /// ```swift
-    /// try frame.withMappedBytes { span in
+    /// try frame.withUnsafeBytes { bytes in
     ///     // If mapping fails, bufferMapFailed is thrown
     ///     // before the closure is called
     /// }

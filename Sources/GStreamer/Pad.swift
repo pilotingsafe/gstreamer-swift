@@ -13,6 +13,11 @@ import Synchronization
 /// - Static pads: Always present on an element (e.g., "sink", "src")
 /// - Request pads: Created on demand (e.g., "src_%u" on tee)
 ///
+/// Request pads retain the ``Element`` that created them until they are
+/// explicitly released or the pad is deinitialized. This allows the pad to
+/// release itself safely if the caller drops it without calling
+/// ``Element/releasePad(_:)``.
+///
 /// ## Topics
 ///
 /// ### Linking
@@ -53,17 +58,67 @@ public final class Pad: @unchecked Sendable {
     /// Whether this is a request pad that needs to be released.
     private let isRequestPad: Bool
 
-    /// The element that owns this pad (for request pads).
-    private weak var ownerElement: Element?
+    private struct RequestPadState: Sendable {
+        var owner: Element?
+        var hasReleased: Bool
+        var diagnostics: RequestPadReleaseDiagnostics
+    }
+
+    /// Synchronized request-pad release state.
+    private let requestPadState: Mutex<RequestPadState>
 
     internal init(pad: UnsafeMutablePointer<GstPad>, isRequestPad: Bool = false, element: Element? = nil) {
         self.pad = pad
         self.isRequestPad = isRequestPad
-        self.ownerElement = element
+        self.requestPadState = Mutex(
+            RequestPadState(
+                owner: isRequestPad ? element : nil,
+                hasReleased: !isRequestPad,
+                diagnostics: RequestPadReleaseDiagnostics()
+            )
+        )
     }
 
     deinit {
+        releaseRequestPadIfNeeded()
         swift_gst_pad_unref(pad)
+    }
+
+    /// Release the request pad exactly once, if this pad was requested from an element.
+    ///
+    /// The owner is taken out of synchronized state before calling into
+    /// GStreamer so concurrent callers cannot release the same request pad more
+    /// than once.
+    @discardableResult
+    internal func releaseRequestPadIfNeeded() -> Bool {
+        guard isRequestPad else { return false }
+
+        let owner = requestPadState.withLock { state -> Element? in
+            guard !state.hasReleased else { return nil }
+            state.hasReleased = true
+            let owner = state.owner
+            state.owner = nil
+            if owner != nil {
+                state.diagnostics.recordReleaseCall()
+            }
+            return owner
+        }
+
+        guard let owner else { return false }
+        swift_gst_element_release_request_pad(owner.element, pad)
+        return true
+    }
+
+    internal var debugIsRequestPadReleased: Bool {
+        requestPadState.withLock { $0.hasReleased }
+    }
+
+    internal var debugRequestReleaseCallCount: Int {
+        debugRequestReleaseDiagnostics.releaseCallCount
+    }
+
+    internal var debugRequestReleaseDiagnostics: RequestPadReleaseDiagnostics {
+        requestPadState.withLock { $0.diagnostics }
     }
 
     /// Link this pad to another pad.
@@ -188,15 +243,40 @@ public final class Pad: @unchecked Sendable {
         let id: gulong
     }
 
-    /// Storage for probe callback contexts.
-    private static nonisolated(unsafe) var probeContexts: [gulong: ProbeContext] = [:]
-    private static let probeContextsLock = Mutex<Void>(())
-
     private final class ProbeContext: @unchecked Sendable {
         let callback: @Sendable () -> ProbeReturn
+        private let isCleanedUp = Mutex<Bool>(false)
 
         init(callback: @escaping @Sendable () -> ProbeReturn) {
             self.callback = callback
+        }
+
+        func markCleanedUp() -> Bool {
+            isCleanedUp.withLock { cleanedUp in
+                guard !cleanedUp else { return false }
+                cleanedUp = true
+                return true
+            }
+        }
+    }
+
+    internal static func mapProbeReturn(_ result: ProbeReturn) -> GstPadProbeReturn {
+        switch result {
+        case .ok: return GST_PAD_PROBE_OK
+        case .drop: return GST_PAD_PROBE_DROP
+        case .remove: return GST_PAD_PROBE_REMOVE
+        case .handled: return GST_PAD_PROBE_HANDLED
+        case .pass: return GST_PAD_PROBE_PASS
+        }
+    }
+
+    private static func cleanupProbeContext(_ userData: UnsafeMutableRawPointer?) {
+        guard let userData else { return }
+
+        let unmanagedContext = Unmanaged<ProbeContext>.fromOpaque(userData)
+        let context = unmanagedContext.takeUnretainedValue()
+        if context.markCleanedUp() {
+            unmanagedContext.release()
         }
     }
 
@@ -242,55 +322,40 @@ public final class Pad: @unchecked Sendable {
     @discardableResult
     public func addProbe(type: ProbeType, callback: @escaping @Sendable () -> ProbeReturn) -> ProbeHandle {
         let context = ProbeContext(callback: callback)
+        let contextPointer = Unmanaged.passRetained(context).toOpaque()
 
         // C callback that will be called by GStreamer
         let cCallback: GstPadProbeCallback = { _, _, userData -> GstPadProbeReturn in
             guard let userData = userData else { return GST_PAD_PROBE_OK }
-            let probeId = UInt(bitPattern: userData)
-
-            let ctx = Pad.probeContextsLock.withLock { _ in
-                Pad.probeContexts[gulong(probeId)]
-            }
-
-            guard let ctx = ctx else { return GST_PAD_PROBE_OK }
-
-            let result = ctx.callback()
-            switch result {
-            case .ok: return GST_PAD_PROBE_OK
-            case .drop: return GST_PAD_PROBE_DROP
-            case .remove: return GST_PAD_PROBE_REMOVE
-            case .handled: return GST_PAD_PROBE_HANDLED
-            case .pass: return GST_PAD_PROBE_PASS
-            }
+            let context = Unmanaged<ProbeContext>.fromOpaque(userData).takeUnretainedValue()
+            return Pad.mapProbeReturn(context.callback())
         }
 
-        // We use the probe ID as both the context identifier and as the user data
-        // First, install with a temporary placeholder
-        let probeId = gst_pad_add_probe(
-            pad,
-            type.gstType,
-            cCallback,
-            nil,  // Will set proper user data after we get the ID
-            nil
-        )
+        return withExtendedLifetime(context) {
+            let probeId = gst_pad_add_probe(
+                pad,
+                type.gstType,
+                cCallback,
+                contextPointer,
+                { userData in
+                    Pad.cleanupProbeContext(userData)
+                }
+            )
 
-        // Store the context with the probe ID
-        Pad.probeContextsLock.withLock { _ in
-            Pad.probeContexts[probeId] = context
+            if probeId == 0 {
+                Pad.cleanupProbeContext(contextPointer)
+            }
+
+            return ProbeHandle(id: probeId)
         }
-
-        return ProbeHandle(id: probeId)
     }
 
     /// Remove a previously installed probe.
     ///
     /// - Parameter handle: The handle returned from ``addProbe(type:callback:)``.
     public func removeProbe(_ handle: ProbeHandle) {
+        guard handle.id != 0 else { return }
         gst_pad_remove_probe(pad, handle.id)
-
-        _ = Pad.probeContextsLock.withLock { _ in
-            Pad.probeContexts.removeValue(forKey: handle.id)
-        }
     }
 
     /// Add a blocking probe that fires once when idle.
@@ -305,5 +370,17 @@ public final class Pad: @unchecked Sendable {
             callback()
             return .remove  // One-shot probe
         }
+    }
+}
+
+internal final class RequestPadReleaseDiagnostics: @unchecked Sendable {
+    private let releaseCallCountStorage = Mutex<Int>(0)
+
+    internal var releaseCallCount: Int {
+        releaseCallCountStorage.withLock { $0 }
+    }
+
+    fileprivate func recordReleaseCall() {
+        releaseCallCountStorage.withLock { $0 += 1 }
     }
 }

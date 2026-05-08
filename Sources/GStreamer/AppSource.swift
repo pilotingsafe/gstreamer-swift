@@ -88,11 +88,9 @@ import CGStreamerShim
 ///
 /// for await frame in sink.frames() {
 ///     // Process frame (ML inference, filters, etc.)
-///     try frame.withMappedBytes { span in
-///         span.withUnsafeBytes { buffer in
-///             let processed = processPixels(buffer)
-///             try src.push(data: processed, pts: frame.pts, duration: frame.duration)
-///         }
+///     try frame.withUnsafeBytes { buffer in
+///         let processed = processPixels(buffer)
+///         try src.push(data: processed, pts: frame.pts, duration: frame.duration)
 ///     }
 /// }
 /// ```
@@ -212,8 +210,15 @@ public final class AppSource: @unchecked Sendable {
     /// pts += duration
     /// ```
     public func push(data: [UInt8], pts: UInt64? = nil, duration: UInt64? = nil) throws {
+        guard !data.isEmpty else {
+            throw GStreamerError.bufferMapFailed
+        }
+
         try data.withUnsafeBytes { buffer in
-            try push(bytes: buffer.baseAddress!, count: buffer.count, pts: pts, duration: duration)
+            guard let bytes = buffer.baseAddress else {
+                throw GStreamerError.bufferMapFailed
+            }
+            try push(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
         }
     }
 
@@ -236,8 +241,15 @@ public final class AppSource: @unchecked Sendable {
     /// try src.push(data: span, pts: pts, duration: duration)
     /// ```
     public func push(data: borrowing Span<UInt8>, pts: UInt64? = nil, duration: UInt64? = nil) throws {
+        guard data.count > 0 else {
+            throw GStreamerError.bufferMapFailed
+        }
+
         try data.withUnsafeBufferPointer { buffer in
-            try push(bytes: buffer.baseAddress!, count: buffer.count, pts: pts, duration: duration)
+            guard let bytes = buffer.baseAddress else {
+                throw GStreamerError.bufferMapFailed
+            }
+            try push(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
         }
     }
 
@@ -256,25 +268,35 @@ public final class AppSource: @unchecked Sendable {
     ///
     /// ```swift
     /// // Push directly from a raw span (e.g., from a mapped buffer)
-    /// try frame.withMappedBytes { span in
-    ///     try src.push(data: span, pts: frame.pts, duration: frame.duration)
-    /// }
+    /// try src.push(data: frame.bytes, pts: frame.pts, duration: frame.duration)
     /// ```
     public func push(data: borrowing RawSpan, pts: UInt64? = nil, duration: UInt64? = nil) throws {
+        guard data.byteCount > 0 else {
+            throw GStreamerError.bufferMapFailed
+        }
+
         try data.withUnsafeBytes { buffer in
-            try push(bytes: buffer.baseAddress!, count: buffer.count, pts: pts, duration: duration)
+            guard let bytes = buffer.baseAddress else {
+                throw GStreamerError.bufferMapFailed
+            }
+            try push(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
         }
     }
 
     /// Push raw data into the pipeline from a buffer pointer.
     ///
     /// - Parameters:
-    ///   - bytes: Pointer to the raw bytes.
-    ///   - count: Number of bytes.
+    ///   - bytes: Pointer to the raw bytes. For `count > 0`, this pointer
+    ///     must be valid for at least `count` bytes for the duration of the call.
+    ///   - count: Number of bytes. Must be greater than zero.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
     /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
     public func push(bytes: UnsafeRawPointer, count: Int, pts: UInt64? = nil, duration: UInt64? = nil) throws {
+        guard count > 0 else {
+            throw GStreamerError.bufferMapFailed
+        }
+
         let gstPts = pts.map { GstClockTime($0) } ?? swift_gst_clock_time_none()
         let gstDuration = duration.map { GstClockTime($0) } ?? swift_gst_clock_time_none()
 
@@ -408,16 +430,14 @@ public final class AppSource: @unchecked Sendable {
     /// ```swift
     /// // Forward frames from one pipeline to another with zero intermediate copies
     /// for await frame in sink.frames() {
-    ///     try frame.withMappedBytes { span in
-    ///         try src.pushVideoFrame(
-    ///             data: span,
-    ///             width: frame.width,
-    ///             height: frame.height,
-    ///             format: frame.format,
-    ///             pts: frame.pts,
-    ///             duration: frame.duration
-    ///         )
-    ///     }
+    ///     try src.pushVideoFrame(
+    ///         data: frame.bytes,
+    ///         width: frame.width,
+    ///         height: frame.height,
+    ///         format: frame.format,
+    ///         pts: frame.pts,
+    ///         duration: frame.duration
+    ///     )
     /// }
     /// ```
     public func pushVideoFrame(

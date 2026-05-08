@@ -170,6 +170,9 @@ GstPad* swift_gst_element_request_pad_simple(GstElement* element, const gchar* n
 /// Release a request pad
 void swift_gst_element_release_request_pad(GstElement* element, GstPad* pad);
 
+/// Count currently attached pads on an element
+guint swift_gst_element_pad_count(GstElement* element);
+
 /// Get a static pad from an element
 GstPad* swift_gst_element_get_static_pad(GstElement* element, const gchar* name);
 
@@ -353,6 +356,12 @@ GType swift_g_type_object(void);
 
 /// Get G_TYPE_BOXED constant
 GType swift_g_type_boxed(void);
+
+/// Get G_PARAM_READABLE flag
+GParamFlags swift_g_param_readable(void);
+
+/// Get G_PARAM_WRITABLE flag
+GParamFlags swift_g_param_writable(void);
 
 /// Get the fundamental type of a GType
 GType swift_g_type_fundamental(GType type);

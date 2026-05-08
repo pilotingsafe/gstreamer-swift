@@ -42,14 +42,12 @@
 ///     switch frame.format {
 ///     case .bgra:
 ///         // Direct access to BGRA pixels
-///         try frame.withMappedBytes { span in
-///             span.withUnsafeBytes { buffer in
-///                 for i in stride(from: 0, to: buffer.count, by: 4) {
-///                     let b = buffer[i]     // Blue
-///                     let g = buffer[i + 1] // Green
-///                     let r = buffer[i + 2] // Red
-///                     let a = buffer[i + 3] // Alpha
-///                 }
+///         try frame.withUnsafeBytes { buffer in
+///             for i in stride(from: 0, to: buffer.count, by: 4) {
+///                 let b = buffer[i]     // Blue
+///                 let g = buffer[i + 1] // Green
+///                 let r = buffer[i + 2] // Red
+///                 let a = buffer[i + 3] // Alpha
 ///             }
 ///         }
 ///

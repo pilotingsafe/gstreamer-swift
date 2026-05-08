@@ -1,7 +1,7 @@
 import Testing
 @testable import GStreamer
 
-@Suite("Tee Tests")
+@Suite("Tee Tests", .timeLimit(.minutes(1)))
 struct TeeTests {
 
     init() throws {
@@ -66,6 +66,7 @@ struct TeeTests {
         let sink2 = try pipeline.appSink(named: "sink2")
 
         try pipeline.play()
+        defer { pipeline.stop() }
 
         // Both sinks should receive frames
         var sink1Count = 0
@@ -98,8 +99,6 @@ struct TeeTests {
 
         #expect(sink1Count >= 2)
         #expect(sink2Count >= 2)
-
-        pipeline.stop()
     }
 
     @Test("Remove branch from Tee")

@@ -1,16 +1,18 @@
 import CGStreamer
 import CGStreamerShim
 
-/// A video frame with access to pixel data.
+/// A read-only video frame with access to pixel data.
 ///
-/// VideoFrame provides safe, zero-copy access to video frame data from a GStreamer
-/// pipeline. Use ``bytes`` to access the raw pixel data.
+/// VideoFrame provides safe, zero-copy read access to video frame data from a
+/// GStreamer pipeline. Use ``bytes`` for lifetime-bound span access, or
+/// ``withUnsafeBytes(_:)`` when an interop API needs an unsafe pointer.
 ///
 /// ## Overview
 ///
-/// VideoFrame is designed for high-performance video processing. The pixel data
-/// is accessed through a closure-based API that ensures memory safety - the raw
-/// bytes cannot escape the closure scope.
+/// VideoFrame is designed for high-performance video processing of frames pulled
+/// from a pipeline. Pulled frames are read-only; to modify frame contents, copy
+/// the bytes into `[UInt8]`, ``Buffer``, `CVPixelBuffer`, or another mutable
+/// destination and mutate that copy.
 ///
 /// ## Topics
 ///
@@ -29,6 +31,7 @@ import CGStreamerShim
 /// ### Accessing Pixel Data
 ///
 /// - ``bytes``
+/// - ``withUnsafeBytes(_:)``
 ///
 /// ## Example
 ///
@@ -36,7 +39,7 @@ import CGStreamerShim
 /// for await frame in sink.frames() {
 ///     print("Frame: \(frame.width)x\(frame.height) \(frame.format)")
 ///
-///     // Access pixel data safely via subscript
+///     // Access pixel data safely via read-only subscript
 ///     for i in stride(from: 0, to: frame.bytes.byteCount, by: 4) {
 ///         let b = frame.bytes[i]     // Blue
 ///         let g = frame.bytes[i + 1] // Green
@@ -50,11 +53,33 @@ import CGStreamerShim
 /// ## Memory Safety
 ///
 /// The ``bytes`` property uses Swift's `RawSpan` to provide lifetime-bound
-/// access to the underlying buffer:
+/// read access to the underlying buffer:
 ///
 /// ```swift
 /// let firstByte = frame.bytes[0]
 /// let byteCount = frame.bytes.byteCount
+/// ```
+///
+/// When pointer access is required, keep the pointer inside the
+/// ``withUnsafeBytes(_:)`` closure:
+///
+/// ```swift
+/// try frame.withUnsafeBytes { buffer in
+///     processPixels(buffer)
+/// }
+/// ```
+///
+/// ## Mutating Frame Data
+///
+/// VideoFrame does not expose mutable access. Copy the read-only bytes into a
+/// mutable destination before modifying pixels:
+///
+/// ```swift
+/// let mutablePixels = frame.bytes.withUnsafeBytes { Array($0) }
+/// var output = try Buffer(data: mutablePixels, pts: frame.pts, duration: frame.duration)
+/// try output.withUnsafeMutableBytes { bytes in
+///     // Mutate the copied data.
+/// }
 /// ```
 ///
 /// ## Timestamps
@@ -171,7 +196,9 @@ public struct VideoFrame: @unchecked Sendable {
     /// The frame's pixel data as a read-only span.
     ///
     /// This property provides lifetime-bound access to the frame's bytes.
-    /// The span cannot escape the scope in which it's accessed.
+    /// The span cannot escape the scope in which it's accessed. To modify a
+    /// pulled frame, copy these bytes into `[UInt8]`, ``Buffer``,
+    /// `CVPixelBuffer`, or another mutable destination and mutate that copy.
     ///
     /// ## Example
     ///
@@ -196,39 +223,12 @@ public struct VideoFrame: @unchecked Sendable {
         }
     }
 
-    /// The frame's pixel data as a mutable span.
-    ///
-    /// This property provides lifetime-bound mutable access to the frame's bytes.
-    ///
-    /// ## Example
-    ///
-    /// ```swift
-    /// // Invert colors in-place
-    /// for i in stride(from: 0, to: frame.mutableBytes.byteCount, by: 4) {
-    ///     frame.mutableBytes[i] = 255 - frame.mutableBytes[i]         // Blue
-    ///     frame.mutableBytes[i + 1] = 255 - frame.mutableBytes[i + 1] // Green
-    ///     frame.mutableBytes[i + 2] = 255 - frame.mutableBytes[i + 2] // Red
-    /// }
-    /// ```
-    public var mutableBytes: MutableRawSpan {
-        _read {
-            fatalError("Cannot read mutableBytes")
-        }
-        _modify {
-            var mapInfo = GstMapInfo()
-            guard swift_gst_buffer_map_write(storage.buffer, &mapInfo) != 0 else {
-                fatalError("Failed to map buffer for writing")
-            }
-            defer { swift_gst_buffer_unmap(storage.buffer, &mapInfo) }
-            var span = MutableRawSpan(_unsafeStart: mapInfo.data, byteCount: Int(mapInfo.size))
-            yield &span
-        }
-    }
-
     /// Access the frame's pixel data using unsafe read-only pointers.
     ///
     /// This method provides direct pointer access for interoperability with C APIs.
-    /// Prefer ``bytes`` when possible.
+    /// Prefer ``bytes`` when possible, and keep the pointer inside the closure.
+    /// To mutate frame contents, copy the bytes into a mutable destination and
+    /// mutate the copy.
     ///
     /// - Parameter body: A closure that receives an UnsafeRawBufferPointer.
     /// - Returns: The value returned by the closure.
@@ -243,27 +243,6 @@ public struct VideoFrame: @unchecked Sendable {
         }
 
         let ptr = UnsafeRawBufferPointer(start: mapInfo.data, count: Int(mapInfo.size))
-        return try body(ptr)
-    }
-
-    /// Access the frame's pixel data using unsafe mutable pointers.
-    ///
-    /// This method provides direct pointer access for interoperability with C APIs
-    /// or performance-critical code. Prefer ``mutableBytes`` when possible.
-    ///
-    /// - Parameter body: A closure that receives an UnsafeMutableRawBufferPointer.
-    /// - Returns: The value returned by the closure.
-    /// - Throws: ``GStreamerError/bufferMapFailed`` if mapping fails.
-    public func withUnsafeMutableBytes<R>(_ body: (UnsafeMutableRawBufferPointer) throws -> R) throws -> R {
-        var mapInfo = GstMapInfo()
-        guard swift_gst_buffer_map_write(storage.buffer, &mapInfo) != 0 else {
-            throw GStreamerError.bufferMapFailed
-        }
-        defer {
-            swift_gst_buffer_unmap(storage.buffer, &mapInfo)
-        }
-
-        let ptr = UnsafeMutableRawBufferPointer(start: mapInfo.data, count: Int(mapInfo.size))
         return try body(ptr)
     }
 }

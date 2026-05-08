@@ -1,7 +1,7 @@
 import Testing
 @testable import GStreamer
 
-@Suite("Audio Tests")
+@Suite("Audio Tests", .timeLimit(.minutes(1)))
 struct AudioTests {
 
     init() throws {
@@ -53,6 +53,7 @@ struct AudioTests {
 
         let audioSink = try AudioBufferSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
         var bufferCount = 0
         for await buffer in audioSink.buffers() {
@@ -72,7 +73,6 @@ struct AudioTests {
         }
 
         #expect(bufferCount >= 3)
-        pipeline.stop()
     }
 
     @Test("AudioBuffer has timestamps")
@@ -87,19 +87,16 @@ struct AudioTests {
 
         let audioSink = try AudioBufferSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
-        var foundTimestamp = false
+        var firstBuffer: AudioBuffer?
         for await buffer in audioSink.buffers() {
-            // PTS should be set
-            if buffer.pts != nil {
-                foundTimestamp = true
-            }
+            firstBuffer = buffer
             break
         }
 
-        // Timestamps should be present
-        #expect(foundTimestamp)
-        pipeline.stop()
+        let buffer = try #require(firstBuffer, "Expected audiotestsrc to yield one buffer")
+        _ = try #require(buffer.pts, "audiotestsrc buffers should include PTS")
     }
 
     @Test("AudioBuffer sample count calculation")
@@ -114,17 +111,21 @@ struct AudioTests {
 
         let audioSink = try AudioBufferSink(pipeline: pipeline, name: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
+        var firstBuffer: AudioBuffer?
         for await buffer in audioSink.buffers() {
-            // samplesperbuffer=1024, format=S16LE (2 bytes), channels=2
-            // Total bytes should be 1024 * 2 * 2 = 4096
-            // Sample count (per channel) should be 1024
-            if buffer.format == .s16le && buffer.channels == 2 {
-                #expect(buffer.sampleCount == 1024)
-            }
+            firstBuffer = buffer
             break
         }
 
-        pipeline.stop()
+        let buffer = try #require(firstBuffer, "Expected audiotestsrc to yield one buffer")
+        try #require(buffer.format == .s16le, "Expected S16LE caps to be parsed before sample count")
+        try #require(buffer.channels == 2, "Expected channel count to be parsed before sample count")
+        #expect(buffer.sampleRate == 44100)
+        // samplesperbuffer=1024, format=S16LE (2 bytes), channels=2
+        // Total bytes should be 1024 * 2 * 2 = 4096
+        // Sample count (per channel) should be 1024
+        #expect(buffer.sampleCount == 1024)
     }
 }

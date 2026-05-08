@@ -42,10 +42,8 @@ import Synchronization
 /// for await frame in sink.frames() {
 ///     print("Frame: \(frame.width)x\(frame.height)")
 ///
-///     try frame.withMappedBytes { span in
-///         span.withUnsafeBytes { buffer in
-///             // Process raw pixel data...
-///         }
+///     try frame.withUnsafeBytes { buffer in
+///         // Process raw pixel data...
 ///     }
 /// }
 /// ```
@@ -66,7 +64,7 @@ import Synchronization
 ///
 /// for await frame in sink.frames() {
 ///     // Each frame is a webcam capture
-///     try frame.withMappedBytes { span in
+///     try frame.withUnsafeBytes { buffer in
 ///         // Send to ML model, save to disk, etc.
 ///     }
 /// }
@@ -224,11 +222,9 @@ public final class AppSink: @unchecked Sendable {
     ///     print("Received \(frame.width)x\(frame.height) frame")
     ///
     ///     // Access pixel data safely
-    ///     try frame.withMappedBytes { span in
-    ///         span.withUnsafeBytes { buffer in
-    ///             let pixels = Array(buffer)
-    ///             // Process pixels...
-    ///         }
+    ///     try frame.withUnsafeBytes { buffer in
+    ///         let pixels = Array(buffer)
+    ///         // Process pixels...
     ///     }
     /// }
     /// ```

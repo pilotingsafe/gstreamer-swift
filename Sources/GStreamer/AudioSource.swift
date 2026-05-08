@@ -2,6 +2,10 @@ import CGStreamer
 import CGStreamerApp
 import CGStreamerShim
 
+extension MediaStreamBackpressure {
+  internal static let encodedPacketsNewest = 8
+}
+
 /// High-level microphone capture API with automatic source selection and encoding.
 ///
 /// AudioSource provides a fluent builder for common microphone pipelines,
@@ -103,9 +107,12 @@ public final class AudioSource: @unchecked Sendable {
     return audioSink.buffers()
   }
 
-  /// An async stream of encoded (or raw) audio packets.
+  /// An async stream of encoded audio packets.
   ///
-  /// For raw capture, this returns an empty stream. Prefer ``buffers()``.
+  /// Encoded packet streams are realtime best-effort streams. They keep a
+  /// bounded queue of recent packets and may drop older packets under
+  /// slow-consumer backpressure. For raw capture, this returns an empty stream;
+  /// prefer ``buffers()``.
   public func packets() -> AsyncStream<Buffer> {
     guard let packetSink else {
       return AsyncStream { $0.finish() }
@@ -551,7 +558,9 @@ private final class AudioPacketSink: @unchecked Sendable {
   }
 
   func packets() -> AsyncStream<Buffer> {
-    AsyncStream { continuation in
+    AsyncStream(
+      bufferingPolicy: .bufferingNewest(MediaStreamBackpressure.encodedPacketsNewest)
+    ) { continuation in
       let task = Task.detached { [weak self] in
         guard let self else {
           continuation.finish()

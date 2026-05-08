@@ -24,10 +24,8 @@ try pipeline.play()
 
 // Process frames with async/await
 for await frame in sink.frames() {
-    try frame.withMappedBytes { span in
-        span.withUnsafeBytes { buffer in
-            // Process raw BGRA pixels
-        }
+    try frame.withUnsafeBytes { buffer in
+        // Process raw BGRA pixels
     }
 }
 ```

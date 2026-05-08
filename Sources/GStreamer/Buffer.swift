@@ -256,11 +256,8 @@ public struct Buffer: @unchecked Sendable {
             fatalError("Cannot read mutableBytes")
         }
         _modify {
-            guard isKnownUniquelyReferenced(&storage) || storage.copy() != nil else {
+            guard ensureUnique() else {
                 fatalError("Failed to ensure unique buffer ownership")
-            }
-            if !isKnownUniquelyReferenced(&storage) {
-                storage = storage.copy()!
             }
             var mapInfo = GstMapInfo()
             guard swift_gst_buffer_map_write(storage.buffer, &mapInfo) != 0 else {
