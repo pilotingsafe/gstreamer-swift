@@ -357,7 +357,7 @@ public final class Element: @unchecked Sendable {
     ///
     /// - Parameter pad: The pad to release.
     public func releasePad(_ pad: Pad) {
-        pad.releaseRequestPadIfNeeded()
+        pad.releaseRequestPadIfNeeded(requestedBy: self)
     }
 
     internal var debugPadCount: Int {

@@ -28,6 +28,32 @@ struct RequestPadLifecycleTests {
         #expect(pad.debugRequestReleaseCallCount == 1)
     }
 
+    @Test("releasePad ignores pads requested by another element")
+    func releasePadRejectsWrongOwner() throws {
+        let tee1 = try Element.make(factory: "tee", name: "owner-tee")
+        let tee2 = try Element.make(factory: "tee", name: "wrong-owner-tee")
+        let tee1InitialPadCount = tee1.debugPadCount
+        let tee2InitialPadCount = tee2.debugPadCount
+        let pad = try #require(tee1.requestPad("src_%u"))
+
+        #expect(tee1.debugPadCount == tee1InitialPadCount + 1)
+        #expect(tee2.debugPadCount == tee2InitialPadCount)
+
+        tee2.releasePad(pad)
+
+        #expect(tee1.debugPadCount == tee1InitialPadCount + 1)
+        #expect(tee2.debugPadCount == tee2InitialPadCount)
+        #expect(!pad.debugIsRequestPadReleased)
+        #expect(pad.debugRequestReleaseCallCount == 0)
+
+        tee1.releasePad(pad)
+
+        #expect(tee1.debugPadCount == tee1InitialPadCount)
+        #expect(tee2.debugPadCount == tee2InitialPadCount)
+        #expect(pad.debugIsRequestPadReleased)
+        #expect(pad.debugRequestReleaseCallCount == 1)
+    }
+
     @Test("Manual release breaks owner retention before pad deinit")
     func manualReleaseBreaksOwnerRetentionBeforePadDeinit() throws {
         let ownerBox: WeakBox<Element>

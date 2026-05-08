@@ -62,6 +62,24 @@ struct PadProbeTests {
         srcPad.removeProbe(Pad.ProbeHandle(id: 0))
     }
 
+    @Test("Empty probe type returns invalid handle without invoking callback")
+    func emptyProbeTypeReturnsInvalidHandle() throws {
+        let pipeline = try Pipeline("identity name=tap ! fakesink")
+        defer { pipeline.stop() }
+
+        let tap = try #require(pipeline.element(named: "tap"))
+        let srcPad = try #require(tap.staticPad("src"))
+        let callbackCount = CallbackCounter()
+
+        let handle = srcPad.addProbe(type: []) {
+            callbackCount.increment()
+            return .ok
+        }
+
+        #expect(handle.id == 0)
+        #expect(callbackCount.value == 0)
+    }
+
     @Test("Idle probe fires synchronously on idle pad and remove is safe")
     func idleProbeFiresSynchronouslyOnIdlePadAndRemoveIsSafe() throws {
         let pipeline = try Pipeline("identity name=tap ! fakesink")
@@ -71,13 +89,42 @@ struct PadProbeTests {
         let srcPad = try #require(tap.staticPad("src"))
         let callbackCount = CallbackCounter()
 
-        let handle = srcPad.addIdleProbe {
+        let handle = srcPad.addProbe(type: [.idle, .blocking]) {
             callbackCount.increment()
+            return .remove
         }
 
         #expect(callbackCount.value == 1)
+        #expect(handle.id == 0)
 
         srcPad.removeProbe(handle)
+
+        #expect(callbackCount.value == 1)
+    }
+
+    @Test("Repeated immediate idle remove probes do not crash or double release")
+    func repeatedImmediateIdleRemoveProbesDoNotCrashOrDoubleRelease() throws {
+        let pipeline = try Pipeline("identity name=tap ! fakesink")
+        defer { pipeline.stop() }
+
+        let tap = try #require(pipeline.element(named: "tap"))
+        let srcPad = try #require(tap.staticPad("src"))
+        let callbackCount = CallbackCounter()
+        var lastHandle = Pad.ProbeHandle(id: 0)
+
+        for _ in 0..<1000 {
+            let handle = srcPad.addProbe(type: [.idle, .blocking]) {
+                callbackCount.increment()
+                return .remove
+            }
+
+            #expect(handle.id == 0)
+            lastHandle = handle
+        }
+
+        #expect(callbackCount.value == 1000)
+
+        srcPad.removeProbe(lastHandle)
     }
 
     @Test("ProbeReturn maps to CGStreamer constants")

@@ -99,36 +99,9 @@ Create a `CVPixelBuffer` copy for use with Vision or CoreML:
 
 ```swift
 import Vision
-import CoreVideo
 
-let pixelBuffer = try frame.withUnsafeBytes { sourceBytes -> CVPixelBuffer in
-    var pixelBuffer: CVPixelBuffer?
-    CVPixelBufferCreate(
-        nil,
-        frame.width,
-        frame.height,
-        kCVPixelFormatType_32BGRA,
-        nil,
-        &pixelBuffer
-    )
-
-    guard let pixelBuffer else {
-        throw GStreamerError.bufferMapFailed
-    }
-
-    CVPixelBufferLockBaseAddress(pixelBuffer, [])
-    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
-
-    guard let source = sourceBytes.baseAddress,
-          let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-        throw GStreamerError.bufferMapFailed
-    }
-
-    destination.copyMemory(
-        from: source,
-        byteCount: min(sourceBytes.count, CVPixelBufferGetDataSize(pixelBuffer))
-    )
-    return pixelBuffer
+guard let pixelBuffer = try frame.toCVPixelBuffer() else {
+    return
 }
 
 let requestHandler = VNImageRequestHandler(

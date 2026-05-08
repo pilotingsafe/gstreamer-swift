@@ -90,11 +90,16 @@ public final class Pad: @unchecked Sendable {
     /// GStreamer so concurrent callers cannot release the same request pad more
     /// than once.
     @discardableResult
-    internal func releaseRequestPadIfNeeded() -> Bool {
+    internal func releaseRequestPadIfNeeded(requestedBy requester: Element? = nil) -> Bool {
         guard isRequestPad else { return false }
 
         let owner = requestPadState.withLock { state -> Element? in
             guard !state.hasReleased else { return nil }
+            if let requester,
+               let owner = state.owner,
+               owner.element != requester.element {
+                return nil
+            }
             state.hasReleased = true
             let owner = state.owner
             state.owner = nil
@@ -321,6 +326,10 @@ public final class Pad: @unchecked Sendable {
     /// ```
     @discardableResult
     public func addProbe(type: ProbeType, callback: @escaping @Sendable () -> ProbeReturn) -> ProbeHandle {
+        guard !type.isEmpty else {
+            return ProbeHandle(id: 0)
+        }
+
         let context = ProbeContext(callback: callback)
         let contextPointer = Unmanaged.passRetained(context).toOpaque()
 
@@ -332,6 +341,9 @@ public final class Pad: @unchecked Sendable {
         }
 
         return withExtendedLifetime(context) {
+            // GStreamer owns releasing contextPointer through destroy_data.
+            // This also covers synchronous idle probes that return REMOVE and
+            // make gst_pad_add_probe return 0 after invoking destroy_data.
             let probeId = gst_pad_add_probe(
                 pad,
                 type.gstType,

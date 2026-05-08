@@ -14,7 +14,7 @@ Last updated: 2026-05-08.
 - Phase 2: Complete in current uncommitted changes; public symbol verification is recorded under Phase 4.
 - Phase 3: Complete in current uncommitted changes.
 - Phase 4: Complete in current uncommitted changes.
-- Review: Complete; current uncommitted changes were reviewed with no actionable issues found.
+- Review: Complete; follow-up review comments were addressed in current uncommitted changes.
 
 Verified locally:
 - `pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0`
@@ -38,7 +38,8 @@ Verification notes:
 - The symbol graph dump command writes status lines to `/tmp/gstreamer-swift-symbols.json`; the actual public symbol JSON was checked in `.build/arm64-apple-macosx/symbolgraph/*.symbols.json`.
 - The public symbol graph contains `VideoFrame.bytes` and `VideoFrame.withUnsafeBytes(_:)`; it does not contain `VideoFrame.mutableBytes` or `VideoFrame.withUnsafeMutableBytes(_:)`. The mutable API absence check was scoped to `VideoFrame`; `Buffer.mutableBytes` and `Buffer.withUnsafeMutableBytes(_:)` remain public.
 - Phase 4 test hygiene replaced silent CI guard-return skips and silent async smoke-test passes with deterministic zero-or-more assertions, `#require` evidence checks, post-loop assertions, and `.timeLimit(.minutes(1))` on finite async smoke suites.
-- Review verification reran `swift build`, a focused safety/lifecycle/API test filter, and full `swift test`; all passed. Existing non-fatal GStreamer parent-disposal critical logs still appear in some runs, but the final full-suite run completed successfully with 155 Swift Testing tests and no signal 11.
+- Review follow-up fixed `Element.releasePad(_:)` receiver-owner validation and added an empty `ProbeType` short-circuit while retaining zero-id probe cleanup.
+- Review verification reran `swift build`, focused pad probe and request pad lifecycle tests, and full `swift test`; all passed. Existing non-fatal GStreamer parent-disposal critical logs still appear in some runs, but the final full-suite run completed successfully with 158 Swift Testing tests and no signal 11.
 
 ## Goals
 
@@ -62,6 +63,7 @@ Verification notes:
 - [x] Callback return values map correctly to `GstPadProbeReturn`.
 - [x] `.remove` removes the probe and releases context.
 - [x] `ProbeHandle` id `0` is invalid internally, and `removeProbe` is a no-op for id `0`.
+- [x] Empty probe type registration returns invalid handle without invoking the callback.
 - [x] `addIdleProbe` is safe if callback fires during `gst_pad_add_probe`.
 - [x] `swift test --filter PadProbeTests` passes when dependencies are installed.
 
@@ -105,6 +107,7 @@ Verification notes:
 
 **Acceptance Criteria:**
 - [x] Request pads release exactly once across manual release, concurrent release attempts, and deinit.
+- [x] `Element.releasePad(_:)` releases only pads requested by the receiver element.
 - [x] Request pad released state is protected by synchronization.
 - [x] Request pad ownership model is documented as strong `Element` owner unless a retained raw pointer approach is justified and tested.
 - [x] `Buffer.mutableBytes` uses one COW path.
