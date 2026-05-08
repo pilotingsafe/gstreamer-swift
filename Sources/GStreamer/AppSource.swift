@@ -211,14 +211,15 @@ public final class AppSource: @unchecked Sendable {
     /// ```
     public func push(data: [UInt8], pts: UInt64? = nil, duration: UInt64? = nil) throws {
         guard !data.isEmpty else {
-            throw GStreamerError.bufferMapFailed
+            try pushPayload(bytes: nil, count: 0, pts: pts, duration: duration)
+            return
         }
 
         try data.withUnsafeBytes { buffer in
             guard let bytes = buffer.baseAddress else {
                 throw GStreamerError.bufferMapFailed
             }
-            try push(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
+            try pushPayload(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
         }
     }
 
@@ -242,14 +243,15 @@ public final class AppSource: @unchecked Sendable {
     /// ```
     public func push(data: borrowing Span<UInt8>, pts: UInt64? = nil, duration: UInt64? = nil) throws {
         guard data.count > 0 else {
-            throw GStreamerError.bufferMapFailed
+            try pushPayload(bytes: nil, count: 0, pts: pts, duration: duration)
+            return
         }
 
         try data.withUnsafeBufferPointer { buffer in
             guard let bytes = buffer.baseAddress else {
                 throw GStreamerError.bufferMapFailed
             }
-            try push(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
+            try pushPayload(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
         }
     }
 
@@ -272,14 +274,15 @@ public final class AppSource: @unchecked Sendable {
     /// ```
     public func push(data: borrowing RawSpan, pts: UInt64? = nil, duration: UInt64? = nil) throws {
         guard data.byteCount > 0 else {
-            throw GStreamerError.bufferMapFailed
+            try pushPayload(bytes: nil, count: 0, pts: pts, duration: duration)
+            return
         }
 
         try data.withUnsafeBytes { buffer in
             guard let bytes = buffer.baseAddress else {
                 throw GStreamerError.bufferMapFailed
             }
-            try push(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
+            try pushPayload(bytes: bytes, count: buffer.count, pts: pts, duration: duration)
         }
     }
 
@@ -288,19 +291,34 @@ public final class AppSource: @unchecked Sendable {
     /// - Parameters:
     ///   - bytes: Pointer to the raw bytes. For `count > 0`, this pointer
     ///     must be valid for at least `count` bytes for the duration of the call.
-    ///   - count: Number of bytes. Must be greater than zero.
+    ///     For `count == 0`, this pointer is ignored.
+    ///   - count: Number of bytes. Must be non-negative.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
     /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
     public func push(bytes: UnsafeRawPointer, count: Int, pts: UInt64? = nil, duration: UInt64? = nil) throws {
-        guard count > 0 else {
+        try pushPayload(bytes: count == 0 ? nil : bytes, count: count, pts: pts, duration: duration)
+    }
+
+    private func pushPayload(bytes: UnsafeRawPointer?, count: Int, pts: UInt64?, duration: UInt64?) throws {
+        guard count >= 0 else {
             throw GStreamerError.bufferMapFailed
+        }
+
+        let payloadBytes: UnsafeRawPointer?
+        if count == 0 {
+            payloadBytes = nil
+        } else {
+            guard let bytes else {
+                throw GStreamerError.bufferMapFailed
+            }
+            payloadBytes = bytes
         }
 
         let gstPts = pts.map { GstClockTime($0) } ?? swift_gst_clock_time_none()
         let gstDuration = duration.map { GstClockTime($0) } ?? swift_gst_clock_time_none()
 
-        guard let buffer = swift_gst_buffer_new_wrapped_full(bytes, gsize(count), gstPts, gstDuration) else {
+        guard let buffer = swift_gst_buffer_new_wrapped_full(payloadBytes, gsize(count), gstPts, gstDuration) else {
             throw GStreamerError.bufferMapFailed
         }
 
@@ -309,6 +327,25 @@ public final class AppSource: @unchecked Sendable {
         if result.rawValue < 0 {  // GST_FLOW_OK = 0, errors are negative
             throw GStreamerError.pushFailed
         }
+    }
+
+    private func expectedVideoPayloadByteCount(width: Int, height: Int, format: PixelFormat) throws -> Int {
+        let bytesPerPixel = format.bytesPerPixel
+        guard width > 0, height > 0, bytesPerPixel > 0 else {
+            throw GStreamerError.bufferMapFailed
+        }
+
+        let pixelCount = width.multipliedReportingOverflow(by: height)
+        guard !pixelCount.overflow else {
+            throw GStreamerError.bufferMapFailed
+        }
+
+        let byteCount = pixelCount.partialValue.multipliedReportingOverflow(by: bytesPerPixel)
+        guard !byteCount.overflow else {
+            throw GStreamerError.bufferMapFailed
+        }
+
+        return byteCount.partialValue
     }
 
     /// Push a video frame with explicit dimensions.
@@ -358,7 +395,7 @@ public final class AppSource: @unchecked Sendable {
         duration: UInt64? = nil
     ) throws {
         // Verify data size matches expected size
-        let expectedSize = width * height * format.bytesPerPixel
+        let expectedSize = try expectedVideoPayloadByteCount(width: width, height: height, format: format)
         guard data.count >= expectedSize else {
             throw GStreamerError.bufferMapFailed
         }
@@ -403,7 +440,7 @@ public final class AppSource: @unchecked Sendable {
         duration: UInt64? = nil
     ) throws {
         // Verify data size matches expected size
-        let expectedSize = width * height * format.bytesPerPixel
+        let expectedSize = try expectedVideoPayloadByteCount(width: width, height: height, format: format)
         guard data.count >= expectedSize else {
             throw GStreamerError.bufferMapFailed
         }
@@ -449,7 +486,7 @@ public final class AppSource: @unchecked Sendable {
         duration: UInt64? = nil
     ) throws {
         // Verify data size matches expected size
-        let expectedSize = width * height * format.bytesPerPixel
+        let expectedSize = try expectedVideoPayloadByteCount(width: width, height: height, format: format)
         guard data.byteCount >= expectedSize else {
             throw GStreamerError.bufferMapFailed
         }

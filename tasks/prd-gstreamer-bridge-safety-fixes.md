@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This PRD defines a safety and reliability repair effort for the Swift/GStreamer bridge in `gstreamer-swift`. The work addresses correctness bugs in C callback bridging, unsafe public mutability on pulled video frames, invalid appsrc input crashes, unbounded media stream buffering, request pad ownership, and verification gaps.
+This PRD defines a safety and reliability repair effort for the Swift/GStreamer bridge in `gstreamer-swift`. The work addresses correctness bugs in C callback bridging, unsafe public mutability on pulled video frames, invalid appsrc input handling, unbounded media stream buffering, request pad ownership, and verification gaps.
 
 Phase 1 and Phase 2 are the required first implementation scope. Phase 3 and Phase 4 may be split into follow-up PRs if needed.
 
@@ -45,7 +45,7 @@ Verification notes:
 
 - Fix `Pad.addProbe` so Swift callbacks execute reliably and callback context ownership is released exactly once.
 - Make pulled `VideoFrame` values read-only at the public API level to prevent concurrent mutation of shared `GstBuffer` storage.
-- Make all public `AppSource` push entry points reject invalid empty input or non-positive byte counts without trapping.
+- Make public `AppSource` raw push entry points accept zero-length buffers while rejecting negative byte counts and missing pointers for positive byte counts without trapping.
 - Add bounded buffering defaults to current media APIs that already return `AsyncStream`, while keeping their return types unchanged.
 - Close request pad lifecycle gaps and simplify `Buffer.mutableBytes` copy-on-write behavior.
 - Improve tests, README/API consistency, and dependency preflight guidance for GStreamer system libraries.
@@ -80,14 +80,14 @@ Verification notes:
 
 ### US-003: AppSource Input Validation
 
-**Description:** As a library user, I want invalid appsrc pushes to throw predictably so empty input cannot crash my process.
+**Description:** As a library user, I want appsrc raw pushes to handle zero-length buffers predictably and invalid positive-length inputs to throw instead of crashing my process.
 
 **Acceptance Criteria:**
-- [x] Empty `[UInt8]`, `Span<UInt8>`, and `RawSpan` pushes throw `GStreamerError.bufferMapFailed`.
-- [x] `push(bytes:count:)` rejects `count <= 0`.
+- [x] Zero-length `[UInt8]`, `Span<UInt8>`, and `RawSpan` raw pushes are valid and push zero-length GStreamer buffers.
+- [x] `push(bytes:count:)` rejects `count < 0` and ignores the pointer when `count == 0`.
 - [x] For `count > 0`, docs state the caller must pass a valid pointer for at least `count` bytes.
-- [x] Non-empty pushes preserve current timestamp and ownership behavior.
-- [x] Tests assert invalid inputs throw and do not trap.
+- [x] Positive-length pushes preserve current timestamp and ownership behavior.
+- [x] Tests assert invalid inputs throw, and zero-length raw inputs do not trap.
 
 ### US-004: AsyncStream Media Backpressure
 
@@ -121,8 +121,8 @@ Verification notes:
 - FR-2: Probe context ownership must be transferred with `Unmanaged.passRetained` and released by exactly one synchronized cleanup path.
 - FR-3: Zero probe id cleanup must check synchronized cleanup state before explicit release.
 - FR-4: Public `VideoFrame` must not expose mutable access to pulled `GstBuffer` data.
-- FR-5: All public appsrc push APIs must validate non-empty input before pointer access or `gsize` conversion.
-- FR-6: `push(bytes:count:)` must reject `count <= 0`; pointer validity for `count > 0` remains caller responsibility.
+- FR-5: Public raw appsrc push APIs must accept zero-length input without pointer access and validate negative counts before `gsize` conversion.
+- FR-6: `push(bytes:count:)` must reject `count < 0`; pointer validity is required only for `count > 0`, and the pointer is ignored for `count == 0`.
 - FR-7: Current `AsyncStream` media APIs must define bounded buffering without changing return types in this PR.
 - FR-8: Request pad release must be synchronized and idempotent.
 - FR-9: Build docs must state all system dependencies needed before `swift build` or `swift test`.
@@ -145,7 +145,7 @@ Verification notes:
 - Fix `Pad.addProbe` using retained `ProbeContext` as GStreamer `user_data`, released through `destroy_data`.
 - If `gst_pad_add_probe` returns `0`, avoid both leaks and double-release by checking synchronized state on the local strong `ProbeContext` before releasing the retained unmanaged context.
 - Cover `.remove`, manual `removeProbe`, id `0` no-op, and `addIdleProbe` immediate callback behavior.
-- Validate empty input and `count <= 0` across all public `AppSource` push APIs.
+- Allow zero-length raw input across public `AppSource` raw push APIs while rejecting negative counts and missing positive-length payload pointers.
 
 **Phase 2: API Safety** - Implementation complete in current uncommitted changes; generated docs verification remains in Phase 4
 - Make `VideoFrame` public API read-only.
@@ -185,7 +185,7 @@ Request pads should keep a strong owner `Element` reference for reliable auto-re
 ## Success Metrics
 
 - Pad probe tests fail on current implementation and pass after the fix.
-- Empty appsrc input tests pass without runtime traps.
+- Zero-length raw appsrc input tests pass without runtime traps.
 - Symbol graph or generated docs no longer expose mutable `VideoFrame` access.
 - Current `AsyncStream` media APIs have explicit bounded defaults: raw audio newest 1, encoded packets newest 8.
 - `swift build` and `swift test` pass in an environment with GStreamer development dependencies installed.
@@ -202,6 +202,6 @@ Request pads should keep a strong owner `Element` reference for reliable auto-re
 - Phase 1 and Phase 2 are required first implementation scope.
 - Phase 3 and Phase 4 may be split into follow-up PRs.
 - Source-breaking removal of public mutable `VideoFrame` access is acceptable.
-- Empty appsrc input is invalid and should throw `GStreamerError.bufferMapFailed`.
+- Zero-length raw appsrc input is valid and should push a zero-length buffer; negative counts are invalid, pointer validity is required only for positive counts, and `Buffer(data: [])` is intentionally valid.
 - Encoded packet streams are best-effort realtime streams, not reliable recording streams.
 - Request pads should keep a strong owner `Element` model by default.

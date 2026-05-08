@@ -38,6 +38,19 @@ struct BufferValueSemanticsTests {
         #expect(Self.bytes(in: copy) == [5, 6, 201, 8])
     }
 
+    @Test("Empty data creates valid zero-size Buffer and preserves timestamps")
+    func emptyDataCreatesValidZeroSizeBufferAndPreservesTimestamps() throws {
+        let pts: UInt64 = 123_456_789
+        let duration: UInt64 = 33_333_333
+
+        let buffer = try Buffer(data: [], pts: pts, duration: duration)
+
+        #expect(buffer.size == 0)
+        #expect(buffer.bytes.byteCount == 0)
+        #expect(buffer.pts == pts)
+        #expect(buffer.duration == duration)
+    }
+
     private static func bytes(in buffer: Buffer) -> [UInt8] {
         buffer.bytes.withUnsafeBytes { bytes in
             Array(bytes)

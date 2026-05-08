@@ -1,4 +1,5 @@
 import Testing
+import Synchronization
 @testable import GStreamer
 
 @Suite("AppSource Tests", .timeLimit(.minutes(1)))
@@ -134,7 +135,7 @@ struct AppSourceTests {
         // Create data that's too small for 4x4 BGRA (should be 64 bytes)
         let tooSmall = [UInt8](repeating: 0, count: 32)
 
-        #expect(throws: GStreamerError.self) {
+        expectBufferMapFailed {
             try src.pushVideoFrame(
                 data: tooSmall,
                 width: 4,
@@ -197,53 +198,36 @@ struct AppSourceTests {
         destSrc.endOfStream()
     }
 
-    @Test("Empty byte array push throws bufferMapFailed")
-    func emptyByteArrayPushThrowsBufferMapFailed() throws {
-        let pipeline = try Pipeline("appsrc name=src ! fakesink")
-        defer { pipeline.stop() }
-
-        let src = try AppSource(pipeline: pipeline, name: "src")
-
-        expectBufferMapFailed {
+    @Test("Empty byte array push flows as one buffer")
+    func emptyByteArrayPushFlowsAsOneBuffer() async throws {
+        try await expectEmptyPayloadPushesOneBuffer { src in
             try src.push(data: [])
         }
     }
 
-    @Test("Empty Span push throws bufferMapFailed")
-    func emptySpanPushThrowsBufferMapFailed() throws {
-        let pipeline = try Pipeline("appsrc name=src ! fakesink")
-        defer { pipeline.stop() }
-
-        let src = try AppSource(pipeline: pipeline, name: "src")
+    @Test("Empty Span push flows as one buffer")
+    func emptySpanPushFlowsAsOneBuffer() async throws {
         let emptyStorage: [UInt8] = []
 
-        expectBufferMapFailed {
+        try await expectEmptyPayloadPushesOneBuffer { src in
             try src.push(data: emptyStorage.span)
         }
     }
 
-    @Test("Empty RawSpan push throws bufferMapFailed")
-    func emptyRawSpanPushThrowsBufferMapFailed() throws {
-        let pipeline = try Pipeline("appsrc name=src ! fakesink")
-        defer { pipeline.stop() }
-
-        let src = try AppSource(pipeline: pipeline, name: "src")
+    @Test("Empty RawSpan push flows as one buffer")
+    func emptyRawSpanPushFlowsAsOneBuffer() async throws {
         let emptyStorage: [UInt8] = []
 
-        expectBufferMapFailed {
+        try await expectEmptyPayloadPushesOneBuffer { src in
             try src.push(data: emptyStorage.span.bytes)
         }
     }
 
-    @Test("push bytes rejects zero count")
-    func pushBytesRejectsZeroCount() throws {
-        let pipeline = try Pipeline("appsrc name=src ! fakesink")
-        defer { pipeline.stop() }
-
-        let src = try AppSource(pipeline: pipeline, name: "src")
+    @Test("push bytes with zero count flows as one buffer")
+    func pushBytesWithZeroCountFlowsAsOneBuffer() async throws {
         var dummy: UInt8 = 0
 
-        expectBufferMapFailed {
+        try await expectEmptyPayloadPushesOneBuffer { src in
             try withUnsafePointer(to: &dummy) { pointer in
                 try src.push(bytes: UnsafeRawPointer(pointer), count: 0)
             }
@@ -265,13 +249,148 @@ struct AppSourceTests {
         }
     }
 
-    private func expectBufferMapFailed(_ body: () throws -> Void) {
+    @Test("pushVideoFrame overloads reject invalid dimensions and formats")
+    func pushVideoFrameOverloadsRejectInvalidDimensionsAndFormats() throws {
+        let invalidCases: [InvalidVideoFrameCase] = [
+            .init(name: "zero width", width: 0, height: 1, format: .bgra),
+            .init(name: "zero height", width: 1, height: 0, format: .bgra),
+            .init(name: "negative width", width: -1, height: 1, format: .bgra),
+            .init(name: "negative height", width: 1, height: -1, format: .bgra),
+            .init(name: "unknown zero-BPP format", width: 1, height: 1, format: .unknown("CUSTOM")),
+            .init(name: "overflow-sized dimensions", width: Int.max / 2 + 1, height: 2, format: .bgra)
+        ]
+
+        for invalidCase in invalidCases {
+            try expectArrayVideoFrameRejects(invalidCase)
+            try expectSpanVideoFrameRejects(invalidCase)
+            try expectRawSpanVideoFrameRejects(invalidCase)
+        }
+    }
+
+    private func expectEmptyPayloadPushesOneBuffer(_ push: (AppSource) throws -> Void) async throws {
+        let pipeline = try Pipeline("appsrc name=src ! identity name=tap ! fakesink sync=false")
+        defer { pipeline.stop() }
+
+        let src = try AppSource(pipeline: pipeline, name: "src")
+        src.setLive(false)
+
+        let tap = try #require(pipeline.element(named: "tap"))
+        let srcPad = try #require(tap.staticPad("src"))
+        let callbackCount = AppSourceProbeCounter()
+
+        srcPad.addProbe(type: .buffer) {
+            callbackCount.increment()
+            return .ok
+        }
+
+        try pipeline.play()
+        try push(src)
+        src.endOfStream()
+
+        await waitForEOSOrFail(pipeline)
+        #expect(callbackCount.value == 1)
+    }
+
+    private func expectArrayVideoFrameRejects(_ invalidCase: InvalidVideoFrameCase) throws {
+        let data = [UInt8](repeating: 0, count: 4)
+        try withValidationAppSource { src in
+            expectBufferMapFailed("array overload should reject \(invalidCase.name)") {
+                try src.pushVideoFrame(
+                    data: data,
+                    width: invalidCase.width,
+                    height: invalidCase.height,
+                    format: invalidCase.format
+                )
+            }
+        }
+    }
+
+    private func expectSpanVideoFrameRejects(_ invalidCase: InvalidVideoFrameCase) throws {
+        let data = [UInt8](repeating: 0, count: 4)
+        try withValidationAppSource { src in
+            expectBufferMapFailed("Span overload should reject \(invalidCase.name)") {
+                try src.pushVideoFrame(
+                    data: data.span,
+                    width: invalidCase.width,
+                    height: invalidCase.height,
+                    format: invalidCase.format
+                )
+            }
+        }
+    }
+
+    private func expectRawSpanVideoFrameRejects(_ invalidCase: InvalidVideoFrameCase) throws {
+        let data = [UInt8](repeating: 0, count: 4)
+        try withValidationAppSource { src in
+            expectBufferMapFailed("RawSpan overload should reject \(invalidCase.name)") {
+                try src.pushVideoFrame(
+                    data: data.span.bytes,
+                    width: invalidCase.width,
+                    height: invalidCase.height,
+                    format: invalidCase.format
+                )
+            }
+        }
+    }
+
+    private func withValidationAppSource(_ body: (AppSource) throws -> Void) throws {
+        let pipeline = try Pipeline("appsrc name=src ! fakesink")
+        defer { pipeline.stop() }
+
+        let src = try AppSource(pipeline: pipeline, name: "src")
+        try body(src)
+    }
+
+    private func waitForEOSOrFail(_ pipeline: Pipeline) async {
+        for await message in pipeline.bus.messages(filter: [.eos, .error]) {
+            switch message {
+            case .eos:
+                return
+            case .error(let message, let debug):
+                if let debug {
+                    Issue.record("Unexpected pipeline error: \(message) (\(debug))")
+                } else {
+                    Issue.record("Unexpected pipeline error: \(message)")
+                }
+                return
+            default:
+                continue
+            }
+        }
+
+        Issue.record("Pipeline bus stream ended before EOS")
+    }
+
+    private func expectBufferMapFailed(_ context: String = "Expected GStreamerError.bufferMapFailed", _ body: () throws -> Void) {
         do {
             try body()
-            Issue.record("Expected GStreamerError.bufferMapFailed")
+            Issue.record("\(context)")
         } catch GStreamerError.bufferMapFailed {
         } catch {
-            Issue.record("Expected GStreamerError.bufferMapFailed, got \(error)")
+            Issue.record("\(context), got \(error)")
+        }
+    }
+}
+
+private struct InvalidVideoFrameCase: Sendable {
+    let name: String
+    let width: Int
+    let height: Int
+    let format: PixelFormat
+}
+
+private final class AppSourceProbeCounter: @unchecked Sendable {
+    private let storage = Mutex(0)
+
+    func increment() {
+        storage.withLock { count in
+            count += 1
+        }
+    }
+
+    var value: Int {
+        storage.withLock { count in
+            count
         }
     }
 }
