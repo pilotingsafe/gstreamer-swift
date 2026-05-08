@@ -341,9 +341,9 @@ public final class Pad: @unchecked Sendable {
         }
 
         return withExtendedLifetime(context) {
-            // GStreamer owns releasing contextPointer through destroy_data.
-            // This also covers synchronous idle probes that return REMOVE and
-            // make gst_pad_add_probe return 0 after invoking destroy_data.
+            // GStreamer normally releases contextPointer through destroy_data.
+            // If registration returns 0 without destroy_data, the local strong
+            // context gates the fallback release without re-entering raw cleanup.
             let probeId = gst_pad_add_probe(
                 pad,
                 type.gstType,
@@ -354,8 +354,8 @@ public final class Pad: @unchecked Sendable {
                 }
             )
 
-            if probeId == 0 {
-                Pad.cleanupProbeContext(contextPointer)
+            if probeId == 0, context.markCleanedUp() {
+                Unmanaged<ProbeContext>.fromOpaque(contextPointer).release()
             }
 
             return ProbeHandle(id: probeId)

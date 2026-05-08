@@ -38,7 +38,7 @@ Verification notes:
 - The symbol graph dump command writes status lines to `/tmp/gstreamer-swift-symbols.json`; the actual public symbol JSON was checked in `.build/arm64-apple-macosx/symbolgraph/*.symbols.json`.
 - The public symbol graph contains `VideoFrame.bytes` and `VideoFrame.withUnsafeBytes(_:)`; it does not contain `VideoFrame.mutableBytes` or `VideoFrame.withUnsafeMutableBytes(_:)`. The mutable API absence check was scoped to `VideoFrame`; `Buffer.mutableBytes` and `Buffer.withUnsafeMutableBytes(_:)` remain public.
 - Phase 4 test hygiene replaced silent CI guard-return skips and silent async smoke-test passes with deterministic zero-or-more assertions, `#require` evidence checks, post-loop assertions, and `.timeLimit(.minutes(1))` on finite async smoke suites.
-- Review follow-up fixed `Element.releasePad(_:)` receiver-owner validation and added an empty `ProbeType` short-circuit while retaining zero-id probe cleanup.
+- Review follow-up fixed `Element.releasePad(_:)` receiver-owner validation and added an empty `ProbeType` short-circuit while retaining zero-id probe cleanup through local synchronized context state.
 - Review verification reran `swift build`, focused pad probe and request pad lifecycle tests, and full `swift test`; all passed. Existing non-fatal GStreamer parent-disposal critical logs still appear in some runs, but the final full-suite run completed successfully with 158 Swift Testing tests and no signal 11.
 
 ## Goals
@@ -59,7 +59,7 @@ Verification notes:
 **Acceptance Criteria:**
 - [x] `addProbe` passes retained Swift context as GStreamer `user_data`.
 - [x] `destroy_data` releases retained context exactly once.
-- [x] Probe context has synchronized cleanup state so explicit zero-id cleanup and `destroy_data` cannot double-release.
+- [x] Probe context has synchronized cleanup state so local zero-id release and `destroy_data` cannot double-release.
 - [x] Callback return values map correctly to `GstPadProbeReturn`.
 - [x] `.remove` removes the probe and releases context.
 - [x] `ProbeHandle` id `0` is invalid internally, and `removeProbe` is a no-op for id `0`.
@@ -143,7 +143,7 @@ Verification notes:
 
 **Phase 1: Correctness Blockers** - Complete in current uncommitted changes
 - Fix `Pad.addProbe` using retained `ProbeContext` as GStreamer `user_data`, released through `destroy_data`.
-- If `gst_pad_add_probe` returns `0`, avoid both leaks and double-release by tracking whether `destroy_data` executed with synchronized state on `ProbeContext`.
+- If `gst_pad_add_probe` returns `0`, avoid both leaks and double-release by checking synchronized state on the local strong `ProbeContext` before releasing the retained unmanaged context.
 - Cover `.remove`, manual `removeProbe`, id `0` no-op, and `addIdleProbe` immediate callback behavior.
 - Validate empty input and `count <= 0` across all public `AppSource` push APIs.
 
@@ -176,7 +176,7 @@ Encoded packet streams use a concrete bounded policy, preferably `.bufferingNewe
 
 ### Probe Zero-Id Cleanup
 
-If `gst_pad_add_probe` returns `0`, the implementation must avoid both leaks and double-release. Track whether `destroy_data` executed, for example with a synchronized flag on `ProbeContext`, before performing explicit zero-id cleanup.
+If `gst_pad_add_probe` returns `0`, the implementation must avoid both leaks and double-release. Keep the local strong `ProbeContext` in scope, check its synchronized cleanup state, and release the retained unmanaged context only when `destroy_data` has not already claimed cleanup.
 
 ### Request Pad Owner Model
 

@@ -102,29 +102,37 @@ struct PadProbeTests {
         #expect(callbackCount.value == 1)
     }
 
-    @Test("Repeated immediate idle remove probes do not crash or double release")
-    func repeatedImmediateIdleRemoveProbesDoNotCrashOrDoubleRelease() throws {
-        let pipeline = try Pipeline("identity name=tap ! fakesink")
+    @Test("Repeated immediate idle remove probes leave pad usable")
+    func repeatedImmediateIdleRemoveProbesLeavePadUsable() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! identity name=tap ! fakesink")
         defer { pipeline.stop() }
 
         let tap = try #require(pipeline.element(named: "tap"))
         let srcPad = try #require(tap.staticPad("src"))
-        let callbackCount = CallbackCounter()
-        var lastHandle = Pad.ProbeHandle(id: 0)
+        let idleCallbackCount = CallbackCounter()
 
         for _ in 0..<1000 {
             let handle = srcPad.addProbe(type: [.idle, .blocking]) {
-                callbackCount.increment()
+                idleCallbackCount.increment()
                 return .remove
             }
 
             #expect(handle.id == 0)
-            lastHandle = handle
+            srcPad.removeProbe(handle)
         }
 
-        #expect(callbackCount.value == 1000)
+        #expect(idleCallbackCount.value == 1000)
 
-        srcPad.removeProbe(lastHandle)
+        let bufferCallbackCount = CallbackCounter()
+        srcPad.addProbe(type: .buffer) {
+            bufferCallbackCount.increment()
+            return .ok
+        }
+
+        try pipeline.play()
+        await waitForEOSOrFail(pipeline)
+
+        #expect(bufferCallbackCount.value > 0)
     }
 
     @Test("ProbeReturn maps to CGStreamer constants")
