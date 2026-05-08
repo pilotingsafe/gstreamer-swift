@@ -1,7 +1,7 @@
 import Testing
 @testable import GStreamer
 
-@Suite("Bus Message Tests")
+@Suite("Bus Message Tests", .timeLimit(.minutes(1)))
 struct BusMessageTests {
 
     init() throws {
@@ -20,6 +20,7 @@ struct BusMessageTests {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
 
         try pipeline.play()
+        defer { pipeline.stop() }
 
         var receivedEOS = false
         for await message in pipeline.bus.messages(filter: [.eos, .error]) {
@@ -35,7 +36,6 @@ struct BusMessageTests {
         }
 
         #expect(receivedEOS)
-        pipeline.stop()
     }
 
     @Test("Receive state changed messages")
@@ -43,6 +43,7 @@ struct BusMessageTests {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
 
         try pipeline.play()
+        defer { pipeline.stop() }
 
         var stateChangeCount = 0
         for await message in pipeline.bus.messages(filter: [.stateChanged, .eos]) {
@@ -59,32 +60,20 @@ struct BusMessageTests {
 
         // Should have received some state changes
         #expect(stateChangeCount > 0)
-        pipeline.stop()
     }
 
-    @Test("Error message contains details")
-    func errorMessageDetails() async throws {
-        // Create an invalid pipeline that will error
-        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! video/x-raw,format=INVALID ! fakesink")
+    @Test("Missing file source fails to play deterministically")
+    func errorMessageDetails() throws {
+        let pipeline = try Pipeline("filesrc location=/definitely/missing/gstreamer-swift-test-input ! fakesink")
+        defer { pipeline.stop() }
 
-        try pipeline.play()
-
-        var errorReceived = false
-        var reachedEOS = false
-        for await message in pipeline.bus.messages(filter: [.error, .eos]) {
-            switch message {
-            case .error(let msg, _):
-                #expect(!msg.isEmpty)
-                errorReceived = true
-            case .eos:
-                reachedEOS = true
-            default:
-                break
-            }
-            if errorReceived || reachedEOS { break }
+        do {
+            try pipeline.play()
+            Issue.record("Expected missing filesrc input to fail when the pipeline starts")
+        } catch let error as GStreamerError {
+            #expect(String(describing: error).contains("State change failed"))
+        } catch {
+            Issue.record("Expected GStreamerError for missing filesrc input, got \(error)")
         }
-
-        pipeline.stop()
-        // Note: This test may or may not receive an error depending on GStreamer's behavior
     }
 }

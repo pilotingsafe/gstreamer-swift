@@ -311,6 +311,43 @@ void swift_gst_element_release_request_pad(GstElement* element, GstPad* pad) {
     gst_element_release_request_pad(element, pad);
 }
 
+guint swift_gst_element_pad_count(GstElement* element) {
+    if (element == NULL || !GST_IS_ELEMENT(element)) {
+        return 0;
+    }
+
+    GstIterator* iterator = gst_element_iterate_pads(element);
+    if (iterator == NULL) {
+        return 0;
+    }
+
+    guint count = 0;
+    GValue item = G_VALUE_INIT;
+
+    while (TRUE) {
+        switch (gst_iterator_next(iterator, &item)) {
+        case GST_ITERATOR_OK:
+            count++;
+            g_value_reset(&item);
+            break;
+        case GST_ITERATOR_RESYNC:
+            count = 0;
+            gst_iterator_resync(iterator);
+            break;
+        case GST_ITERATOR_DONE:
+        case GST_ITERATOR_ERROR:
+            goto done;
+        }
+    }
+
+done:
+    if (G_VALUE_TYPE(&item) != G_TYPE_INVALID) {
+        g_value_unset(&item);
+    }
+    gst_iterator_free(iterator);
+    return count;
+}
+
 GstPad* swift_gst_element_get_static_pad(GstElement* element, const gchar* name) {
     return gst_element_get_static_pad(element, name);
 }
@@ -560,6 +597,14 @@ GType swift_g_type_object(void) {
 
 GType swift_g_type_boxed(void) {
     return G_TYPE_BOXED;
+}
+
+GParamFlags swift_g_param_readable(void) {
+    return G_PARAM_READABLE;
+}
+
+GParamFlags swift_g_param_writable(void) {
+    return G_PARAM_WRITABLE;
 }
 
 GType swift_g_type_fundamental(GType type) {

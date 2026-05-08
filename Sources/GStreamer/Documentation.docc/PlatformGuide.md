@@ -99,10 +99,8 @@ try pipeline.play()
 
 for await frame in sink.frames() {
     // Process hardware-accelerated frames
-    try frame.withMappedBytes { span in
-        span.withUnsafeBytes { buffer in
-            // Run inference on BGRA data
-        }
+    try frame.withUnsafeBytes { buffer in
+        // Run inference on BGRA data
     }
 }
 ```

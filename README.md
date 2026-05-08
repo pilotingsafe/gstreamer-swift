@@ -19,16 +19,19 @@ A modern Swift 6.2 wrapper for GStreamer, designed for robotics and computer vis
 
 - Swift 6.2+
 - macOS 26.0+ (typed pipelines use value generics, which are only available on macOS 26)
-- GStreamer 1.20+ installed on your system
+- `pkgconf`/`pkg-config` available on PATH
+- GStreamer 1.20+ development headers and libraries installed on your system
+- `pkg-config` metadata for the SwiftPM system-library targets:
+  `gstreamer-1.0`, `gstreamer-app-1.0`, and `gstreamer-video-1.0`
 
 ### Installing GStreamer
 
 **macOS (Homebrew):**
 ```bash
-brew install gstreamer
+brew install pkgconf gstreamer
 ```
 
-This installs GStreamer with all common plugins. Verify with:
+This installs `pkg-config`, GStreamer, the base development files, and common plugins. Verify with:
 ```bash
 gst-inspect-1.0 --version
 ```
@@ -38,12 +41,12 @@ gst-inspect-1.0 --version
 Option 1 - MSYS2 (recommended for Swift):
 ```powershell
 # In MSYS2 UCRT64 terminal
-pacman -S mingw-w64-ucrt-x86_64-gstreamer mingw-w64-ucrt-x86_64-gst-plugins-base mingw-w64-ucrt-x86_64-gst-plugins-good
+pacman -S mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gstreamer mingw-w64-ucrt-x86_64-gst-plugins-base mingw-w64-ucrt-x86_64-gst-plugins-good
 ```
 
 Option 2 - Official Installer:
 1. Download from https://gstreamer.freedesktop.org/download/
-2. Install both **runtime** and **development** installers
+2. Install both **runtime** and **development** installers; SwiftPM needs the development headers, libraries, and `.pc` files
 3. Add to PATH: `C:\gstreamer\1.0\msvc_x86_64\bin`
 4. Set `PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig`
 
@@ -51,6 +54,7 @@ Option 2 - Official Installer:
 ```bash
 # Core development libraries
 sudo apt install \
+    pkg-config \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev
 
@@ -72,6 +76,7 @@ sudo apt install gstreamer1.0-vaapi
 ```bash
 # Core development libraries
 sudo dnf install \
+    pkgconf-pkg-config \
     gstreamer1-devel \
     gstreamer1-plugins-base-devel
 
@@ -86,14 +91,14 @@ sudo dnf install \
 
 **Arch Linux:**
 ```bash
-sudo pacman -S gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
+sudo pacman -S pkgconf gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
 ```
 
 **NVIDIA Jetson (JetPack):**
 
 GStreamer runtime and hardware-accelerated plugins come pre-installed with JetPack, including support for NVENC/NVDEC and the Jetson multimedia API. You only need to install the development headers:
 ```bash
-sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+sudo apt install pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 ```
 
 Jetson-specific plugins like `nvvidconv`, `nvv4l2decoder`, and `nvarguscamerasrc` are already available.
@@ -102,6 +107,18 @@ Jetson-specific plugins like `nvvidconv`, `nvv4l2decoder`, and `nvarguscamerasrc
 ```bash
 gst-inspect-1.0 --version
 # Should output: gst-inspect-1.0 version 1.x.x
+```
+
+**SwiftPM Preflight:**
+
+Run this before `swift build` or `swift test` to confirm SwiftPM can find all system-library targets:
+```bash
+pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
+```
+
+Print the resolved versions with:
+```bash
+pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
 ```
 
 ## Installation
@@ -156,6 +173,9 @@ for await packet in mic.packets() {
     // Encoded bytes in packet.bytes
 }
 ```
+
+Encoded packet streams are realtime best-effort streams; older packets may be
+dropped under slow-consumer backpressure.
 
 ### High-Level Audio Playback
 
@@ -249,13 +269,11 @@ try pipeline.play()
 for await frame in sink.frames() {
     print("Frame: \(frame.width)x\(frame.height) \(frame.format.formatString)")
 
-    // Safe buffer access - RawSpan cannot escape this closure
-    try frame.withMappedBytes { span in
-        span.withUnsafeBytes { buffer in
-            // Process pixel data...
-            let firstPixel = Array(buffer.prefix(4)) // BGRA
-            print("First pixel: \(firstPixel)")
-        }
+    // Safe pointer access scoped to this closure
+    try frame.withUnsafeBytes { buffer in
+        // Process pixel data...
+        let firstPixel = Array(buffer.prefix(4)) // BGRA
+        print("First pixel: \(firstPixel)")
     }
 }
 
@@ -295,10 +313,8 @@ try pipeline.play()
 for await frame in sink.frames() {
     print("Webcam frame: \(frame.width)x\(frame.height)")
 
-    try frame.withMappedBytes { span in
-        span.withUnsafeBytes { buffer in
-            // Process webcam pixels - send to ML model, save to disk, etc.
-        }
+    try frame.withUnsafeBytes { buffer in
+        // Process webcam pixels - send to ML model, save to disk, etc.
     }
 }
 ```
@@ -532,10 +548,8 @@ try pipeline.play()
 
 for await frame in sink.frames() {
     // Process hardware-accelerated frames
-    try frame.withMappedBytes { span in
-        span.withUnsafeBytes { buffer in
-            // Run TensorRT inference, etc.
-        }
+    try frame.withUnsafeBytes { buffer in
+        // Run TensorRT inference, etc.
     }
 }
 ```
@@ -669,10 +683,11 @@ public final class AppSink: @unchecked Sendable {
 }
 
 public struct VideoFrame: @unchecked Sendable {
-    let width: Int
-    let height: Int
-    let format: PixelFormat
-    func withMappedBytes<R>(_ body: (RawSpan) throws -> R) throws -> R
+    public let width: Int
+    public let height: Int
+    public let format: PixelFormat
+    public var bytes: RawSpan
+    public func withUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) throws -> R
 }
 
 public enum PixelFormat: Sendable, Equatable {

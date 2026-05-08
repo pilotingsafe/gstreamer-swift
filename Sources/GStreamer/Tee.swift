@@ -72,7 +72,7 @@ import Synchronization
 ///
 /// // Process frames for ML while displaying and recording
 /// for await frame in mlSink.frames() {
-///     try frame.withMappedBytes { span in
+///     try frame.withUnsafeBytes { buffer in
 ///         // Run inference...
 ///     }
 /// }

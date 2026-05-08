@@ -3,7 +3,7 @@ import Testing
 import CoreVideo
 @testable import GStreamer
 
-@Suite("CVPixelBuffer Tests")
+@Suite("CVPixelBuffer Tests", .timeLimit(.minutes(1)))
 struct CVPixelBufferTests {
 
     init() throws {
@@ -22,20 +22,21 @@ struct CVPixelBufferTests {
 
         let sink = try pipeline.appSink(named: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
+        var firstFrame: VideoFrame?
         for try await frame in sink.frames() {
-            let pixelBuffer = try frame.toCVPixelBuffer()
-            #expect(pixelBuffer != nil)
-
-            if let pb = pixelBuffer {
-                #expect(CVPixelBufferGetWidth(pb) == 64)
-                #expect(CVPixelBufferGetHeight(pb) == 64)
-                #expect(CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA)
-            }
+            firstFrame = frame
             break
         }
 
-        pipeline.stop()
+        let frame = try #require(firstFrame, "Expected one BGRA frame")
+        let pixelBuffer = try frame.toCVPixelBuffer()
+        let pb = try #require(pixelBuffer, "Expected BGRA frame to convert to CVPixelBuffer")
+
+        #expect(CVPixelBufferGetWidth(pb) == 64)
+        #expect(CVPixelBufferGetHeight(pb) == 64)
+        #expect(CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA)
     }
 
     @Test("Convert NV12 frame to CVPixelBuffer")
@@ -50,21 +51,22 @@ struct CVPixelBufferTests {
 
         let sink = try pipeline.appSink(named: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
+        var firstFrame: VideoFrame?
         for try await frame in sink.frames() {
-            let pixelBuffer = try frame.toCVPixelBuffer()
-            #expect(pixelBuffer != nil)
-
-            if let pb = pixelBuffer {
-                #expect(CVPixelBufferGetWidth(pb) == 64)
-                #expect(CVPixelBufferGetHeight(pb) == 64)
-                #expect(CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-                #expect(CVPixelBufferIsPlanar(pb))
-            }
+            firstFrame = frame
             break
         }
 
-        pipeline.stop()
+        let frame = try #require(firstFrame, "Expected one NV12 frame")
+        let pixelBuffer = try frame.toCVPixelBuffer()
+        let pb = try #require(pixelBuffer, "Expected NV12 frame to convert to CVPixelBuffer")
+
+        #expect(CVPixelBufferGetWidth(pb) == 64)
+        #expect(CVPixelBufferGetHeight(pb) == 64)
+        #expect(CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+        #expect(CVPixelBufferIsPlanar(pb))
     }
 
     @Test("Convert I420 frame to CVPixelBuffer")
@@ -79,20 +81,21 @@ struct CVPixelBufferTests {
 
         let sink = try pipeline.appSink(named: "sink")
         try pipeline.play()
+        defer { pipeline.stop() }
 
+        var firstFrame: VideoFrame?
         for try await frame in sink.frames() {
-            let pixelBuffer = try frame.toCVPixelBuffer()
-            #expect(pixelBuffer != nil)
-
-            if let pb = pixelBuffer {
-                #expect(CVPixelBufferGetWidth(pb) == 64)
-                #expect(CVPixelBufferGetHeight(pb) == 64)
-                #expect(CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_420YpCbCr8Planar)
-            }
+            firstFrame = frame
             break
         }
 
-        pipeline.stop()
+        let frame = try #require(firstFrame, "Expected one I420 frame")
+        let pixelBuffer = try frame.toCVPixelBuffer()
+        let pb = try #require(pixelBuffer, "Expected I420 frame to convert to CVPixelBuffer")
+
+        #expect(CVPixelBufferGetWidth(pb) == 64)
+        #expect(CVPixelBufferGetHeight(pb) == 64)
+        #expect(CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_420YpCbCr8Planar)
     }
 
     @Test("PixelFormat cvPixelFormat mapping")

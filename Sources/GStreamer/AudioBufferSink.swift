@@ -3,6 +3,10 @@ import CGStreamerApp
 import CGStreamerShim
 import Synchronization
 
+extension MediaStreamBackpressure {
+  internal static let rawAudioBuffersNewest = 1
+}
+
 /// A wrapper for GStreamer's appsink element for pulling audio buffers from a pipeline.
 ///
 /// AudioBufferSink allows your application to receive audio buffers from a GStreamer pipeline.
@@ -138,7 +142,8 @@ public final class AudioBufferSink: @unchecked Sendable {
   /// An async stream of audio buffers from this sink.
   ///
   /// Buffers are yielded as they become available from the pipeline.
-  /// The stream ends when the pipeline reaches end-of-stream (EOS).
+  /// The stream keeps only the newest raw buffer when consumers are slow and
+  /// ends when the pipeline reaches end-of-stream (EOS).
   ///
   /// - Returns: An `AsyncStream` of ``AudioBuffer`` values.
   ///
@@ -156,7 +161,9 @@ public final class AudioBufferSink: @unchecked Sendable {
   /// }
   /// ```
   public func buffers() -> AsyncStream<AudioBuffer> {
-    AsyncStream { continuation in
+    AsyncStream(
+      bufferingPolicy: .bufferingNewest(MediaStreamBackpressure.rawAudioBuffersNewest)
+    ) { continuation in
       let task = Task.detached { [weak self] in
         guard let self else {
           continuation.finish()

@@ -130,7 +130,7 @@ void swift_gst_app_src_set_max_bytes(GstAppSrc* appsrc, guint64 max);
 /// Set appsrc min-latency property
 void swift_gst_app_src_set_latency(GstAppSrc* appsrc, guint64 min, guint64 max);
 
-/// Create a buffer with PTS and duration set
+/// Create a buffer with PTS and duration set. data may be NULL only when size is 0.
 GstBuffer* swift_gst_buffer_new_wrapped_full(gconstpointer data, gsize size, GstClockTime pts, GstClockTime duration);
 
 #ifdef __cplusplus

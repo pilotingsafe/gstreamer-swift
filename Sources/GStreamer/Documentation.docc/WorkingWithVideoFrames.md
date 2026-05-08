@@ -1,25 +1,38 @@
 # Working with Video Frames
 
-Access and process raw video frame data safely with zero-copy memory access.
+Access and process raw video frame data safely with zero-copy read access.
 
 ## Overview
 
-GStreamer for Swift provides safe, zero-copy access to video frame data through the ``VideoFrame`` type. The ``VideoFrame/withMappedBytes(_:)`` method uses Swift's `RawSpan` to ensure memory safety while avoiding unnecessary copies.
+GStreamer for Swift provides safe, zero-copy read access to video frame data
+through the ``VideoFrame`` type. Use ``VideoFrame/bytes`` for read-only
+`RawSpan` access, or ``VideoFrame/withUnsafeBytes(_:)`` when an interop API
+needs an unsafe pointer scoped to a closure.
+
+Pulled video frames are read-only. If you need to mutate, modify, or write pixel
+data, copy the frame bytes into `[UInt8]`, ``Buffer``, `CVPixelBuffer`, or
+another mutable data structure and mutate that copy.
 
 ## Accessing Pixel Data
 
 ### Basic Frame Access
 
-Use `withMappedBytes` to access the raw pixel data:
+Use `withUnsafeBytes` when pointer lifetime should be explicit:
 
 ```swift
 for await frame in sink.frames() {
-    try frame.withMappedBytes { span in
-        span.withUnsafeBytes { buffer in
-            // buffer is UnsafeRawBufferPointer
-            print("Buffer size: \(buffer.count) bytes")
-        }
+    try frame.withUnsafeBytes { buffer in
+        // buffer is UnsafeRawBufferPointer and is valid only in this closure.
+        print("Buffer size: \(buffer.count) bytes")
     }
+}
+```
+
+Use `bytes` when read-only `RawSpan` access is enough:
+
+```swift
+for await frame in sink.frames() {
+    print("Frame bytes: \(frame.bytes.byteCount)")
 }
 ```
 
@@ -28,16 +41,14 @@ for await frame in sink.frames() {
 For BGRA format (common on macOS/iOS), pixels are arranged as Blue, Green, Red, Alpha:
 
 ```swift
-try frame.withMappedBytes { span in
-    span.withUnsafeBytes { buffer in
-        for i in stride(from: 0, to: buffer.count, by: 4) {
-            let b = buffer[i]     // Blue
-            let g = buffer[i + 1] // Green
-            let r = buffer[i + 2] // Red
-            let a = buffer[i + 3] // Alpha
+try frame.withUnsafeBytes { buffer in
+    for i in stride(from: 0, to: buffer.count, by: 4) {
+        let b = buffer[i]     // Blue
+        let g = buffer[i + 1] // Green
+        let r = buffer[i + 2] // Red
+        let a = buffer[i + 3] // Alpha
 
-            // Process pixel...
-        }
+        // Process pixel...
     }
 }
 ```
@@ -46,61 +57,63 @@ try frame.withMappedBytes { span in
 
 ```swift
 // Calculate average brightness
-let brightness = try frame.withMappedBytes { span in
-    span.withUnsafeBytes { buffer -> Int in
-        var total = 0
-        for i in stride(from: 0, to: buffer.count, by: 4) {
-            // Weighted luminance: 0.299R + 0.587G + 0.114B
-            total += Int(buffer[i + 2]) * 299 +
-                     Int(buffer[i + 1]) * 587 +
-                     Int(buffer[i]) * 114
-        }
-        return total / (buffer.count / 4) / 1000
+let brightness = try frame.withUnsafeBytes { buffer -> Int in
+    var total = 0
+    for i in stride(from: 0, to: buffer.count, by: 4) {
+        // Weighted luminance: 0.299R + 0.587G + 0.114B
+        total += Int(buffer[i + 2]) * 299 +
+                 Int(buffer[i + 1]) * 587 +
+                 Int(buffer[i]) * 114
     }
+    return total / (buffer.count / 4) / 1000
 }
 print("Average brightness: \(brightness)")
 ```
 
+## Mutating Frame Data
+
+``VideoFrame`` does not expose mutable byte access. Copy into a mutable
+destination before changing pixels:
+
+```swift
+let pixelData: [UInt8] = frame.bytes.withUnsafeBytes { bytes in
+    Array(bytes)
+}
+
+var output = try Buffer(data: pixelData, pts: frame.pts, duration: frame.duration)
+try output.withUnsafeMutableBytes { bytes in
+    for i in stride(from: 0, to: bytes.count, by: 4) {
+        bytes[i] = 255 - bytes[i]
+        bytes[i + 1] = 255 - bytes[i + 1]
+        bytes[i + 2] = 255 - bytes[i + 2]
+    }
+}
+```
+
+You can use the same copy-first approach with `[UInt8]`, `CVPixelBuffer`, or
+another mutable structure that owns its storage.
+
 ## Integration with Vision Framework
 
-Create a `CVPixelBuffer` for use with Vision or CoreML:
+Create a `CVPixelBuffer` copy for use with Vision or CoreML:
 
 ```swift
 import Vision
-import CoreVideo
 
-try frame.withMappedBytes { span in
-    span.withUnsafeBytes { buffer in
-        var pixelBuffer: CVPixelBuffer?
+guard let pixelBuffer = try frame.toCVPixelBuffer() else {
+    return
+}
 
-        CVPixelBufferCreateWithBytes(
-            nil,
-            frame.width,
-            frame.height,
-            kCVPixelFormatType_32BGRA,
-            UnsafeMutableRawPointer(mutating: buffer.baseAddress!),
-            frame.width * 4,  // bytes per row
-            nil,
-            nil,
-            nil,
-            &pixelBuffer
-        )
+let requestHandler = VNImageRequestHandler(
+    cvPixelBuffer: pixelBuffer,
+    options: [:]
+)
 
-        guard let pixelBuffer else { return }
+let request = VNDetectFaceRectanglesRequest()
+try? requestHandler.perform([request])
 
-        // Use with Vision
-        let requestHandler = VNImageRequestHandler(
-            cvPixelBuffer: pixelBuffer,
-            options: [:]
-        )
-
-        let request = VNDetectFaceRectanglesRequest()
-        try? requestHandler.perform([request])
-
-        if let results = request.results {
-            print("Detected \(results.count) faces")
-        }
-    }
+if let results = request.results {
+    print("Detected \(results.count) faces")
 }
 ```
 
@@ -113,55 +126,51 @@ import Metal
 
 let device = MTLCreateSystemDefaultDevice()!
 
-try frame.withMappedBytes { span in
-    span.withUnsafeBytes { buffer in
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm,
-            width: frame.width,
-            height: frame.height,
-            mipmapped: false
-        )
-        descriptor.usage = [.shaderRead]
+try frame.withUnsafeBytes { buffer in
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .bgra8Unorm,
+        width: frame.width,
+        height: frame.height,
+        mipmapped: false
+    )
+    descriptor.usage = [.shaderRead]
 
-        let texture = device.makeTexture(descriptor: descriptor)!
+    let texture = device.makeTexture(descriptor: descriptor)!
 
-        texture.replace(
-            region: MTLRegionMake2D(0, 0, frame.width, frame.height),
-            mipmapLevel: 0,
-            withBytes: buffer.baseAddress!,
-            bytesPerRow: frame.width * 4
-        )
+    texture.replace(
+        region: MTLRegionMake2D(0, 0, frame.width, frame.height),
+        mipmapLevel: 0,
+        withBytes: buffer.baseAddress!,
+        bytesPerRow: frame.width * 4
+    )
 
-        // Use texture for rendering...
-    }
+    // Use texture for rendering...
 }
 ```
 
 ## Memory Safety
 
-The `RawSpan` returned by `withMappedBytes` cannot escape the closure. This ensures the underlying GStreamer buffer remains valid while you access it:
+The `RawSpan` returned by `bytes` is lifetime-bound to the expression where it is
+accessed, and unsafe pointers from `withUnsafeBytes` cannot escape the closure.
+This ensures the underlying GStreamer buffer remains valid while you access it:
 
 ```swift
-// CORRECT: Process data within the closure
-try frame.withMappedBytes { span in
-    span.withUnsafeBytes { buffer in
-        processPixels(buffer)  // OK
-    }
+// Correct: process data inside the closure.
+try frame.withUnsafeBytes { buffer in
+    processPixels(buffer)
 }
 
-// The buffer is automatically unmapped here
+// The buffer is automatically unmapped here.
 ```
 
-If you need to keep the data, copy it within the closure:
+If you need to keep the data, copy it while the frame is mapped:
 
 ```swift
-let pixelData: [UInt8] = try frame.withMappedBytes { span in
-    span.withUnsafeBytes { buffer in
-        Array(buffer.bindMemory(to: UInt8.self))
-    }
+let pixelData: [UInt8] = frame.bytes.withUnsafeBytes { bytes in
+    Array(bytes)
 }
 
-// pixelData is a copy, safe to use after the closure
+// pixelData is a copy, safe to use after this expression.
 ```
 
 ## Handling Different Formats
@@ -196,9 +205,10 @@ for await frame in sink.frames() {
 ## Performance Tips
 
 1. **Use the right format**: Request BGRA for Apple frameworks, NV12 for video codecs
-2. **Avoid copies**: Process data directly in `withMappedBytes` when possible
-3. **Batch processing**: Process multiple pixels per loop iteration
-4. **Use SIMD**: Leverage Swift's SIMD types for parallel pixel operations
+2. **Avoid copies for read-only work**: Process data directly with `bytes` or `withUnsafeBytes`
+3. **Copy before mutation**: Use ``Buffer`` or another mutable destination when writing pixels
+4. **Batch processing**: Process multiple pixels per loop iteration
+5. **Use SIMD**: Leverage Swift's SIMD types for parallel pixel operations
 
 ```swift
 // Request specific format in pipeline

@@ -159,11 +159,20 @@ void swift_gst_app_src_set_latency(GstAppSrc* appsrc, guint64 min, guint64 max) 
 }
 
 GstBuffer* swift_gst_buffer_new_wrapped_full(gconstpointer data, gsize size, GstClockTime pts, GstClockTime duration) {
-    GstBuffer* buffer = gst_buffer_new_allocate(NULL, size, NULL);
-    if (buffer) {
-        gst_buffer_fill(buffer, 0, data, size);
-        GST_BUFFER_PTS(buffer) = pts;
-        GST_BUFFER_DURATION(buffer) = duration;
+    if (data == NULL && size > 0) {
+        return NULL;
     }
+
+    GstBuffer* buffer = gst_buffer_new_allocate(NULL, size, NULL);
+    if (buffer == NULL) {
+        return NULL;
+    }
+
+    if (size > 0) {
+        gst_buffer_fill(buffer, 0, data, size);
+    }
+
+    GST_BUFFER_PTS(buffer) = pts;
+    GST_BUFFER_DURATION(buffer) = duration;
     return buffer;
 }

@@ -38,6 +38,10 @@ for await buffer in mic.buffers() {
 
 ## Capture Encoded Audio
 
+Encoded packet streams are realtime best-effort streams. They keep a bounded
+queue of recent packets and may drop older packets under slow-consumer
+backpressure.
+
 ```swift
 let mic = try AudioSource.microphone()
     .withSampleRate(48_000)

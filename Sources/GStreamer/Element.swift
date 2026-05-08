@@ -327,6 +327,8 @@ public final class Element: @unchecked Sendable {
     /// Request a pad from the element.
     ///
     /// Request pads are created on demand (e.g., "src_%u" on tee).
+    /// The returned ``Pad`` keeps this element alive until the pad is released
+    /// with ``releasePad(_:)`` or until the pad deinitializes and auto-releases.
     ///
     /// - Parameter name: The pad template name.
     /// - Returns: The requested pad, or `nil` if failed.
@@ -349,9 +351,17 @@ public final class Element: @unchecked Sendable {
 
     /// Release a previously requested pad.
     ///
+    /// Request-pad release is synchronized by the pad, so repeated or
+    /// concurrent calls release the underlying GStreamer request pad at most
+    /// once. Static pads and already released request pads are ignored.
+    ///
     /// - Parameter pad: The pad to release.
     public func releasePad(_ pad: Pad) {
-        swift_gst_element_release_request_pad(element, pad.pad)
+        pad.releaseRequestPadIfNeeded(requestedBy: self)
+    }
+
+    internal var debugPadCount: Int {
+        Int(swift_gst_element_pad_count(element))
     }
 
     /// Link this element to another element.
@@ -566,8 +576,8 @@ public final class Element: @unchecked Sendable {
                 description = ""
             }
             let flags = pspec.pointee.flags
-            let isReadable = (flags.rawValue & G_PARAM_READABLE.rawValue) != 0
-            let isWritable = (flags.rawValue & G_PARAM_WRITABLE.rawValue) != 0
+            let isReadable = (flags.rawValue & swift_g_param_readable().rawValue) != 0
+            let isWritable = (flags.rawValue & swift_g_param_writable().rawValue) != 0
 
             // Get default value
             var defaultValue: String? = nil
