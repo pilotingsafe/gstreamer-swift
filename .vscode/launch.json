@@ -1,0 +1,224 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-visualizer",
+            "target": "gst-visualizer",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-visualizer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-visualizer",
+            "target": "gst-visualizer",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-visualizer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-vision",
+            "target": "gst-vision",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-vision"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-vision",
+            "target": "gst-vision",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-vision"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-video-source",
+            "target": "gst-video-source",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-video-source"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-video-source",
+            "target": "gst-video-source",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-video-source"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-tee",
+            "target": "gst-tee",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-tee"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-tee",
+            "target": "gst-tee",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-tee"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-play",
+            "target": "gst-play",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-play"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-play",
+            "target": "gst-play",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-play"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-devices",
+            "target": "gst-devices",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-devices"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-devices",
+            "target": "gst-devices",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-devices"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-audio-source",
+            "target": "gst-audio-source",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-audio-source"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-audio-source",
+            "target": "gst-audio-source",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-audio-source"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-audio-sink",
+            "target": "gst-audio-sink",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-audio-sink"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-audio-sink",
+            "target": "gst-audio-sink",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-audio-sink"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-audio",
+            "target": "gst-audio",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-audio"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-audio",
+            "target": "gst-audio",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-audio"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-appsrc",
+            "target": "gst-appsrc",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-appsrc"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-appsrc",
+            "target": "gst-appsrc",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-appsrc"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-appsink",
+            "target": "gst-appsink",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-appsink"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-appsink",
+            "target": "gst-appsink",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-appsink"
+        }
+    ]
+}
