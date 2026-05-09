@@ -21,6 +21,10 @@
 /// - ``elementNotFound(_:)``
 /// - ``stateChangeFailed(element:from:to:)``
 ///
+/// ### Validation Errors
+///
+/// - ``invalidArgument(parameter:reason:)``
+///
 /// ### Bus and Buffer Errors
 ///
 /// - ``busError(_:source:debug:)``
@@ -174,10 +178,26 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
     /// ```
     case busError(_ message: String, source: String?, debug: String?)
 
-    /// Failed to map buffer for reading.
+    /// A caller-supplied argument failed library-side validation.
     ///
-    /// The buffer's memory couldn't be mapped into the process address space.
-    /// This is rare and typically indicates a memory or driver issue.
+    /// This case is for caller-side validation only. It does not describe
+    /// genuine GStreamer buffer mapping, allocation, or wrapping failures.
+    ///
+    /// The `reason` is diagnostic and non-contractual. Callers that need
+    /// structured handling should branch on this enum case and `parameter`
+    /// rather than parsing `reason`.
+    ///
+    /// - Parameters:
+    ///   - parameter: The argument name that failed validation.
+    ///   - reason: A human-readable diagnostic.
+    case invalidArgument(parameter: String, reason: String)
+
+    /// A low-level buffer operation failed.
+    ///
+    /// This covers real GStreamer buffer map, read, or write failures;
+    /// GStreamer buffer allocation or wrapping failures; and rare Swift
+    /// unsafe-buffer ABI corners where a non-empty unsafe buffer has a nil
+    /// `baseAddress`.
     ///
     /// ## Example
     ///
@@ -268,6 +288,8 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
                 result += "\n  Debug: \(debug)"
             }
             return result
+        case .invalidArgument(let parameter, let reason):
+            return "Invalid argument '\(parameter)': \(reason)"
         case .bufferMapFailed:
             return "Failed to map buffer"
         case .capsParseFailed(let caps):

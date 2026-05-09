@@ -25,6 +25,13 @@ struct AppSourceTests {
         }
     }
 
+    @Test("invalidArgument description includes parameter and reason")
+    func invalidArgumentDescription() {
+        let error = GStreamerError.invalidArgument(parameter: "count", reason: "bad")
+
+        #expect(error.description == "Invalid argument 'count': bad")
+    }
+
     @Test("Push data through AppSource")
     func pushData() async throws {
         // Create a pipeline: appsrc -> fakesink
@@ -123,25 +130,38 @@ struct AppSourceTests {
         #expect(frame.bytes.byteCount == 16)  // 2x2x4 bytes
     }
 
-    @Test("pushVideoFrame validates size")
-    func pushVideoFrameValidation() async throws {
-        let pipeline = try Pipeline("appsrc name=src ! fakesink")
-        let src = try AppSource(pipeline: pipeline, name: "src")
-
-        src.setCaps("video/x-raw,format=BGRA,width=4,height=4,framerate=30/1")
-        try pipeline.play()
-        defer { pipeline.stop() }
-
+    @Test("pushVideoFrame overloads reject too-small data")
+    func pushVideoFrameOverloadsRejectTooSmallData() throws {
         // Create data that's too small for 4x4 BGRA (should be 64 bytes)
         let tooSmall = [UInt8](repeating: 0, count: 32)
 
-        expectBufferMapFailed {
-            try src.pushVideoFrame(
-                data: tooSmall,
-                width: 4,
-                height: 4,
-                format: .bgra
-            )
+        try withValidationAppSource { src in
+            expectInvalidArgument(parameter: "data", "array overload should reject too-small data") {
+                try src.pushVideoFrame(
+                    data: tooSmall,
+                    width: 4,
+                    height: 4,
+                    format: .bgra
+                )
+            }
+
+            expectInvalidArgument(parameter: "data", "Span overload should reject too-small data") {
+                try src.pushVideoFrame(
+                    data: tooSmall.span,
+                    width: 4,
+                    height: 4,
+                    format: .bgra
+                )
+            }
+
+            expectInvalidArgument(parameter: "data", "RawSpan overload should reject too-small data") {
+                try src.pushVideoFrame(
+                    data: tooSmall.span.bytes,
+                    width: 4,
+                    height: 4,
+                    format: .bgra
+                )
+            }
         }
     }
 
@@ -242,7 +262,7 @@ struct AppSourceTests {
         let src = try AppSource(pipeline: pipeline, name: "src")
         var dummy: UInt8 = 0
 
-        expectBufferMapFailed {
+        expectInvalidArgument(parameter: "count") {
             try withUnsafePointer(to: &dummy) { pointer in
                 try src.push(bytes: UnsafeRawPointer(pointer), count: -1)
             }
@@ -252,12 +272,31 @@ struct AppSourceTests {
     @Test("pushVideoFrame overloads reject invalid dimensions and formats")
     func pushVideoFrameOverloadsRejectInvalidDimensionsAndFormats() throws {
         let invalidCases: [InvalidVideoFrameCase] = [
-            .init(name: "zero width", width: 0, height: 1, format: .bgra),
-            .init(name: "zero height", width: 1, height: 0, format: .bgra),
-            .init(name: "negative width", width: -1, height: 1, format: .bgra),
-            .init(name: "negative height", width: 1, height: -1, format: .bgra),
-            .init(name: "unknown zero-BPP format", width: 1, height: 1, format: .unknown("CUSTOM")),
-            .init(name: "overflow-sized dimensions", width: Int.max / 2 + 1, height: 2, format: .bgra)
+            .init(name: "zero width", width: 0, height: 1, format: .bgra, expectedParameter: "width"),
+            .init(name: "zero height", width: 1, height: 0, format: .bgra, expectedParameter: "height"),
+            .init(name: "negative width", width: -1, height: 1, format: .bgra, expectedParameter: "width"),
+            .init(name: "negative height", width: 1, height: -1, format: .bgra, expectedParameter: "height"),
+            .init(
+                name: "unknown zero-BPP format",
+                width: 1,
+                height: 1,
+                format: .unknown("CUSTOM"),
+                expectedParameter: "format"
+            ),
+            .init(
+                name: "overflow-sized dimensions",
+                width: Int.max / 2 + 1,
+                height: 2,
+                format: .bgra,
+                expectedParameter: "dimensions"
+            ),
+            .init(
+                name: "pixel byte count overflow",
+                width: Int.max / 4 + 1,
+                height: 1,
+                format: .bgra,
+                expectedParameter: "dimensions"
+            )
         ]
 
         for invalidCase in invalidCases {
@@ -294,7 +333,10 @@ struct AppSourceTests {
     private func expectArrayVideoFrameRejects(_ invalidCase: InvalidVideoFrameCase) throws {
         let data = [UInt8](repeating: 0, count: 4)
         try withValidationAppSource { src in
-            expectBufferMapFailed("array overload should reject \(invalidCase.name)") {
+            expectInvalidArgument(
+                parameter: invalidCase.expectedParameter,
+                "array overload should reject \(invalidCase.name)"
+            ) {
                 try src.pushVideoFrame(
                     data: data,
                     width: invalidCase.width,
@@ -308,7 +350,10 @@ struct AppSourceTests {
     private func expectSpanVideoFrameRejects(_ invalidCase: InvalidVideoFrameCase) throws {
         let data = [UInt8](repeating: 0, count: 4)
         try withValidationAppSource { src in
-            expectBufferMapFailed("Span overload should reject \(invalidCase.name)") {
+            expectInvalidArgument(
+                parameter: invalidCase.expectedParameter,
+                "Span overload should reject \(invalidCase.name)"
+            ) {
                 try src.pushVideoFrame(
                     data: data.span,
                     width: invalidCase.width,
@@ -322,7 +367,10 @@ struct AppSourceTests {
     private func expectRawSpanVideoFrameRejects(_ invalidCase: InvalidVideoFrameCase) throws {
         let data = [UInt8](repeating: 0, count: 4)
         try withValidationAppSource { src in
-            expectBufferMapFailed("RawSpan overload should reject \(invalidCase.name)") {
+            expectInvalidArgument(
+                parameter: invalidCase.expectedParameter,
+                "RawSpan overload should reject \(invalidCase.name)"
+            ) {
                 try src.pushVideoFrame(
                     data: data.span.bytes,
                     width: invalidCase.width,
@@ -361,11 +409,19 @@ struct AppSourceTests {
         Issue.record("Pipeline bus stream ended before EOS")
     }
 
-    private func expectBufferMapFailed(_ context: String = "Expected GStreamerError.bufferMapFailed", _ body: () throws -> Void) {
+    private func expectInvalidArgument(
+        parameter expectedParameter: String,
+        _ context: String = "Expected GStreamerError.invalidArgument",
+        _ body: () throws -> Void
+    ) {
         do {
             try body()
             Issue.record("\(context)")
-        } catch GStreamerError.bufferMapFailed {
+        } catch GStreamerError.invalidArgument(parameter: let actualParameter, reason: _) {
+            #expect(
+                actualParameter == expectedParameter,
+                "\(context), got parameter '\(actualParameter)'"
+            )
         } catch {
             Issue.record("\(context), got \(error)")
         }
@@ -377,6 +433,7 @@ private struct InvalidVideoFrameCase: Sendable {
     let width: Int
     let height: Int
     let format: PixelFormat
+    let expectedParameter: String
 }
 
 private final class AppSourceProbeCounter: @unchecked Sendable {

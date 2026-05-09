@@ -1,10 +1,12 @@
 /// Queue leaky behavior when full.
 public enum QueueLeaky: Int, Sendable {
-    /// Not leaky - block when full
+    /// Not leaky; block the upstream producer when full. Equivalent to GStreamer `leaky=0`.
     case none = 0
-    /// Drop oldest buffers when full
+    /// Leaky on the upstream side; drop newest/incoming buffers when full; keep oldest queued.
+    /// Equivalent to GStreamer `leaky=1`.
     case upstream = 1
-    /// Drop newest buffers when full
+    /// Leaky on the downstream side; drop oldest/queued buffers when full; keep newest.
+    /// Equivalent to GStreamer `leaky=2`.
     case downstream = 2
 }
 
@@ -85,10 +87,11 @@ public struct Queue: TypedConvertible, VideoPipelineConvert {
         self.leaky = leaky
     }
 
-    /// Create a leaky queue that drops old buffers when full.
+    /// Create a leaky queue that drops oldest queued buffers when full so the consumer sees
+    /// the most recent live data.
     ///
-    /// Useful for live sources where you want to keep the most recent data.
+    /// Useful where latency is preserved over completeness. Equivalent to GStreamer `leaky=2`.
     public static func leaky(maxBuffers: UInt = 1) -> Queue {
-        Queue(maxBuffers: maxBuffers, leaky: .upstream)
+        Queue(maxBuffers: maxBuffers, leaky: .downstream)
     }
 }

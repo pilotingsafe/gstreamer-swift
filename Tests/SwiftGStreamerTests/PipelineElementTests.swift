@@ -128,7 +128,7 @@ struct PipelineElementTests {
     func queueLeaky() {
         let queue = Queue.leaky(maxBuffers: 1)
         #expect(queue.pipeline.contains("max-size-buffers=1"))
-        #expect(queue.pipeline.contains("leaky=1"))
+        #expect(queue.pipeline.contains("leaky=2"))
     }
 
     // MARK: - Deinterlace Tests

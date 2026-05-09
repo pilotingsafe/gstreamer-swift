@@ -414,7 +414,7 @@ struct ResultBuilderTests {
 
         let pipeline = build()
         #expect(pipeline.pipeline.contains("max-size-buffers=1"))
-        #expect(pipeline.pipeline.contains("leaky=1"))
+        #expect(pipeline.pipeline.contains("leaky=2"))
     }
 
     @Test("Identity.debug static property")
