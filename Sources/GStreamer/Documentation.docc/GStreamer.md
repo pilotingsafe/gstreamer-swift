@@ -32,15 +32,9 @@ for await frame in sink.frames() {
 
 ## Featured
 
-@Links(visualStyle: detailedGrid) {
-    - <doc:GettingStarted>
-    - <doc:TypedPipelines>
-    - <doc:WorkingWithVideoFrames>
-    - <doc:VideoSource>
-    - <doc:AudioCapture>
-    - <doc:AudioDevices>
-    - <doc:PlatformGuide>
-}
+Start with <doc:GettingStarted>, then explore typed pipelines, frame access,
+video capture, audio capture, audio devices, and platform-specific pipelines
+from the topic groups below.
 
 ## Topics
 
@@ -54,7 +48,7 @@ for await frame in sink.frames() {
 
 - <doc:TypedPipelines>
 - <doc:WorkingWithVideoFrames>
-- <doc:VideoSource>
+- <doc:VideoSourceGuide>
 - ``VideoSource``
 - ``AppSink``
 - ``VideoFrame``

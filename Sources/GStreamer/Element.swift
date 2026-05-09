@@ -25,9 +25,10 @@ import CGStreamerShim
 ///
 /// ### Setting Properties
 ///
-/// - ``set(_:_:)-7r6xd``
-/// - ``set(_:_:)-6y4xr``
-/// - ``set(_:_:)-9mvg4``
+/// - ``set(_:_:)-(_,Bool)``
+/// - ``set(_:_:)-(_,Double)``
+/// - ``set(_:_:)-(_,Int)``
+/// - ``set(_:_:)-(_,String)``
 ///
 /// ### Pads and Linking
 ///
@@ -85,9 +86,9 @@ import CGStreamerShim
 /// GStreamer's element property system is generally thread-safe for reads and writes,
 /// but concurrent modifications to the same property may have undefined behavior.
 ///
-/// - Note: For thread-safe property access in highly concurrent code, consider using
-///   external synchronization or performing all property modifications from a single
-///   isolation domain.
+/// > Note: For thread-safe property access in highly concurrent code, consider
+/// > using external synchronization or performing all property modifications from
+/// > a single isolation domain.
 public final class Element: @unchecked Sendable {
     /// The underlying GstElement pointer.
     internal let element: UnsafeMutablePointer<GstElement>

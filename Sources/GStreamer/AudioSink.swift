@@ -5,7 +5,7 @@ import CGStreamerShim
 /// High-level audio playback API with device selection.
 ///
 /// AudioSink provides a builder for common speaker/headphone playback
-/// pipelines. Audio is pushed via ``play(_:)`` using raw PCM buffers.
+/// pipelines. Audio is pushed through the `play` overloads.
 public final class AudioSink: @unchecked Sendable {
   /// Errors that can occur when building an audio output.
   public enum AudioSinkError: Error, Sendable, CustomStringConvertible {

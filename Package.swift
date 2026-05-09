@@ -18,6 +18,9 @@ let package = Package(
             targets: ["GStreamer"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0"),
+    ],
     targets: [
         // MARK: - System Libraries
 

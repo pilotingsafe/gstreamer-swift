@@ -82,9 +82,8 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
     ///
     /// ## Common Causes
     ///
-    /// - Unknown element name
-    /// - Invalid property syntax
-    /// - Missing required plugins
+    /// Common causes include unknown element names, invalid property syntax, and
+    /// missing required plugins.
     ///
     /// ```swift
     /// // Unknown element
@@ -132,10 +131,8 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
     ///
     /// ## Common Causes
     ///
-    /// - Device not available (webcam in use)
-    /// - File not found
-    /// - Network unreachable
-    /// - Invalid caps negotiation
+    /// Common causes include unavailable devices, missing files, network
+    /// failures, and invalid caps negotiation.
     ///
     /// ## Example
     ///

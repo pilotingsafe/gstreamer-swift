@@ -11,10 +11,8 @@ import CGStreamerShim
 /// ## Overview
 ///
 /// Use AppSource to push video frames, audio samples, or raw data into a pipeline.
-/// Common use cases include:
-/// - Streaming processed frames to a network
-/// - Encoding frames to video files
-/// - Feeding ML-generated content into a pipeline
+/// Common use cases include streaming processed frames to a network, encoding
+/// frames to video files, and feeding ML-generated content into a pipeline.
 ///
 /// ## Topics
 ///
@@ -31,8 +29,12 @@ import CGStreamerShim
 ///
 /// ### Pushing Data
 ///
-/// - ``push(data:pts:duration:)``
-/// - ``pushVideoFrame(data:width:height:format:pts:duration:)``
+/// - ``push(data:pts:duration:)-([UInt8],_,_)``
+/// - ``push(data:pts:duration:)-(Span<UInt8>,_,_)``
+/// - ``push(data:pts:duration:)-(RawSpan,_,_)``
+/// - ``pushVideoFrame(data:width:height:format:pts:duration:)-([UInt8],_,_,_,_,_)``
+/// - ``pushVideoFrame(data:width:height:format:pts:duration:)-(Span<UInt8>,_,_,_,_,_)``
+/// - ``pushVideoFrame(data:width:height:format:pts:duration:)-(RawSpan,_,_,_,_,_)``
 /// - ``endOfStream()``
 ///
 /// ## Example
@@ -168,8 +170,8 @@ public final class AppSource: @unchecked Sendable {
 
     /// Set the maximum bytes to queue internally.
     ///
-    /// When the internal queue reaches this size, ``push(data:pts:duration:)``
-    /// will block until space is available.
+    /// When the internal queue reaches this size, push calls will block until
+    /// space is available.
     ///
     /// - Parameter maxBytes: Maximum bytes to buffer (0 = unlimited).
     public func setMaxBytes(_ maxBytes: UInt64) {

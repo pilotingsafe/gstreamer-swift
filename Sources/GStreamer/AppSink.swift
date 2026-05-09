@@ -76,8 +76,8 @@ import Synchronization
 /// The cached video info uses a `Mutex` for thread-safe access. The `frames()` method
 /// returns an `AsyncSequence` that can be safely iterated from any isolation domain.
 ///
-/// - Note: Each frame pulled from the sink is independent and owns its buffer data,
-///   making them safe to process concurrently.
+/// > Note: Each frame pulled from the sink is independent and owns its buffer
+/// > data, making them safe to process concurrently.
 public final class AppSink: @unchecked Sendable {
     /// The underlying element.
     private let element: Element

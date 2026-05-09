@@ -1,4 +1,4 @@
-# VideoSource
+# Video Source Guide
 
 Capture video from webcams with a high-level, cross-platform API.
 
