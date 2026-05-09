@@ -11,6 +11,8 @@ GStreamer supports multiple audio backends on Linux, allowing you to capture aud
 - **PulseAudio** - Traditional Linux audio server
 
 All three work identically with the ``AudioBufferSink`` and ``AudioBuffer`` APIs.
+For finite file/decode workloads where every packet must be delivered, use
+``AudioFileSource/reliablePackets()`` as described in <doc:EncodedPacketDelivery>.
 
 ## Capturing Audio
 

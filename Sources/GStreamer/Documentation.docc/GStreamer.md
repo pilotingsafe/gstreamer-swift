@@ -57,8 +57,11 @@ from the topic groups below.
 ### Audio Processing
 
 - <doc:AudioCapture>
+- <doc:EncodedPacketDelivery>
 - <doc:AudioDevices>
 - ``AudioSource``
+- ``AudioFileSource``
+- ``ReliablePackets``
 - ``AudioSink``
 - ``AudioBufferSink``
 - ``AudioBuffer``

@@ -177,6 +177,36 @@ for await packet in mic.packets() {
 Encoded packet streams are realtime best-effort streams; older packets may be
 dropped under slow-consumer backpressure.
 
+### Reliable File Audio Packets
+
+Use `AudioSource.file(path:)` for finite file/decode workloads where every
+packet must be delivered in order. The resulting `AudioFileSource` is
+repeatable; each `reliablePackets()` call creates a fresh single-consumer
+sequence.
+
+```swift
+import GStreamer
+
+let source = try AudioSource.file(path: "/tmp/input.wav")
+    .withEncoding(.raw)
+    .build()
+
+do {
+    for try await packet in source.reliablePackets() {
+        print("packet \(packet.size) bytes")
+    }
+    print("Reached EOS")
+} catch is CancellationError {
+    print("Cancelled")
+} catch {
+    print("Pipeline failed: \(error)")
+}
+```
+
+Reliable delivery is for local file/decode sources that can be backpressured.
+Live microphone capture still uses `packets()` and may drop under slow
+consumers. See the DocC article `EncodedPacketDelivery` for the full boundary.
+
 ### High-Level Audio Playback
 
 ```swift

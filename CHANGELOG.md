@@ -2,6 +2,15 @@
 
 ## Next
 
+### Features
+
+- Added reliable archival audio packet delivery for local file/decode sources.
+  Use `AudioSource.file(path:)` to build an `AudioFileSource`, then iterate
+  `source.reliablePackets()` for a throwing, single-consumer, no-drop packet
+  sequence. Existing realtime `AudioSource.packets()` behavior is unchanged and
+  remains best-effort for live capture. See
+  [RFC-001](docs/RFCs/RFC-001-realtime-vs-archival-packet-delivery.md).
+
 ### Bugfixes
 
 - Fixed `Queue.leaky(maxBuffers:)` to set `leaky=2` (`.downstream`) instead of the previous `leaky=1` (`.upstream`), which actually drops newest buffers despite the helper docs. The helper now drops oldest buffers, matching the docs and live-source intent. Callers that relied on drop-newest behavior should use `Queue(maxBuffers:, leaky: .upstream)` explicitly. The matching mapping in [RFC-002](docs/RFCs/RFC-002-live-source-reliable-delivery.md) was corrected, and `QueueLeaky` case names and raw values are unchanged.

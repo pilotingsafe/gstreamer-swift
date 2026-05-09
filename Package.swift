@@ -102,6 +102,12 @@ let package = Package(
         ),
 
         .executableTarget(
+            name: "gst-reliable-audio",
+            dependencies: ["GStreamer"],
+            path: "Examples/gst-reliable-audio"
+        ),
+
+        .executableTarget(
             name: "gst-audio-sink",
             dependencies: ["GStreamer"],
             path: "Examples/gst-audio-sink"
@@ -145,10 +151,23 @@ let package = Package(
 
         // MARK: - Tests
 
+        .target(
+            name: "CGStreamerTestSupport",
+            dependencies: ["CGStreamer", "CGStreamerApp", "CGStreamerShim"],
+            path: "Tests/CGStreamerTestSupport",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("include"),
+            ]
+        ),
+
         .testTarget(
             name: "GStreamerTests",
-            dependencies: ["GStreamer"],
+            dependencies: ["GStreamer", "CGStreamerTestSupport"],
             path: "Tests/SwiftGStreamerTests",
+            resources: [
+                .process("Resources"),
+            ],
             swiftSettings: [
                 .enableUpcomingFeature("InternalImportsByDefault"),
             ]

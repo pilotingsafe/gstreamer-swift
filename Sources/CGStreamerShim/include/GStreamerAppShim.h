@@ -9,6 +9,12 @@
 extern "C" {
 #endif
 
+typedef struct SwiftGstCallbackRegistration SwiftGstCallbackRegistration;
+typedef void (*SwiftGstContextRetainFunc)(void* context);
+typedef void (*SwiftGstContextReleaseFunc)(void* context);
+typedef void (*SwiftGstAppSinkEventCallback)(void* context);
+typedef void (*SwiftGstBusSyncMessageCallback)(GstMessage* message, void* context);
+
 // MARK: - AppSink
 
 /// Pull a sample from appsink (blocking)
@@ -34,6 +40,36 @@ void swift_gst_app_sink_set_max_buffers(GstAppSink* appsink, guint max);
 
 /// Set appsink drop property
 void swift_gst_app_sink_set_drop(GstAppSink* appsink, gboolean drop);
+
+/// Connect an appsink new-sample callback. The registration retains context.
+SwiftGstCallbackRegistration* swift_gst_app_sink_connect_new_sample(
+    GstAppSink* appsink,
+    SwiftGstAppSinkEventCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+);
+
+/// Connect an appsink eos callback. The registration retains context.
+SwiftGstCallbackRegistration* swift_gst_app_sink_connect_eos(
+    GstAppSink* appsink,
+    SwiftGstAppSinkEventCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+);
+
+/// Observe bus sync-message emissions without stealing messages from the bus.
+SwiftGstCallbackRegistration* swift_gst_bus_connect_sync_message_observer(
+    GstBus* bus,
+    SwiftGstBusSyncMessageCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+);
+
+/// Disconnect a callback registration and release its registration context retain.
+void swift_gst_callback_registration_disconnect(SwiftGstCallbackRegistration* registration);
 
 // MARK: - AppSrc
 
