@@ -314,6 +314,14 @@ public final class AppSource: @unchecked Sendable {
         try pushPayload(bytes: count == 0 ? nil : bytes, count: count, pts: pts, duration: duration)
     }
 
+    internal func push(buffer: Buffer) throws {
+        _ = swift_gst_buffer_ref(buffer.buffer)
+        let result = swift_gst_app_src_push_buffer(appSrc, buffer.buffer)
+        if result.rawValue < 0 {
+            throw GStreamerError.pushFailed
+        }
+    }
+
     private func pushPayload(bytes: UnsafeRawPointer?, count: Int, pts: UInt64?, duration: UInt64?) throws {
         guard count >= 0 else {
             throw GStreamerError.invalidArgument(

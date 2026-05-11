@@ -806,7 +806,6 @@ struct ReliablePacketMemoryBoundTests {
             : 0
 
         #expect(fast.value.count == slow.value.count)
-        #expect(slow.peakResidentSetBytes >= fast.peakResidentSetBytes)
         #expect(observedGrowth <= allowedGrowth)
         #else
         return

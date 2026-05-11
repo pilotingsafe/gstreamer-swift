@@ -102,6 +102,24 @@ void swift_gst_sample_unref(void* sample);
 /// Get buffer size
 gsize swift_gst_buffer_get_size(GstBuffer* buffer);
 
+/// Get buffer flags
+GstBufferFlags swift_gst_buffer_get_flags(GstBuffer* buffer);
+
+/// Replace buffer flags
+void swift_gst_buffer_set_flags(GstBuffer* buffer, GstBufferFlags flags);
+
+/// Check whether the GAP flag is set
+gboolean swift_gst_buffer_has_gap_flag(GstBuffer* buffer);
+
+/// Check whether the DISCONT flag is set
+gboolean swift_gst_buffer_has_discont_flag(GstBuffer* buffer);
+
+/// Get GST_BUFFER_FLAG_GAP
+GstBufferFlags swift_gst_buffer_flag_gap(void);
+
+/// Get GST_BUFFER_FLAG_DISCONT
+GstBufferFlags swift_gst_buffer_flag_discont(void);
+
 /// Ref a buffer
 GstBuffer* swift_gst_buffer_ref(GstBuffer* buffer);
 

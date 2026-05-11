@@ -62,6 +62,8 @@ from the topic groups below.
 - ``AudioSource``
 - ``AudioFileSource``
 - ``ReliablePackets``
+- ``ReliablePacket``
+- ``Discontinuity``
 - ``AudioSink``
 - ``AudioBufferSink``
 - ``AudioBuffer``

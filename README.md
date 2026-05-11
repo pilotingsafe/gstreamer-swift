@@ -177,6 +177,42 @@ for await packet in mic.packets() {
 Encoded packet streams are realtime best-effort streams; older packets may be
 dropped under slow-consumer backpressure.
 
+### Reliable Live Audio Packets
+
+Use `withReliableDelivery(...)` when encoded live audio needs explicit queue
+policy, structured discontinuity metadata, and graceful EOS drain. This phase is
+encoded audio only; configure Opus or AAC before `build()`.
+
+```swift
+import GStreamer
+
+let mic = try AudioSource.microphone()
+    .withOpusEncoding(bitrate: 128_000)
+    .withReliableDelivery(leaky: .none, maxBuffers: 256, maxTime: .seconds(2))
+    .build()
+
+let packets = try mic.reliablePackets()
+
+let reader = Task {
+    for try await packet in packets {
+        if let discontinuity = packet.priorDiscontinuity {
+            print("boundary changed: \(discontinuity.kind)")
+        }
+        print("packet \(packet.payload.size) bytes")
+    }
+}
+
+try await Task.sleep(for: .seconds(10))
+try await mic.finalize(timeout: .seconds(5))
+try await reader.value
+```
+
+`QueueLeaky.none` avoids silent GStreamer queue drops while the consumer keeps
+up, but a slow consumer can block upstream and expose source xruns. Choose
+`.downstream` when lower latency is more important than completeness, or
+`.upstream` to keep older queued data and drop new arrivals. `stop()` remains an
+immediate shutdown; `finalize(timeout:)` is the reliable EOS-drain path.
+
 ### Reliable File Audio Packets
 
 Use `AudioSource.file(path:)` for finite file/decode workloads where every
@@ -203,9 +239,9 @@ do {
 }
 ```
 
-Reliable delivery is for local file/decode sources that can be backpressured.
-Live microphone capture still uses `packets()` and may drop under slow
-consumers. See the DocC article `EncodedPacketDelivery` for the full boundary.
+File reliable delivery is repeatable and backpressureable. Live reliable
+delivery is source-owned and single-sequence because it wraps one live appsink.
+See the DocC article `EncodedPacketDelivery` for the full boundary.
 
 ### High-Level Audio Playback
 

@@ -315,7 +315,7 @@ public final class Pipeline: @unchecked Sendable {
     guard let el = swift_gst_bin_get_by_name(_element, name) else {
       return nil
     }
-    return Element(element: el)
+    return Element(element: el, transfer: .full)
   }
 
   /// Get an appsink element from the pipeline.
@@ -621,6 +621,9 @@ public final class Pipeline: @unchecked Sendable {
   /// Add an element to the pipeline.
   ///
   /// The element must be created separately and will be added to this pipeline.
+  /// Adding associates the element with the pipeline/bin while the Swift wrapper
+  /// still keeps its own strong reference. The wrapper may be dropped after a
+  /// successful add.
   ///
   /// - Parameter element: The element to add.
   /// - Returns: `true` if successful.

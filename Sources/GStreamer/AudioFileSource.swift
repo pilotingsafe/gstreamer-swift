@@ -15,6 +15,69 @@ extension AudioSource {
   }
 }
 
+/// Immutable audio source backed by a local file.
+public struct AudioFileSource: Sendable {
+  private let configuration: AudioFileSourceConfiguration
+
+  fileprivate init(configuration: AudioFileSourceConfiguration) {
+    self.configuration = configuration
+  }
+
+  /// The output encoding configured for this source.
+  public var encoding: AudioSource.Encoding {
+    configuration.encoding
+  }
+
+  /// Return a fresh, single-consumer reliable packet sequence.
+  ///
+  /// Reliable delivery requires a source that can be backpressured. This file
+  /// source is finite and consumer-driven; live capture sources should continue
+  /// to use realtime APIs unless their upstream queue policy is explicit.
+  public func reliablePackets() -> ReliablePackets<Buffer> {
+    let source = AudioFileReliablePacketSource(configuration: configuration)
+    return ReliablePackets<Buffer>(
+      next: {
+        try await source.next()
+      },
+      cancel: {
+        source.cancel()
+      }
+    )
+  }
+
+  internal func reliableFirstSampleCapsForTesting() async throws -> String {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(5))
+    while clock.now < deadline {
+      if let caps = configuration.probeState.firstSampleCaps() {
+        return caps
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    throw GStreamerError.busError(
+      "First reliable packet caps were not observed",
+      source: "ReliablePackets",
+      debug: nil
+    )
+  }
+
+  internal func reliablePacketRuntimeSnapshotForTesting() async
+    -> ReliablePacketRuntimeSnapshotForTesting
+  {
+    configuration.probeState.snapshot()
+  }
+
+  internal func reliablePacketPipelineForTesting() async -> Pipeline? {
+    configuration.probeState.pipeline()
+  }
+
+  internal func lossyPacketsForTesting() -> AsyncStream<Buffer> {
+    let source = AudioFileLossyPacketSource(configuration: configuration)
+    return source.packets()
+  }
+}
+
 /// Builder for an audio file source that can produce reliable packets.
 public struct AudioFileSourceBuilder: Sendable {
   private let path: String
@@ -210,69 +273,6 @@ public struct AudioFileSourceBuilder: Sendable {
   }
 }
 
-/// Immutable audio source backed by a local file.
-public struct AudioFileSource: Sendable {
-  private let configuration: AudioFileSourceConfiguration
-
-  fileprivate init(configuration: AudioFileSourceConfiguration) {
-    self.configuration = configuration
-  }
-
-  /// The output encoding configured for this source.
-  public var encoding: AudioSource.Encoding {
-    configuration.encoding
-  }
-
-  /// Return a fresh, single-consumer reliable packet sequence.
-  ///
-  /// Reliable delivery requires a source that can be backpressured. This file
-  /// source is finite and consumer-driven; live capture sources should continue
-  /// to use realtime APIs unless their upstream queue policy is explicit.
-  public func reliablePackets() -> ReliablePackets<Buffer> {
-    let source = AudioFileReliablePacketSource(configuration: configuration)
-    return ReliablePackets<Buffer>(
-      next: {
-        try await source.next()
-      },
-      cancel: {
-        source.cancel()
-      }
-    )
-  }
-
-  internal func reliableFirstSampleCapsForTesting() async throws -> String {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(5))
-    while clock.now < deadline {
-      if let caps = configuration.probeState.firstSampleCaps() {
-        return caps
-      }
-      try await Task.sleep(for: .milliseconds(10))
-    }
-
-    throw GStreamerError.busError(
-      "First reliable packet caps were not observed",
-      source: "ReliablePackets",
-      debug: nil
-    )
-  }
-
-  internal func reliablePacketRuntimeSnapshotForTesting() async
-    -> ReliablePacketRuntimeSnapshotForTesting
-  {
-    configuration.probeState.snapshot()
-  }
-
-  internal func reliablePacketPipelineForTesting() async -> Pipeline? {
-    configuration.probeState.pipeline()
-  }
-
-  internal func lossyPacketsForTesting() -> AsyncStream<Buffer> {
-    let source = AudioFileLossyPacketSource(configuration: configuration)
-    return source.packets()
-  }
-}
-
 private struct AudioFileSourceConfiguration: Sendable {
   let path: String
   let uri: String
@@ -293,6 +293,28 @@ internal struct ReliablePacketRuntimeSnapshotForTesting: Sendable {
   let newSampleHandlerCount: Int
   let pendingContinuationCount: Int
   let cleanupAcknowledgementCount: Int
+  let finalized: Bool
+  let stopped: Bool
+  let activePipeline: Pipeline?
+  let activeSequence: Bool
+
+  init(
+    newSampleHandlerCount: Int,
+    pendingContinuationCount: Int,
+    cleanupAcknowledgementCount: Int,
+    finalized: Bool = false,
+    stopped: Bool = false,
+    activePipeline: Pipeline? = nil,
+    activeSequence: Bool = false
+  ) {
+    self.newSampleHandlerCount = newSampleHandlerCount
+    self.pendingContinuationCount = pendingContinuationCount
+    self.cleanupAcknowledgementCount = cleanupAcknowledgementCount
+    self.finalized = finalized
+    self.stopped = stopped
+    self.activePipeline = activePipeline
+    self.activeSequence = activeSequence
+  }
 }
 
 private final class AudioFileReliablePacketProbeState: @unchecked Sendable {

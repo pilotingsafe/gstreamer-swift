@@ -122,6 +122,16 @@ gboolean swift_gst_test_element_factory_exists(const gchar* factory_name) {
     return TRUE;
 }
 
+GLogLevelFlags swift_gst_test_enable_fatal_criticals(void) {
+    GLogLevelFlags previous = g_log_set_always_fatal(G_LOG_FATAL_MASK);
+    g_log_set_always_fatal(previous | G_LOG_LEVEL_CRITICAL);
+    return previous;
+}
+
+void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous) {
+    g_log_set_always_fatal(previous);
+}
+
 SwiftGstTestProbe* swift_gst_test_install_bus_error_after_buffers(
     GstElement* pipeline,
     const gchar* element_name,

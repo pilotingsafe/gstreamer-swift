@@ -163,6 +163,13 @@ void swift_gst_message_unref(GstMessage* message) {
     gst_message_unref(message);
 }
 
+GstObject* swift_gst_object_ref_sink(GstObject* object) {
+    if (object == NULL) {
+        return NULL;
+    }
+    return gst_object_ref_sink(object);
+}
+
 void swift_gst_object_unref(gpointer object) {
     gst_object_unref(object);
 }
@@ -189,6 +196,14 @@ GstCaps* swift_gst_caps_from_string(const gchar* string) {
 
 gchar* swift_gst_caps_to_string(GstCaps* caps) {
     return gst_caps_to_string(caps);
+}
+
+GstCaps* swift_gst_caps_ref(GstCaps* caps) {
+    return gst_caps_ref(caps);
+}
+
+gboolean swift_gst_caps_is_equal(const GstCaps* first, const GstCaps* second) {
+    return gst_caps_is_equal(first, second);
 }
 
 void swift_gst_caps_unref(GstCaps* caps) {

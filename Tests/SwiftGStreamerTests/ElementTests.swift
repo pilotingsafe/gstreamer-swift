@@ -1,4 +1,6 @@
+import Foundation
 import Testing
+import CGStreamerTestSupport
 @testable import GStreamer
 
 // MARK: - Test Tags
@@ -6,17 +8,48 @@ import Testing
 extension Tag {
     /// Tests related to element factories.
     @Tag static var factory: Self
+    /// Tests related to GStreamer element ownership.
+    @Tag static var ownership: Self
     /// Tests related to element properties.
     @Tag static var properties: Self
     /// Tests related to pads and linking.
     @Tag static var pads: Self
 }
 
-@Suite("Element Tests")
+private final class FatalCriticalTrapLock: @unchecked Sendable {
+    private let rawLock = NSLock()
+
+    func lock() {
+        rawLock.lock()
+    }
+
+    func unlock() {
+        rawLock.unlock()
+    }
+}
+
+@Suite("Element Tests", .serialized)
 struct ElementTests {
+    private static let fatalCriticalLock = FatalCriticalTrapLock()
 
     init() throws {
         try GStreamer.initialize()
+    }
+
+    @discardableResult
+    private static func withFatalGStreamerCriticalTrap<T>(_ body: () throws -> T) rethrows -> T {
+        fatalCriticalLock.lock()
+        let previous = swift_gst_test_enable_fatal_criticals()
+        defer {
+            swift_gst_test_restore_fatal_mask(previous)
+            fatalCriticalLock.unlock()
+        }
+
+        return try body()
+    }
+
+    private static func makeOwnershipPipeline() throws -> Pipeline {
+        try Pipeline("fakesrc name=ownership_source ! fakesink name=ownership_sink")
     }
 
     // MARK: - Factory Tests
@@ -90,6 +123,99 @@ struct ElementTests {
         // Find it by name
         let found = pipeline.element(named: "testqueue")
         #expect(found != nil)
+    }
+
+    // MARK: - Ownership Tests
+
+    @Test("Factory element remains in pipeline after wrapper drop", .tags(.ownership))
+    func factoryElementAddThenWrapperDropWhilePipelineAlive() throws {
+        let pipeline = try Self.makeOwnershipPipeline()
+        let name = "ownership_add_drop"
+
+        try Self.withFatalGStreamerCriticalTrap {
+            var element: Element? = try Element.make(factory: "queue", name: name)
+            #expect(pipeline.add(try #require(element)))
+
+            element = nil
+
+            let found = try #require(pipeline.element(named: name))
+            #expect(found.name == name)
+        }
+    }
+
+    @Test("Failed duplicate add keeps pipeline-owned element alive", .tags(.ownership))
+    func duplicateAddFailureKeepsPipelineOwnership() throws {
+        let pipeline = try Self.makeOwnershipPipeline()
+        let name = "ownership_duplicate_add"
+
+        try Self.withFatalGStreamerCriticalTrap {
+            var element: Element? = try Element.make(factory: "queue", name: name)
+            #expect(pipeline.add(try #require(element)))
+            #expect(!pipeline.add(try #require(element)))
+
+            element = nil
+
+            let found = try #require(pipeline.element(named: name))
+            #expect(found.name == name)
+        }
+    }
+
+    @Test("Unadded factory element wrapper drops cleanly", .tags(.ownership))
+    func factoryElementNeverAddedWrapperDrop() throws {
+        let name = "ownership_never_added"
+
+        try Self.withFatalGStreamerCriticalTrap {
+            var element: Element? = try Element.make(factory: "queue", name: name)
+            #expect((try #require(element)).name == name)
+
+            element = nil
+        }
+    }
+
+    @Test("Removed element stays absent after wrapper drop", .tags(.ownership))
+    func addRemoveLookupFailsThenWrapperDrop() throws {
+        let pipeline = try Self.makeOwnershipPipeline()
+        let name = "ownership_add_remove"
+
+        try Self.withFatalGStreamerCriticalTrap {
+            var element: Element? = try Element.make(factory: "queue", name: name)
+            #expect(pipeline.add(try #require(element)))
+            #expect(pipeline.remove(try #require(element)))
+            #expect(pipeline.element(named: name) == nil)
+
+            element = nil
+        }
+    }
+
+    @Test("Repeated lookups create independent wrappers for pipeline-owned element", .tags(.ownership))
+    func repeatedLookupWrappersDropIndependently() throws {
+        let name = "ownership_lookup_queue"
+        let pipeline = try Pipeline("queue name=\(name) ! fakesink name=ownership_lookup_sink")
+
+        try Self.withFatalGStreamerCriticalTrap {
+            var firstLookup = pipeline.element(named: name)
+            var secondLookup = pipeline.element(named: name)
+            let underlyingAddress: UInt
+
+            do {
+                let first = try #require(firstLookup)
+                let second = try #require(secondLookup)
+                #expect(first !== second)
+                underlyingAddress = UInt(bitPattern: first.element)
+                #expect(UInt(bitPattern: second.element) == underlyingAddress)
+            }
+
+            firstLookup = nil
+
+            var afterFirstDrop = pipeline.element(named: name)
+            #expect(UInt(bitPattern: (try #require(afterFirstDrop)).element) == underlyingAddress)
+
+            afterFirstDrop = nil
+            secondLookup = nil
+
+            let afterBothDrops = try #require(pipeline.element(named: name))
+            #expect(UInt(bitPattern: afterBothDrops.element) == underlyingAddress)
+        }
     }
 
     @Test("Request pad from tee", .tags(.pads))

@@ -1,5 +1,95 @@
 import Synchronization
 
+/// A live reliable packet and its boundary metadata.
+///
+/// `ReliablePacket` is used for encoded live audio reliable delivery. The
+/// payload carries the encoded data, while the timestamp fields mirror
+/// ``Buffer/pts`` and ``Buffer/duration`` in nanoseconds.
+public struct ReliablePacket<Payload: Sendable>: Sendable {
+  /// The packet payload.
+  public let payload: Payload
+
+  /// The packet presentation timestamp in nanoseconds, if present.
+  public let pts: UInt64?
+
+  /// The packet duration in nanoseconds, if present.
+  public let duration: UInt64?
+
+  /// A discontinuity observed immediately before this packet, if any.
+  public let priorDiscontinuity: Discontinuity?
+
+  /// Create a reliable packet value.
+  public init(
+    payload: Payload,
+    pts: UInt64?,
+    duration: UInt64?,
+    priorDiscontinuity: Discontinuity?
+  ) {
+    self.payload = payload
+    self.pts = pts
+    self.duration = duration
+    self.priorDiscontinuity = priorDiscontinuity
+  }
+}
+
+/// A discontinuity observed at a live reliable packet boundary.
+///
+/// Version 1 surfaces at most one discontinuity per packet using precedence:
+/// ``Kind/formatChange``, ``Kind/discont``, ``Kind/gap``, then
+/// ``Kind/dropped``. ``duration`` is the gap duration only, calculated as
+/// `nextPTS - (priorPTS + priorDuration)` when all values are available.
+public struct Discontinuity: Sendable {
+  /// The reason this packet boundary is discontinuous.
+  public enum Kind: Sendable, Equatable {
+    /// The sample caps changed according to GStreamer's structured caps equality.
+    case formatChange
+
+    /// The current buffer has GStreamer's DISCONT flag.
+    case discont
+
+    /// The current buffer has GStreamer's GAP flag.
+    case gap
+
+    /// Packet timing implies at least one dropped interval.
+    case dropped
+  }
+
+  /// The discontinuity kind.
+  public let kind: Kind
+
+  /// The previous packet PTS in nanoseconds, if known.
+  public let priorPTS: UInt64?
+
+  /// The previous packet duration in nanoseconds, if known.
+  public let priorDuration: UInt64?
+
+  /// The current packet PTS in nanoseconds, if known.
+  public let nextPTS: UInt64?
+
+  /// Gap duration only, not including the previous packet duration.
+  public let duration: UInt64?
+
+  /// Reserved for future inference. Version 1 always reports `nil`.
+  public let droppedCount: Int?
+
+  /// Create a discontinuity value.
+  public init(
+    kind: Kind,
+    priorPTS: UInt64?,
+    priorDuration: UInt64?,
+    nextPTS: UInt64?,
+    duration: UInt64?,
+    droppedCount: Int?
+  ) {
+    self.kind = kind
+    self.priorPTS = priorPTS
+    self.priorDuration = priorDuration
+    self.nextPTS = nextPTS
+    self.duration = duration
+    self.droppedCount = droppedCount
+  }
+}
+
 /// A single-consumer async sequence for no-drop packet delivery.
 ///
 /// `ReliablePackets` is intended for finite or otherwise backpressureable
@@ -187,5 +277,26 @@ public struct ReliablePackets<Element: Sendable>: AsyncSequence, Sendable {
         }
       }
     }
+  }
+}
+
+internal enum ReliableDurationConversion {
+  static func validateNonNegative(_ duration: Duration) -> Bool {
+    duration >= .zero
+  }
+
+  static func nanosecondsClampingNegativeToZero(_ duration: Duration) -> UInt64 {
+    guard duration > .zero else { return 0 }
+
+    let components = duration.components
+    let seconds = components.seconds > 0 ? UInt64(components.seconds) : 0
+    let attoseconds = components.attoseconds > 0 ? UInt64(components.attoseconds) : 0
+    let fractionalNanoseconds = attoseconds / 1_000_000_000
+
+    let secondsNanoseconds = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+    guard !secondsNanoseconds.overflow else { return .max }
+
+    let total = secondsNanoseconds.partialValue.addingReportingOverflow(fractionalNanoseconds)
+    return total.overflow ? .max : total.partialValue
   }
 }

@@ -407,6 +407,30 @@ gsize swift_gst_buffer_get_size(GstBuffer* buffer) {
     return gst_buffer_get_size(buffer);
 }
 
+GstBufferFlags swift_gst_buffer_get_flags(GstBuffer* buffer) {
+    return GST_BUFFER_FLAGS(buffer);
+}
+
+void swift_gst_buffer_set_flags(GstBuffer* buffer, GstBufferFlags flags) {
+    GST_BUFFER_FLAGS(buffer) = flags;
+}
+
+gboolean swift_gst_buffer_has_gap_flag(GstBuffer* buffer) {
+    return GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_GAP);
+}
+
+gboolean swift_gst_buffer_has_discont_flag(GstBuffer* buffer) {
+    return GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DISCONT);
+}
+
+GstBufferFlags swift_gst_buffer_flag_gap(void) {
+    return GST_BUFFER_FLAG_GAP;
+}
+
+GstBufferFlags swift_gst_buffer_flag_discont(void) {
+    return GST_BUFFER_FLAG_DISCONT;
+}
+
 GstBuffer* swift_gst_buffer_ref(GstBuffer* buffer) {
     return gst_buffer_ref(buffer);
 }

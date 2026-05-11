@@ -11,6 +11,8 @@ extern "C" {
 typedef struct SwiftGstTestProbe SwiftGstTestProbe;
 
 gboolean swift_gst_test_element_factory_exists(const gchar* factory_name);
+GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
+void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
 
 SwiftGstTestProbe* swift_gst_test_install_bus_error_after_buffers(
     GstElement* pipeline,

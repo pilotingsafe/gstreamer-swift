@@ -13,6 +13,9 @@ GStreamer supports multiple audio backends on Linux, allowing you to capture aud
 All three work identically with the ``AudioBufferSink`` and ``AudioBuffer`` APIs.
 For finite file/decode workloads where every packet must be delivered, use
 ``AudioFileSource/reliablePackets()`` as described in <doc:EncodedPacketDelivery>.
+For encoded live audio capture that needs explicit queue policy and graceful EOS
+drain, use ``AudioSourceBuilder/withReliableDelivery(leaky:maxBuffers:maxBytes:maxTime:)``
+and ``AudioSource/reliablePackets()``.
 
 ## Capturing Audio
 
