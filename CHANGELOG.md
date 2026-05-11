@@ -4,6 +4,13 @@
 
 ### Features
 
+- Added `Bus.messageSequence(filter:)`, a pull-based async sequence for callers
+  that want demand-driven bus polling without the detached producer and
+  `AsyncStream` buffer used by `Bus.messages(filter:)`. Existing
+  `Bus.messages(filter:)`, `errors()`, `warnings()`, `stateChanges()`, and
+  `waitForEOS()` behavior is unchanged. `messageSequence(filter:)` defaults to
+  `.all`, which can expose more Swift-modeled message kinds than the
+  `messages()` default of errors, EOS, and state changes.
 - Added reliable archival audio packet delivery for local file/decode sources.
   Use `AudioSource.file(path:)` to build an `AudioFileSource`, then iterate
   `source.reliablePackets()` for a throwing, single-consumer, no-drop packet

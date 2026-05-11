@@ -303,12 +303,15 @@ let pipeline = try Pipeline("videotestsrc num-buffers=100 ! autovideosink")
 try pipeline.play()
 
 // Listen for bus messages
-for await message in pipeline.bus.messages(filter: [.eos, .error]) {
+messageLoop: for await message in pipeline.bus.messageSequence(filter: [.eos, .error]) {
     switch message {
     case .eos:
         print("End of stream")
+        break messageLoop
     case .error(let message, let debug):
         print("Error: \(message)")
+        if let debug { print("Debug: \(debug)") }
+        break messageLoop
     default:
         break
     }
@@ -316,6 +319,17 @@ for await message in pipeline.bus.messages(filter: [.eos, .error]) {
 
 pipeline.stop()
 ```
+
+`messageSequence(filter:)` is pull-based: the bus is polled only when the
+consumer awaits the next value, and EOS or ERROR are delivered as values so the
+caller decides when to break. Use it when one task owns bus draining and you want
+clear backpressure without a Swift-side producer buffer.
+
+`messages(filter:)` remains the stream-based compatibility API. It uses a
+detached producer task and an `AsyncStream`, finishes after delivering EOS, and
+continues to back the `errors()`, `warnings()`, `stateChanges()`, and
+`waitForEOS()` convenience APIs. Do not run multiple bus consumers unless you
+intend them to compete for the same destructive GStreamer bus queue.
 
 ### Pulling Video Frames
 
@@ -736,6 +750,8 @@ public enum BusMessage: Sendable {
 }
 
 public final class Bus: @unchecked Sendable {
+    struct Messages: AsyncSequence, Sendable { ... }
+    func messageSequence(filter: Filter = .all) -> Messages
     func messages(filter: Filter = [.error, .eos, .stateChanged]) -> AsyncStream<BusMessage>
 }
 ```
