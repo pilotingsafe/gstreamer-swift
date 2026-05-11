@@ -1,5 +1,188 @@
 #include "include/GStreamerAppShim.h"
 
+typedef enum {
+    SWIFT_GST_CALLBACK_APP_SINK_NEW_SAMPLE,
+    SWIFT_GST_CALLBACK_APP_SINK_EOS,
+    SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE
+} SwiftGstCallbackKind;
+
+struct SwiftGstCallbackRegistration {
+    GObject* instance;
+    gulong handler_id;
+    SwiftGstCallbackKind kind;
+    union {
+        SwiftGstAppSinkEventCallback app_sink_event;
+        SwiftGstBusSyncMessageCallback bus_sync_message;
+    } callback;
+    void* context;
+    SwiftGstContextRetainFunc retain_context;
+    SwiftGstContextReleaseFunc release_context;
+    GMutex mutex;
+    guint in_flight;
+    gboolean disconnected;
+    gboolean signal_destroyed;
+};
+
+static void swift_gst_callback_registration_retain_context(SwiftGstCallbackRegistration* registration) {
+    if (registration->context != NULL && registration->retain_context != NULL) {
+        registration->retain_context(registration->context);
+    }
+}
+
+static void swift_gst_callback_registration_release_context(SwiftGstCallbackRegistration* registration) {
+    if (registration->context != NULL && registration->release_context != NULL) {
+        registration->release_context(registration->context);
+    }
+}
+
+static SwiftGstCallbackRegistration* swift_gst_callback_registration_new(
+    GObject* instance,
+    SwiftGstCallbackKind kind,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+) {
+    if (instance == NULL) {
+        return NULL;
+    }
+
+    SwiftGstCallbackRegistration* registration = g_new0(SwiftGstCallbackRegistration, 1);
+    registration->instance = g_object_ref(instance);
+    registration->kind = kind;
+    registration->context = context;
+    registration->retain_context = retain_context;
+    registration->release_context = release_context;
+    g_mutex_init(&registration->mutex);
+    swift_gst_callback_registration_retain_context(registration);
+    return registration;
+}
+
+static void swift_gst_callback_registration_try_destroy(SwiftGstCallbackRegistration* registration) {
+    gboolean should_destroy = FALSE;
+
+    g_mutex_lock(&registration->mutex);
+    should_destroy = registration->signal_destroyed && registration->in_flight == 0;
+    g_mutex_unlock(&registration->mutex);
+
+    if (!should_destroy) {
+        return;
+    }
+
+    swift_gst_callback_registration_release_context(registration);
+    if (registration->kind == SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE) {
+        gst_bus_disable_sync_message_emission(GST_BUS(registration->instance));
+    }
+    g_object_unref(registration->instance);
+    g_mutex_clear(&registration->mutex);
+    g_free(registration);
+}
+
+static gboolean swift_gst_callback_registration_begin(
+    SwiftGstCallbackRegistration* registration,
+    void** context
+) {
+    gboolean should_call = FALSE;
+
+    g_mutex_lock(&registration->mutex);
+    if (!registration->disconnected && !registration->signal_destroyed) {
+        registration->in_flight++;
+        swift_gst_callback_registration_retain_context(registration);
+        *context = registration->context;
+        should_call = TRUE;
+    }
+    g_mutex_unlock(&registration->mutex);
+
+    return should_call;
+}
+
+static void swift_gst_callback_registration_end(SwiftGstCallbackRegistration* registration) {
+    swift_gst_callback_registration_release_context(registration);
+
+    g_mutex_lock(&registration->mutex);
+    if (registration->in_flight > 0) {
+        registration->in_flight--;
+    }
+    g_mutex_unlock(&registration->mutex);
+
+    swift_gst_callback_registration_try_destroy(registration);
+}
+
+static void swift_gst_callback_registration_signal_destroy(gpointer data, GClosure* closure) {
+    (void)closure;
+
+    SwiftGstCallbackRegistration* registration = (SwiftGstCallbackRegistration*)data;
+    if (registration == NULL) {
+        return;
+    }
+
+    g_mutex_lock(&registration->mutex);
+    registration->disconnected = TRUE;
+    registration->signal_destroyed = TRUE;
+    registration->handler_id = 0;
+    g_mutex_unlock(&registration->mutex);
+
+    swift_gst_callback_registration_try_destroy(registration);
+}
+
+static GstFlowReturn swift_gst_app_sink_new_sample_trampoline(
+    GstAppSink* appsink,
+    gpointer data
+) {
+    (void)appsink;
+
+    SwiftGstCallbackRegistration* registration = (SwiftGstCallbackRegistration*)data;
+    void* context = NULL;
+    if (!swift_gst_callback_registration_begin(registration, &context)) {
+        return GST_FLOW_OK;
+    }
+
+    SwiftGstAppSinkEventCallback callback = registration->callback.app_sink_event;
+    if (callback != NULL) {
+        callback(context);
+    }
+
+    swift_gst_callback_registration_end(registration);
+    return GST_FLOW_OK;
+}
+
+static void swift_gst_app_sink_eos_trampoline(GstAppSink* appsink, gpointer data) {
+    (void)appsink;
+
+    SwiftGstCallbackRegistration* registration = (SwiftGstCallbackRegistration*)data;
+    void* context = NULL;
+    if (!swift_gst_callback_registration_begin(registration, &context)) {
+        return;
+    }
+
+    SwiftGstAppSinkEventCallback callback = registration->callback.app_sink_event;
+    if (callback != NULL) {
+        callback(context);
+    }
+
+    swift_gst_callback_registration_end(registration);
+}
+
+static void swift_gst_bus_sync_message_trampoline(
+    GstBus* bus,
+    GstMessage* message,
+    gpointer data
+) {
+    (void)bus;
+
+    SwiftGstCallbackRegistration* registration = (SwiftGstCallbackRegistration*)data;
+    void* context = NULL;
+    if (!swift_gst_callback_registration_begin(registration, &context)) {
+        return;
+    }
+
+    SwiftGstBusSyncMessageCallback callback = registration->callback.bus_sync_message;
+    if (callback != NULL) {
+        callback(message, context);
+    }
+
+    swift_gst_callback_registration_end(registration);
+}
+
 // MARK: - AppSink
 
 GstSample* swift_gst_app_sink_pull_sample(GstAppSink* appsink) {
@@ -32,6 +215,156 @@ void swift_gst_app_sink_set_max_buffers(GstAppSink* appsink, guint max) {
 
 void swift_gst_app_sink_set_drop(GstAppSink* appsink, gboolean drop) {
     g_object_set(G_OBJECT(appsink), "drop", drop, NULL);
+}
+
+SwiftGstCallbackRegistration* swift_gst_app_sink_connect_new_sample(
+    GstAppSink* appsink,
+    SwiftGstAppSinkEventCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+) {
+    if (appsink == NULL || callback == NULL) {
+        return NULL;
+    }
+
+    SwiftGstCallbackRegistration* registration = swift_gst_callback_registration_new(
+        G_OBJECT(appsink),
+        SWIFT_GST_CALLBACK_APP_SINK_NEW_SAMPLE,
+        context,
+        retain_context,
+        release_context
+    );
+    if (registration == NULL) {
+        return NULL;
+    }
+
+    registration->callback.app_sink_event = callback;
+    registration->handler_id = g_signal_connect_data(
+        G_OBJECT(appsink),
+        "new-sample",
+        G_CALLBACK(swift_gst_app_sink_new_sample_trampoline),
+        registration,
+        swift_gst_callback_registration_signal_destroy,
+        0
+    );
+    if (registration->handler_id == 0) {
+        g_mutex_lock(&registration->mutex);
+        registration->disconnected = TRUE;
+        registration->signal_destroyed = TRUE;
+        g_mutex_unlock(&registration->mutex);
+        swift_gst_callback_registration_try_destroy(registration);
+        return NULL;
+    }
+    return registration;
+}
+
+SwiftGstCallbackRegistration* swift_gst_app_sink_connect_eos(
+    GstAppSink* appsink,
+    SwiftGstAppSinkEventCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+) {
+    if (appsink == NULL || callback == NULL) {
+        return NULL;
+    }
+
+    SwiftGstCallbackRegistration* registration = swift_gst_callback_registration_new(
+        G_OBJECT(appsink),
+        SWIFT_GST_CALLBACK_APP_SINK_EOS,
+        context,
+        retain_context,
+        release_context
+    );
+    if (registration == NULL) {
+        return NULL;
+    }
+
+    registration->callback.app_sink_event = callback;
+    registration->handler_id = g_signal_connect_data(
+        G_OBJECT(appsink),
+        "eos",
+        G_CALLBACK(swift_gst_app_sink_eos_trampoline),
+        registration,
+        swift_gst_callback_registration_signal_destroy,
+        0
+    );
+    if (registration->handler_id == 0) {
+        g_mutex_lock(&registration->mutex);
+        registration->disconnected = TRUE;
+        registration->signal_destroyed = TRUE;
+        g_mutex_unlock(&registration->mutex);
+        swift_gst_callback_registration_try_destroy(registration);
+        return NULL;
+    }
+    return registration;
+}
+
+SwiftGstCallbackRegistration* swift_gst_bus_connect_sync_message_observer(
+    GstBus* bus,
+    SwiftGstBusSyncMessageCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+) {
+    if (bus == NULL || callback == NULL) {
+        return NULL;
+    }
+
+    SwiftGstCallbackRegistration* registration = swift_gst_callback_registration_new(
+        G_OBJECT(bus),
+        SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE,
+        context,
+        retain_context,
+        release_context
+    );
+    if (registration == NULL) {
+        return NULL;
+    }
+
+    registration->callback.bus_sync_message = callback;
+    gst_bus_enable_sync_message_emission(bus);
+    registration->handler_id = g_signal_connect_data(
+        G_OBJECT(bus),
+        "sync-message",
+        G_CALLBACK(swift_gst_bus_sync_message_trampoline),
+        registration,
+        swift_gst_callback_registration_signal_destroy,
+        0
+    );
+    if (registration->handler_id == 0) {
+        g_mutex_lock(&registration->mutex);
+        registration->disconnected = TRUE;
+        registration->signal_destroyed = TRUE;
+        g_mutex_unlock(&registration->mutex);
+        swift_gst_callback_registration_try_destroy(registration);
+        return NULL;
+    }
+    return registration;
+}
+
+void swift_gst_callback_registration_disconnect(SwiftGstCallbackRegistration* registration) {
+    if (registration == NULL) {
+        return;
+    }
+
+    gulong handler_id = 0;
+    GObject* instance = NULL;
+
+    g_mutex_lock(&registration->mutex);
+    if (!registration->disconnected) {
+        registration->disconnected = TRUE;
+        handler_id = registration->handler_id;
+        instance = registration->instance;
+    }
+    g_mutex_unlock(&registration->mutex);
+
+    if (handler_id != 0 && instance != NULL) {
+        g_signal_handler_disconnect(instance, handler_id);
+    } else {
+        swift_gst_callback_registration_try_destroy(registration);
+    }
 }
 
 // MARK: - AppSrc
@@ -72,6 +405,30 @@ void swift_gst_sample_unref(void* sample) {
 
 gsize swift_gst_buffer_get_size(GstBuffer* buffer) {
     return gst_buffer_get_size(buffer);
+}
+
+GstBufferFlags swift_gst_buffer_get_flags(GstBuffer* buffer) {
+    return GST_BUFFER_FLAGS(buffer);
+}
+
+void swift_gst_buffer_set_flags(GstBuffer* buffer, GstBufferFlags flags) {
+    GST_BUFFER_FLAGS(buffer) = flags;
+}
+
+gboolean swift_gst_buffer_has_gap_flag(GstBuffer* buffer) {
+    return GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_GAP);
+}
+
+gboolean swift_gst_buffer_has_discont_flag(GstBuffer* buffer) {
+    return GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DISCONT);
+}
+
+GstBufferFlags swift_gst_buffer_flag_gap(void) {
+    return GST_BUFFER_FLAG_GAP;
+}
+
+GstBufferFlags swift_gst_buffer_flag_discont(void) {
+    return GST_BUFFER_FLAG_DISCONT;
 }
 
 GstBuffer* swift_gst_buffer_ref(GstBuffer* buffer) {

@@ -59,12 +59,11 @@ extension VideoFrame {
     ///
     /// ## Supported Formats
     ///
-    /// The following pixel formats are supported:
-    /// - `.bgra` → `kCVPixelFormatType_32BGRA`
-    /// - `.rgba` → `kCVPixelFormatType_32RGBA`
-    /// - `.nv12` → `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`
-    /// - `.i420` → `kCVPixelFormatType_420YpCbCr8Planar`
-    /// - `.gray8` → `kCVPixelFormatType_OneComponent8`
+    /// The supported mappings are `.bgra` to `kCVPixelFormatType_32BGRA`,
+    /// `.rgba` to `kCVPixelFormatType_32RGBA`, `.nv12` to
+    /// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, `.i420` to
+    /// `kCVPixelFormatType_420YpCbCr8Planar`, and `.gray8` to
+    /// `kCVPixelFormatType_OneComponent8`.
     ///
     /// Other formats will return `nil`.
     public func toCVPixelBuffer() throws -> CVPixelBuffer? {

@@ -11,10 +11,8 @@ import CGStreamerShim
 /// ## Overview
 ///
 /// Use AppSource to push video frames, audio samples, or raw data into a pipeline.
-/// Common use cases include:
-/// - Streaming processed frames to a network
-/// - Encoding frames to video files
-/// - Feeding ML-generated content into a pipeline
+/// Common use cases include streaming processed frames to a network, encoding
+/// frames to video files, and feeding ML-generated content into a pipeline.
 ///
 /// ## Topics
 ///
@@ -31,8 +29,12 @@ import CGStreamerShim
 ///
 /// ### Pushing Data
 ///
-/// - ``push(data:pts:duration:)``
-/// - ``pushVideoFrame(data:width:height:format:pts:duration:)``
+/// - ``push(data:pts:duration:)-([UInt8],_,_)``
+/// - ``push(data:pts:duration:)-(Span<UInt8>,_,_)``
+/// - ``push(data:pts:duration:)-(RawSpan,_,_)``
+/// - ``pushVideoFrame(data:width:height:format:pts:duration:)-([UInt8],_,_,_,_,_)``
+/// - ``pushVideoFrame(data:width:height:format:pts:duration:)-(Span<UInt8>,_,_,_,_,_)``
+/// - ``pushVideoFrame(data:width:height:format:pts:duration:)-(RawSpan,_,_,_,_,_)``
 /// - ``endOfStream()``
 ///
 /// ## Example
@@ -168,8 +170,8 @@ public final class AppSource: @unchecked Sendable {
 
     /// Set the maximum bytes to queue internally.
     ///
-    /// When the internal queue reaches this size, ``push(data:pts:duration:)``
-    /// will block until space is available.
+    /// When the internal queue reaches this size, push calls will block until
+    /// space is available.
     ///
     /// - Parameter maxBytes: Maximum bytes to buffer (0 = unlimited).
     public func setMaxBytes(_ maxBytes: UInt64) {
@@ -197,7 +199,10 @@ public final class AppSource: @unchecked Sendable {
     ///   - data: The raw bytes to push.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if
+    ///   caller input fails shared push validation; ``GStreamerError/bufferMapFailed``
+    ///   if low-level buffer access or wrapping fails; ``GStreamerError/pushFailed``
+    ///   if appsrc rejects the buffer.
     ///
     /// ## Example
     ///
@@ -232,7 +237,10 @@ public final class AppSource: @unchecked Sendable {
     ///   - data: A span of bytes to push.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if
+    ///   caller input fails shared push validation; ``GStreamerError/bufferMapFailed``
+    ///   if low-level buffer access or wrapping fails; ``GStreamerError/pushFailed``
+    ///   if appsrc rejects the buffer.
     ///
     /// ## Example
     ///
@@ -264,7 +272,10 @@ public final class AppSource: @unchecked Sendable {
     ///   - data: A raw span of bytes to push.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if
+    ///   caller input fails shared push validation; ``GStreamerError/bufferMapFailed``
+    ///   if low-level buffer access or wrapping fails; ``GStreamerError/pushFailed``
+    ///   if appsrc rejects the buffer.
     ///
     /// ## Example
     ///
@@ -295,14 +306,28 @@ public final class AppSource: @unchecked Sendable {
     ///   - count: Number of bytes. Must be non-negative.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if
+    ///   `count` is negative; ``GStreamerError/bufferMapFailed`` if low-level
+    ///   buffer wrapping fails; ``GStreamerError/pushFailed`` if appsrc rejects
+    ///   the buffer.
     public func push(bytes: UnsafeRawPointer, count: Int, pts: UInt64? = nil, duration: UInt64? = nil) throws {
         try pushPayload(bytes: count == 0 ? nil : bytes, count: count, pts: pts, duration: duration)
     }
 
+    internal func push(buffer: Buffer) throws {
+        _ = swift_gst_buffer_ref(buffer.buffer)
+        let result = swift_gst_app_src_push_buffer(appSrc, buffer.buffer)
+        if result.rawValue < 0 {
+            throw GStreamerError.pushFailed
+        }
+    }
+
     private func pushPayload(bytes: UnsafeRawPointer?, count: Int, pts: UInt64?, duration: UInt64?) throws {
         guard count >= 0 else {
-            throw GStreamerError.bufferMapFailed
+            throw GStreamerError.invalidArgument(
+                parameter: "count",
+                reason: "AppSource push requires a non-negative count"
+            )
         }
 
         let payloadBytes: UnsafeRawPointer?
@@ -310,7 +335,10 @@ public final class AppSource: @unchecked Sendable {
             payloadBytes = nil
         } else {
             guard let bytes else {
-                throw GStreamerError.bufferMapFailed
+                throw GStreamerError.invalidArgument(
+                    parameter: "bytes",
+                    reason: "AppSource push requires payload bytes when count > 0"
+                )
             }
             payloadBytes = bytes
         }
@@ -330,19 +358,42 @@ public final class AppSource: @unchecked Sendable {
     }
 
     private func expectedVideoPayloadByteCount(width: Int, height: Int, format: PixelFormat) throws -> Int {
+        guard width > 0 else {
+            throw GStreamerError.invalidArgument(
+                parameter: "width",
+                reason: "pushVideoFrame requires a positive width"
+            )
+        }
+
+        guard height > 0 else {
+            throw GStreamerError.invalidArgument(
+                parameter: "height",
+                reason: "pushVideoFrame requires a positive height"
+            )
+        }
+
         let bytesPerPixel = format.bytesPerPixel
-        guard width > 0, height > 0, bytesPerPixel > 0 else {
-            throw GStreamerError.bufferMapFailed
+        guard bytesPerPixel > 0 else {
+            throw GStreamerError.invalidArgument(
+                parameter: "format",
+                reason: "pushVideoFrame requires format \(format) to have positive bytesPerPixel"
+            )
         }
 
         let pixelCount = width.multipliedReportingOverflow(by: height)
         guard !pixelCount.overflow else {
-            throw GStreamerError.bufferMapFailed
+            throw GStreamerError.invalidArgument(
+                parameter: "dimensions",
+                reason: "pushVideoFrame dimensions overflow for width \(width), height \(height), and format \(format)"
+            )
         }
 
         let byteCount = pixelCount.partialValue.multipliedReportingOverflow(by: bytesPerPixel)
         guard !byteCount.overflow else {
-            throw GStreamerError.bufferMapFailed
+            throw GStreamerError.invalidArgument(
+                parameter: "dimensions",
+                reason: "pushVideoFrame byte count overflows for width \(width), height \(height), and format \(format)"
+            )
         }
 
         return byteCount.partialValue
@@ -359,7 +410,11 @@ public final class AppSource: @unchecked Sendable {
     ///   - format: The pixel format.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if the
+    ///   dimensions, format, or payload size are invalid;
+    ///   ``GStreamerError/bufferMapFailed`` if low-level buffer access or
+    ///   wrapping fails; ``GStreamerError/pushFailed`` if appsrc rejects the
+    ///   buffer.
     ///
     /// ## Example
     ///
@@ -397,7 +452,10 @@ public final class AppSource: @unchecked Sendable {
         // Verify data size matches expected size
         let expectedSize = try expectedVideoPayloadByteCount(width: width, height: height, format: format)
         guard data.count >= expectedSize else {
-            throw GStreamerError.bufferMapFailed
+            throw GStreamerError.invalidArgument(
+                parameter: "data",
+                reason: "pushVideoFrame requires at least \(expectedSize) bytes for \(width)x\(height) \(format)"
+            )
         }
 
         try push(data: data, pts: pts, duration: duration)
@@ -415,7 +473,11 @@ public final class AppSource: @unchecked Sendable {
     ///   - format: The pixel format.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if the
+    ///   dimensions, format, or payload size are invalid;
+    ///   ``GStreamerError/bufferMapFailed`` if low-level buffer access or
+    ///   wrapping fails; ``GStreamerError/pushFailed`` if appsrc rejects the
+    ///   buffer.
     ///
     /// ## Example
     ///
@@ -442,7 +504,10 @@ public final class AppSource: @unchecked Sendable {
         // Verify data size matches expected size
         let expectedSize = try expectedVideoPayloadByteCount(width: width, height: height, format: format)
         guard data.count >= expectedSize else {
-            throw GStreamerError.bufferMapFailed
+            throw GStreamerError.invalidArgument(
+                parameter: "data",
+                reason: "pushVideoFrame requires at least \(expectedSize) bytes for \(width)x\(height) \(format)"
+            )
         }
 
         try push(data: data, pts: pts, duration: duration)
@@ -460,7 +525,11 @@ public final class AppSource: @unchecked Sendable {
     ///   - format: The pixel format.
     ///   - pts: Presentation timestamp in nanoseconds (optional).
     ///   - duration: Duration in nanoseconds (optional).
-    /// - Throws: ``GStreamerError/stateChangeFailed`` if the push fails.
+    /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if the
+    ///   dimensions, format, or payload size are invalid;
+    ///   ``GStreamerError/bufferMapFailed`` if low-level buffer access or
+    ///   wrapping fails; ``GStreamerError/pushFailed`` if appsrc rejects the
+    ///   buffer.
     ///
     /// ## Example
     ///
@@ -488,7 +557,10 @@ public final class AppSource: @unchecked Sendable {
         // Verify data size matches expected size
         let expectedSize = try expectedVideoPayloadByteCount(width: width, height: height, format: format)
         guard data.byteCount >= expectedSize else {
-            throw GStreamerError.bufferMapFailed
+            throw GStreamerError.invalidArgument(
+                parameter: "data",
+                reason: "pushVideoFrame requires at least \(expectedSize) bytes for \(width)x\(height) \(format)"
+            )
         }
 
         try push(data: data, pts: pts, duration: duration)

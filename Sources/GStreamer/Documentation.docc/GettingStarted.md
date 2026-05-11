@@ -125,6 +125,6 @@ pipeline.stop()
 
 ## Next Steps
 
-- Learn about <doc:WorkingWithVideoFrames> for computer vision and ML inference
-- See <doc:PlatformGuide> for platform-specific pipelines
-- Explore ``Pipeline`` for advanced pipeline configuration
+- <doc:WorkingWithVideoFrames>
+- <doc:PlatformGuide>
+- ``Pipeline``

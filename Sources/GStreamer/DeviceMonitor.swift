@@ -114,7 +114,7 @@ public final class Device: @unchecked Sendable {
         guard let el = swift_gst_device_create_element(device, name) else {
             return nil
         }
-        return Element(element: el, ownsReference: true)
+        return Element(element: el, transfer: .floating)
     }
 }
 

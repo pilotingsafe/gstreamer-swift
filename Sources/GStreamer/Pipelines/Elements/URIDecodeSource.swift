@@ -7,7 +7,7 @@ public struct URIDecodeSource: VideoPipelineSource {
     public var pipeline: String {
         // videoscale allows scaling to target resolution
         // videoconvert allows format conversion
-        "uridecodebin uri=\(uri)"
+        "uridecodebin \(GstLaunch.property("uri", value: uri))"
     }
 
     public init(uri: String) {
@@ -19,7 +19,7 @@ public struct URIDecodeSource: VideoPipelineSource {
     }
 
     public static func file(path: String) -> Self {
-        URIDecodeSource(uri: "file://\(path)")
+        URIDecodeSource(uri: GstLaunch.fileURI(forPath: path))
     }
 
     public static func http(url: String) -> Self {

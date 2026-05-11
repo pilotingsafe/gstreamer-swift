@@ -9,9 +9,9 @@ import Synchronization
 ///
 /// ## Overview
 ///
-/// Pads come in two types:
-/// - Static pads: Always present on an element (e.g., "sink", "src")
-/// - Request pads: Created on demand (e.g., "src_%u" on tee)
+/// Pads come in two types. Static pads are always present on an element, such
+/// as "sink" or "src". Request pads are created on demand, such as "src_%u" on
+/// tee.
 ///
 /// Request pads retain the ``Element`` that created them until they are
 /// explicitly released or the pad is deinitialized. This allows the pad to

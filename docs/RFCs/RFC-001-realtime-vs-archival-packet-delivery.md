@@ -1,7 +1,8 @@
 # RFC-001: Realtime vs Reliable Archival Encoded Packet Delivery
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-08
+**Accepted:** 2026-05-08
 **Related work:** `GStreamerBridgeSafetyandReliabilityFixes`
 **Decision owner:** TBD
 **Scope:** Encoded packet delivery, audio/video packet stream semantics, backpressure
@@ -18,7 +19,7 @@ Current semantics:
 
 - Encoded packet streams are **best-effort realtime delivery**.
 - Slow consumers may cause older packets to be dropped.
-- The default queue is a small bounded newest-buffer policy, currently represented as `MediaStreamBackpressure.encodedPacketsNewest = 8`.
+- The default queue is a small bounded newest-buffer policy, currently represented as `MediaStreamBackpressure.encodedPacketsNewest = 8`. The constant is `internal` and currently lives next to its consumer in `Sources/GStreamer/AudioSource.swift`; the empty namespace in `Sources/GStreamer/MediaStreamBackpressure.swift` is reserved for future stream-type defaults to migrate into.
 - This is appropriate for low-latency realtime consumers but not for reliable recording or archival use.
 
 ## Problem
@@ -185,36 +186,76 @@ Recommended semantics:
 
 - Does not drop packets in Swift.
 - Pulls from GStreamer only when the consumer requests the next packet.
-- May backpressure the pipeline.
+- May backpressure the pipeline (subject to source type — see *Reliability Boundary* below).
 - Ends on EOS.
 - Cancels cleanly.
 - Documents that it is intended for recording, upload, archival, or offline processing, not lowest-latency monitoring.
 
+Option D (a `record(to:)`-style file API) is **additive, not exclusive**: `reliablePackets()` is the underlying primitive, and a higher-level recording API can be built on top of it in a later RFC without re-litigating delivery semantics.
+
+## Reliability Boundary
+
+`reliablePackets()` removes Swift-level dropping but cannot eliminate physical and pipeline-level constraints. Callers must understand which source they are reading from:
+
+### File-like / pull-driven sources
+
+For finite or pull-driven sources (e.g. `URIDecodeSource` over a file, `appsrc` fed at the consumer's pace), backpressure propagates end-to-end:
+
+```
+appsink full → upstream queue full → demux/decode slows → file read slows
+```
+
+In this regime `reliablePackets()` delivers on its name: every packet, in order, until EOS, with bounded memory.
+
+### Live / wall-clock-driven sources
+
+For live sources such as `AudioSource.microphone()`, the producer is driven by hardware time and **cannot be backpressured**. If the consumer is slower than realtime, one of three things happens, and the choice belongs to the *upstream queue policy*, not to Swift:
+
+1. **`leaky=downstream`** on the upstream `queue`: GStreamer drops packets before they reach `appsink`. `reliablePackets()` will silently observe gaps. This breaks the no-drop promise.
+2. **`leaky=no` with bounded `max-size-*`**: `appsink` / upstream queue fills, downstream chain blocks the streaming thread, which manifests as audio xruns at the source.
+3. **`leaky=no` with unbounded queue**: memory grows without bound until the process is killed.
+
+None of these are acceptable archival behavior for an indefinitely-running microphone. Therefore:
+
+- For the initial implementation, `reliablePackets()` is **only exposed on sources that can be backpressured end-to-end**. On `AudioSource.microphone()` and other live sources, the method either is not offered or is offered with documentation that explicitly names the upstream queue policy the caller is responsible for configuring.
+- The doc comment on `reliablePackets()` MUST say, in plain language: *"Reliable delivery requires a source that can be backpressured. For live capture sources, configure upstream queue policy explicitly; otherwise prefer a finite-duration recording API."*
+- The Migration Plan calls for `reliablePackets()` to land first on file/decode sources, with live-source semantics deferred to `RFC-002`.
+
+### Naming consequence
+
+Because the term "reliable" can over-promise on live sources, both `reliablePackets()` and `archivalPackets()` remain acceptable. The implementation chooses one; whichever is chosen, the doc comment must lead with the boundary above.
+
+## Implementation Notes
+
+The pull-based iterator must avoid two failure modes: blocking a cooperative thread, and leaking GStreamer resources on cancellation.
+
+Recommended sketch:
+
+- Bridge `appsink`'s `new-sample` signal (or `try_pull_sample` polled from a callback) into Swift via `withCheckedContinuation` / `withTaskCancellationHandler`. Do **not** call `gst_app_sink_pull_sample` directly from an `async` context — it is blocking and will pin a Swift Concurrency executor thread.
+- On cancellation, detach the signal handler, drain any in-flight continuation, and let the `appsink` resume its normal callback path so the rest of the pipeline (including `Bus`) keeps draining.
+- Treat `reliablePackets()` as a **single-consumer** sequence. Concurrent iteration from two tasks is undefined; the doc comment must say so. If multi-consumer is needed later, build a fan-out on top rather than retrofitting it into the iterator.
+- `gst_app_sink_pull_sample` returns `nil` on EOS; the iterator translates that to a clean termination. Bus errors received during iteration translate to a thrown error (see *Resolved Decisions*).
+- On `@MainActor` callers: pulling must hop off the main actor before doing any blocking work; the helper should be `nonisolated` and `Sendable` so it composes naturally with existing `for try await` sites.
+
 ## Proposed API Sketch
 
+The reliable sequence is **throwing** (see *Resolved Decisions*) and **generic in element type** so that future video packet sources can adopt the same primitive without API churn. The audio entry point is a thin convenience over the generic primitive:
+
 ```swift
-extension AudioSource {
-    public struct ReliablePackets: AsyncSequence {
-        public typealias Element = Buffer
-
-        public struct AsyncIterator: AsyncIteratorProtocol {
-            public mutating func next() async throws -> Buffer?
-        }
-
-        public func makeAsyncIterator() -> AsyncIterator
+public struct ReliablePackets<Element: Sendable>: AsyncSequence, Sendable {
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        public mutating func next() async throws -> Element?
     }
 
-    public func reliablePackets() -> ReliablePackets
+    public func makeAsyncIterator() -> AsyncIterator
+}
+
+extension AudioSource {
+    public func reliablePackets() -> ReliablePackets<Buffer>
 }
 ```
 
-If throwing is not needed:
-
-```swift
-public mutating func next() async -> Buffer?
-```
-
-If bus errors or pipeline errors should terminate the sequence with failure, use `AsyncThrowingSequence`-style behavior.
+`AsyncSequence` carries the failure through its associated `Failure` type; there is no separate `AsyncThrowingSequence` protocol, only the throwing convenience type `AsyncThrowingStream` in the standard library, which is **not** what this API returns. `ReliablePackets` is a custom `AsyncSequence` whose iterator's `next()` is `async throws`.
 
 ## Delivery Semantics
 
@@ -225,28 +266,23 @@ If bus errors or pipeline errors should terminate the sequence with failure, use
 
 ## Interaction with GStreamer
 
-A reliable API should avoid a detached producer that continuously pulls from `appsink` and queues into Swift memory.
+A reliable API must avoid a detached producer that continuously pulls from `appsink` and queues into Swift memory; that pattern just relocates the dropping problem from `AsyncStream` policy into a hand-rolled queue.
 
-Instead, it should prefer a pull-based iterator:
+The contract is: pull from `appsink` only when the consumer's `next()` is awaiting, so Swift memory stays bounded by design. Any further upstream buffering is an explicit property of the GStreamer pipeline (queue sizes, `appsink` `max-buffers`, `drop` flag) and is the source builder's responsibility, not the iterator's.
 
-```swift
-public mutating func next() async -> Buffer? {
-    // wait/poll appsink
-    // return exactly one packet
-}
-```
-
-This keeps Swift memory bounded by design. Any upstream buffering should be explicit through GStreamer/appsink settings.
+Concrete implementation guidance lives in *Implementation Notes* above.
 
 ## Tests Required
 
 - Finite encoded source produces the expected number of packets with `reliablePackets()`.
 - Slow consumer does not lose packets for finite test input.
 - Packet order is preserved.
-- EOS ends the sequence.
-- Cancellation stops polling.
+- EOS ends the sequence cleanly (no thrown error).
+- Cancellation mid-iteration stops polling, releases the `appsink` signal handler, and does not leak GStreamer mini-objects or Swift continuations.
+- Pipeline `GST_MESSAGE_ERROR` during iteration causes `next()` to throw rather than silently terminating; the thrown error is the same taxonomy used elsewhere in the bridge.
+- Concurrent iteration from two tasks is either rejected at runtime or documented as undefined; whichever is chosen, a test pins the behavior.
 - Realtime `packets()` remains bounded and documented as best-effort.
-- Tests verify `packets()` and `reliablePackets()` have distinct semantics.
+- Tests verify `packets()` and `reliablePackets()` have distinct semantics, including a side-by-side test where a slow consumer loses packets on `packets()` but not on `reliablePackets()` for the same finite input.
 
 ## Documentation Required
 
@@ -258,14 +294,22 @@ This keeps Swift memory bounded by design. Any upstream buffering should be expl
 ## Migration Plan
 
 1. Keep current `packets()` unchanged.
-2. Add `reliablePackets()` as a new API.
-3. Update README examples to choose API by use case.
-4. Optionally add a convenience recording API in a later RFC.
+2. Land the generic `ReliablePackets<Element>` type and expose `reliablePackets()` on **file/decode-style sources first** (e.g. `URIDecodeSource`-based pipelines). Live-source exposure is deferred until the *Reliability Boundary* concerns are resolved by `RFC-002`.
+3. Update README examples to choose API by use case, leading with the boundary caveat for live sources.
+4. Add a convenience recording API (Option D) in a later RFC, layered on top of `reliablePackets()`.
 5. If users continue to misuse `packets()` for archival, consider renaming or deprecating in a major release.
 
-## Open Questions
+## Resolved Decisions
 
-- Should the reliable API be audio-only first, or generic for future video packets?
-- Should reliable packet delivery be throwing?
-- Should reliable delivery expose backpressure configuration?
-- Should the library eventually provide a file recording API instead of requiring users to consume packets manually?
+These started as open questions and are resolved as part of accepting this RFC.
+
+- **Generic vs. audio-only.** The primitive is generic (`ReliablePackets<Element>`) so video packet sources can adopt it later without a parallel type. The first concrete entry point is `AudioSource.reliablePackets() -> ReliablePackets<Buffer>`.
+- **Throwing.** `next()` is `async throws`. A silent short read on an archival API is a worse failure mode than a thrown error, because partial output without an error indication can corrupt recordings or uploads. Bus / pipeline errors observed during iteration surface through the thrown error; clean EOS surfaces as `nil`.
+- **Backpressure configuration.** Not exposed as a knob in the first cut. The reliable API is consumer-driven by construction; whatever upstream queue policy is needed for live sources is a property of the *source builder*, not of `reliablePackets()`. Re-evaluate when the live-source RFC lands.
+- **Recording API.** A file-oriented API is desirable but out of scope for this RFC; it will be built on top of `reliablePackets()` rather than instead of it.
+
+## Deferred Questions
+
+- Naming: keep `reliablePackets()` or switch to `archivalPackets()`. Both are acceptable; the doc comment carries the load either way. To be picked at implementation time.
+- Whether `packets()` should grow a `packets(buffer:)` overload exposing the realtime queue depth (currently fixed at `MediaStreamBackpressure.encodedPacketsNewest = 8`). Defer until a real caller asks for it.
+- Live-source exposure of `reliablePackets()` and the upstream queue-policy contract. See `RFC-002`.

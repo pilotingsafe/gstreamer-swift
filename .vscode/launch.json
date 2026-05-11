@@ -219,6 +219,26 @@
             "target": "gst-appsink",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release gst-appsink"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Debug gst-reliable-audio",
+            "target": "gst-reliable-audio",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gst-reliable-audio"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gstreamer-swift}",
+            "name": "Release gst-reliable-audio",
+            "target": "gst-reliable-audio",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gst-reliable-audio"
         }
     ]
 }

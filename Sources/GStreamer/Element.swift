@@ -25,9 +25,10 @@ import CGStreamerShim
 ///
 /// ### Setting Properties
 ///
-/// - ``set(_:_:)-7r6xd``
-/// - ``set(_:_:)-6y4xr``
-/// - ``set(_:_:)-9mvg4``
+/// - ``set(_:_:)-(_,Bool)``
+/// - ``set(_:_:)-(_,Double)``
+/// - ``set(_:_:)-(_,Int)``
+/// - ``set(_:_:)-(_,String)``
 ///
 /// ### Pads and Linking
 ///
@@ -85,23 +86,42 @@ import CGStreamerShim
 /// GStreamer's element property system is generally thread-safe for reads and writes,
 /// but concurrent modifications to the same property may have undefined behavior.
 ///
-/// - Note: For thread-safe property access in highly concurrent code, consider using
-///   external synchronization or performing all property modifications from a single
-///   isolation domain.
+/// > Note: For thread-safe property access in highly concurrent code, consider
+/// > using external synchronization or performing all property modifications from
+/// > a single isolation domain.
 public final class Element: @unchecked Sendable {
+    internal enum TransferOwnership {
+        case floating
+        case full
+        case none
+    }
+
     /// The underlying GstElement pointer.
     internal let element: UnsafeMutablePointer<GstElement>
 
-    /// Whether this element owns the reference (should unref on deinit).
-    private let ownsReference: Bool
+    /// Whether this element releases its reference on deinit.
+    private let releasesReferenceOnDeinit: Bool
 
-    internal init(element: UnsafeMutablePointer<GstElement>, ownsReference: Bool = true) {
-        self.element = element
-        self.ownsReference = ownsReference
+    internal init(element: UnsafeMutablePointer<GstElement>, transfer: TransferOwnership) {
+        switch transfer {
+        case .floating:
+            let object = UnsafeMutableRawPointer(element).assumingMemoryBound(to: GstObject.self)
+            guard let retainedObject = swift_gst_object_ref_sink(object) else {
+                preconditionFailure("GStreamer returned nil from ref-sink for a non-nil element")
+            }
+            self.element = UnsafeMutableRawPointer(retainedObject).assumingMemoryBound(to: GstElement.self)
+            self.releasesReferenceOnDeinit = true
+        case .full:
+            self.element = element
+            self.releasesReferenceOnDeinit = true
+        case .none:
+            self.element = element
+            self.releasesReferenceOnDeinit = false
+        }
     }
 
     deinit {
-        if ownsReference {
+        if releasesReferenceOnDeinit {
             swift_gst_object_unref(element)
         }
     }
@@ -275,6 +295,9 @@ public final class Element: @unchecked Sendable {
     /// Create an element from a factory name.
     ///
     /// This allows you to create elements programmatically for dynamic pipelines.
+    /// The returned wrapper keeps its own strong reference and can be dropped
+    /// after a successful ``Pipeline/add(_:)`` call while the pipeline continues
+    /// owning the element.
     ///
     /// - Parameters:
     ///   - factory: The element factory name (e.g., "queue", "tee", "videoscale").
@@ -299,7 +322,7 @@ public final class Element: @unchecked Sendable {
         guard let el = swift_gst_element_factory_make(factory, name) else {
             throw GStreamerError.elementNotFound(factory)
         }
-        return Element(element: el, ownsReference: true)
+        return Element(element: el, transfer: .floating)
     }
 
     // MARK: - Pads and Linking

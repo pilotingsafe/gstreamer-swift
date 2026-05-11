@@ -72,6 +72,9 @@ void swift_gst_message_parse_info(GstMessage* message, gchar** info_string, gcha
 /// Unref a message
 void swift_gst_message_unref(GstMessage* message);
 
+/// Ref-sink an object
+GstObject* swift_gst_object_ref_sink(GstObject* object);
+
 /// Unref an element
 void swift_gst_object_unref(gpointer object);
 
@@ -89,6 +92,12 @@ GstCaps* swift_gst_caps_from_string(const gchar* string);
 
 /// Convert caps to string (caller must g_free)
 gchar* swift_gst_caps_to_string(GstCaps* caps);
+
+/// Add a reference to caps
+GstCaps* swift_gst_caps_ref(GstCaps* caps);
+
+/// Compare caps with GStreamer's structured equality
+gboolean swift_gst_caps_is_equal(const GstCaps* first, const GstCaps* second);
 
 /// Unref caps
 void swift_gst_caps_unref(GstCaps* caps);

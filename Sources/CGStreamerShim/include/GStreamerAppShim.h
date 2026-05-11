@@ -9,6 +9,12 @@
 extern "C" {
 #endif
 
+typedef struct SwiftGstCallbackRegistration SwiftGstCallbackRegistration;
+typedef void (*SwiftGstContextRetainFunc)(void* context);
+typedef void (*SwiftGstContextReleaseFunc)(void* context);
+typedef void (*SwiftGstAppSinkEventCallback)(void* context);
+typedef void (*SwiftGstBusSyncMessageCallback)(GstMessage* message, void* context);
+
 // MARK: - AppSink
 
 /// Pull a sample from appsink (blocking)
@@ -34,6 +40,36 @@ void swift_gst_app_sink_set_max_buffers(GstAppSink* appsink, guint max);
 
 /// Set appsink drop property
 void swift_gst_app_sink_set_drop(GstAppSink* appsink, gboolean drop);
+
+/// Connect an appsink new-sample callback. The registration retains context.
+SwiftGstCallbackRegistration* swift_gst_app_sink_connect_new_sample(
+    GstAppSink* appsink,
+    SwiftGstAppSinkEventCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+);
+
+/// Connect an appsink eos callback. The registration retains context.
+SwiftGstCallbackRegistration* swift_gst_app_sink_connect_eos(
+    GstAppSink* appsink,
+    SwiftGstAppSinkEventCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+);
+
+/// Observe bus sync-message emissions without stealing messages from the bus.
+SwiftGstCallbackRegistration* swift_gst_bus_connect_sync_message_observer(
+    GstBus* bus,
+    SwiftGstBusSyncMessageCallback callback,
+    void* context,
+    SwiftGstContextRetainFunc retain_context,
+    SwiftGstContextReleaseFunc release_context
+);
+
+/// Disconnect a callback registration and release its registration context retain.
+void swift_gst_callback_registration_disconnect(SwiftGstCallbackRegistration* registration);
 
 // MARK: - AppSrc
 
@@ -65,6 +101,24 @@ void swift_gst_sample_unref(void* sample);
 
 /// Get buffer size
 gsize swift_gst_buffer_get_size(GstBuffer* buffer);
+
+/// Get buffer flags
+GstBufferFlags swift_gst_buffer_get_flags(GstBuffer* buffer);
+
+/// Replace buffer flags
+void swift_gst_buffer_set_flags(GstBuffer* buffer, GstBufferFlags flags);
+
+/// Check whether the GAP flag is set
+gboolean swift_gst_buffer_has_gap_flag(GstBuffer* buffer);
+
+/// Check whether the DISCONT flag is set
+gboolean swift_gst_buffer_has_discont_flag(GstBuffer* buffer);
+
+/// Get GST_BUFFER_FLAG_GAP
+GstBufferFlags swift_gst_buffer_flag_gap(void);
+
+/// Get GST_BUFFER_FLAG_DISCONT
+GstBufferFlags swift_gst_buffer_flag_discont(void);
 
 /// Ref a buffer
 GstBuffer* swift_gst_buffer_ref(GstBuffer* buffer);

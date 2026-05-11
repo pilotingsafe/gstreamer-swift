@@ -1,16 +1,17 @@
 # ADR-001: Invalid Input Error Taxonomy for AppSource and Future APIs
 
-**Status:** Proposed
+**Status:** Accepted and implemented
 **Date:** 2026-05-08
+**Accepted:** 2026-05-08
 **Related work:** `GStreamerBridgeSafetyandReliabilityFixes`
 **Decision owner:** TBD
 **Scope:** Public error taxonomy, `GStreamerError`, invalid user input handling
 
 ## Decision Needed
 
-Should a future release add a more semantically precise public error case for invalid appsrc input, instead of continuing to throw `GStreamerError.bufferMapFailed` for negative byte counts or missing positive-length payload pointers?
+Which public error case should represent invalid appsrc input, instead of continuing to throw `GStreamerError.bufferMapFailed` for negative byte counts or missing positive-length payload pointers?
 
-## Current Behavior
+## Pre-Implementation Behavior
 
 The safety fix branch validates all public `AppSource` push entry points:
 
@@ -18,15 +19,22 @@ The safety fix branch validates all public `AppSource` push entry points:
 - `push(data: Span<UInt8>, pts:duration:)`
 - `push(data: RawSpan, pts:duration:)`
 - `push(bytes:count:pts:duration:)`
+- `pushVideoFrame(data:width:height:format:pts:duration:)` (three overloads: `[UInt8]`, `Span<UInt8>`, `RawSpan`)
 
 Zero-length raw buffers are valid and push a zero-length GStreamer buffer. `Buffer(data: [])` is also valid.
 
-Invalid input currently throws `GStreamerError.bufferMapFailed`:
+Before this API cleanup, `GStreamerError.bufferMapFailed` was overloaded across four distinct semantic categories within `AppSource` alone:
 
-- `count < 0`
-- positive `count` with a nil or otherwise missing payload pointer
+| # | Trigger site | True semantic | Cleanup target |
+|---|---|---|---|
+| 1 | `count < 0` and "positive `count` with nil/missing payload pointer" in `pushPayload` | Caller-side argument validation | New invalid-argument case |
+| 2 | `data.count < expectedSize` in all three `pushVideoFrame` overloads | Caller-side argument validation (dimensions/payload size) | New invalid-argument case |
+| 3 | `withUnsafeBytes` / `withUnsafeBufferPointer` returning a `nil` `baseAddress` in the `[UInt8]` / `Span` / `RawSpan` push overloads | Swift/ABI corner case; not a user error and not a GStreamer mapping failure | Out of scope; keep `bufferMapFailed` (or rename to a more accurate internal-inconsistency case in a future cleanup) |
+| 4 | `swift_gst_buffer_new_wrapped_full` returning `nil` | Genuine GStreamer buffer allocation failure | Keep `bufferMapFailed` (this is its intended semantic) |
 
-This is an intentional compatibility compromise. It avoids adding a new public enum case while preventing runtime traps from negative counts or missing positive-length payload pointers.
+Categories 1 and 2 were both **caller input validation** and already existed in shipping code (`pushVideoFrame` size validation was not hypothetical). Category 3 is a rare ABI/runtime edge that callers cannot prevent. Category 4 is the only case where the name `bufferMapFailed` is semantically correct.
+
+The earlier consolidation under `bufferMapFailed` was an intentional compatibility compromise on the safety branch. It avoided adding a new public enum case while preventing runtime traps. It was not an indication that the underlying taxonomy problem had not yet ripened &mdash; it had.
 
 ## Problem
 
@@ -150,47 +158,51 @@ case invalidAppSourceInput
 
 ## Recommendation
 
-Do not change the current safety branch. Keep `GStreamerError.bufferMapFailed` there because the branch has already documented it as a compatibility compromise and verified the behavior.
+Do not change the safety branch retroactively. Keep `GStreamerError.bufferMapFailed` there because that branch documented it as a compatibility compromise and verified the behavior.
 
-For the next API cleanup release, prefer **Option B**:
-
-```swift
-case invalidArgument(String)
-```
-
-If the project expects many validation errors or needs programmatic inspection, use **Option C** instead:
+For this API cleanup release, use **Option C**:
 
 ```swift
 case invalidArgument(parameter: String, reason: String)
 ```
 
-Avoid an appsrc-specific error case unless there is a strong reason to model appsrc validation separately from the rest of the library.
+Rationale for picking C over B:
 
-## Proposed Decision
+- The pre-implementation code already validated **at least three distinct parameters** (`count`, payload pointer, `data.count` against `expectedVideoPayloadByteCount`) under what became `invalidArgument`. The "many APIs need structured validation" precondition for C was satisfied, not hypothetical.
+- Tests can match structurally (`#expect(error == .invalidArgument(parameter: "count", reason: _))`) instead of asserting on free-form strings, which is the only practical way to keep validation tests stable across release notes wording changes.
+- Migrating from `bufferMapFailed` to **any** new case is itself a one-shot taxonomy break; doing it at structured granularity costs the same compatibility budget as the unstructured form.
 
-**Deferred.**
-
-Current release behavior remains:
-
-```swift
-GStreamerError.bufferMapFailed
-```
-
-Future release should consider:
+Use **Option B** only as a minimal-increment fallback if the release explicitly cannot afford structured associated values:
 
 ```swift
-GStreamerError.invalidArgument(String)
+case invalidArgument(String)
 ```
 
-or:
+Avoid an appsrc-specific error case (Option D) unless there is a strong reason to model appsrc validation separately from the rest of the library.
+
+## Decision
+
+**Accepted and implemented.**
+
+The taxonomy problem was real and ripe: `bufferMapFailed` was overloaded across four semantically distinct categories in AppSource before this cleanup (see *Pre-Implementation Behavior*), and the trigger condition listed in *Decision Criteria* &mdash; "more than one public API needs to report invalid caller input" &mdash; was already satisfied.
+
+Implementation was deferred from the safety branch because that branch deliberately spent its compatibility budget on safety fixes only. This API cleanup release now adds the new public `GStreamerError` case and announces it in release notes.
+
+This API cleanup release adopts:
 
 ```swift
-GStreamerError.invalidArgument(parameter:reason:)
+GStreamerError.invalidArgument(parameter: String, reason: String)
 ```
+
+AppSource caller-side validation now uses `invalidArgument`. `bufferMapFailed` remains for real buffer map/read/write failures, GStreamer buffer allocation or wrapping failures, and rare Swift unsafe-buffer nil-`baseAddress` ABI corners.
+
+`GStreamerError.invalidArgument(String)` remains documented above only as the rejected minimal-increment fallback.
 
 ## Compatibility Impact
 
-Adding a new public enum case can affect source compatibility for downstream users who exhaustively switch over `GStreamerError`.
+This package is consumed as SwiftPM source and does not currently enable library evolution. Adding a public enum case can require SwiftPM source-package clients with exhaustive `switch`es over `GStreamerError` to update those switches when recompiling.
+
+The most likely affected code is an exhaustive `switch` that handles every existing `GStreamerError` case and has no `default` or `@unknown default`. Callers with a catch-all branch should not need source changes for this case addition.
 
 Example affected code:
 
@@ -200,46 +212,69 @@ case .bufferMapFailed:
     ...
 case .pushFailed:
     ...
-// no default
+// no default — compiler already warns this is fragile
 }
 ```
 
 Mitigation options:
 
-- Announce the change in release notes.
-- Recommend a `default` or `@unknown default` branch where appropriate.
-- If semantic correctness is prioritized, accept this as part of an API cleanup release.
+- Announce the change in release notes so callers exhaustively switching on `GStreamerError` can plan source updates.
+- Recommend `@unknown default` in downstream code, which is the official Swift idiom for non-frozen enums.
+- Bundle this taxonomy change into an API cleanup release so callers can address other warnings in the same pass.
 
-## Implementation Sketch
+## Implementation Summary
 
-If approved:
+Implemented in this API cleanup release:
 
-1. Add new case to `GStreamerError`.
-2. Update `description`.
-3. Update documentation topics.
-4. Change invalid `AppSource` input paths from `bufferMapFailed` to the new case.
-5. Update tests to assert the precise error.
-6. Add migration notes.
+1. Added the new case to `GStreamerError` in `Sources/GStreamer/Errors.swift` and extended `description`.
+2. Updated the doc-comment **Topics** organization in `Errors.swift`:
+   - Added a new `### Validation Errors` group that lists `invalidArgument(parameter:reason:)`.
+   - Rewrote the doc-comment for `bufferMapFailed` so its prose matches its post-cleanup semantic (genuine `gst_buffer_map` / `swift_gst_buffer_new_wrapped_full` failure), and removed language implying that it covers caller input mistakes.
+3. Migrated **all** Category 1 and Category 2 sites in `Sources/GStreamer/AppSource.swift` from `bufferMapFailed` to the new case &mdash; this includes both `pushPayload` argument validation and the `pushVideoFrame` size checks across the `[UInt8]` / `Span` / `RawSpan` overloads.
+4. Audited `expectedVideoPayloadByteCount(width:height:format:)` and migrated its invalid dimension, format, and overflow failures to `invalidArgument`.
+5. Left Category 3 (`withUnsafeBytes` returning a `nil` `baseAddress`) and Category 4 (`swift_gst_buffer_new_wrapped_full` returning `nil`) on `bufferMapFailed`. These are not caller input errors.
+6. Updated tests to assert the precise error structurally by parameter, not via free-form reason string matching.
+7. Added migration notes to the release.
+8. Deferred adopting `LocalizedError` on `GStreamerError`; it is not required by this ADR.
 
-Example:
+Example (Option C form, recommended):
 
 ```swift
-case invalidArgument(String)
+case invalidArgument(parameter: String, reason: String)
 
-case .invalidArgument(let message):
-    return "Invalid argument: \(message)"
+case .invalidArgument(let parameter, let reason):
+    return "Invalid argument '\(parameter)': \(reason)"
 ```
 
-AppSource:
+AppSource (`pushPayload`):
 
 ```swift
 guard count >= 0 else {
-    throw GStreamerError.invalidArgument("AppSource push requires a non-negative count")
+    throw GStreamerError.invalidArgument(
+        parameter: "count",
+        reason: "AppSource push requires a non-negative count"
+    )
 }
 guard count == 0 || payloadBytes != nil else {
-    throw GStreamerError.invalidArgument("AppSource push requires payload bytes when count > 0")
+    throw GStreamerError.invalidArgument(
+        parameter: "bytes",
+        reason: "AppSource push requires payload bytes when count > 0"
+    )
 }
 ```
+
+AppSource (`pushVideoFrame`):
+
+```swift
+guard data.count >= expectedSize else {
+    throw GStreamerError.invalidArgument(
+        parameter: "data",
+        reason: "pushVideoFrame requires at least \(expectedSize) bytes for \(width)x\(height) \(format)"
+    )
+}
+```
+
+If Option B is chosen instead, collapse the `parameter:reason:` pair into a single string at each call site.
 
 ## Tests Required
 
@@ -250,8 +285,14 @@ guard count == 0 || payloadBytes != nil else {
 - Positive-length pushes preserve existing timestamp and push behavior.
 - Existing `bufferMapFailed` tests still cover true map/allocation failures where applicable.
 
-## Open Questions
+## Resolved Questions
 
-- Should the error be plain string-based or structured by parameter and reason?
-- Should invalid input be a `GStreamerError` case or a nested API-specific error?
-- Should invalid dimensions in `pushVideoFrame` use the same error case?
+These started as open questions and are resolved as part of accepting this ADR.
+
+- **Plain string vs structured.** Resolved in favor of structured `parameter:reason:` (Option C). See *Recommendation*.
+- **`pushVideoFrame` dimension validation.** Already overloaded onto `bufferMapFailed` in pre-implementation shipping code (Category 2 in *Pre-Implementation Behavior*); migrated to the new `invalidArgument` case as part of the same cleanup.
+
+## Deferred Questions
+
+- Whether invalid input should remain a top-level `GStreamerError` case or move to a nested per-API error type. Current direction is to keep it on `GStreamerError` for symmetry with the rest of the taxonomy; revisit only if per-API error types are introduced elsewhere.
+- Whether to adopt `LocalizedError` on `GStreamerError` in a future cleanup.

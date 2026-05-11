@@ -73,10 +73,9 @@ import Synchronization
 ///
 /// ## Pipeline Syntax
 ///
-/// Pipelines use the `gst-launch-1.0` syntax:
-/// - Elements are separated by `!`
-/// - Properties use `property=value` syntax
-/// - Named elements use `name=identifier`
+/// Pipelines use the `gst-launch-1.0` syntax. Elements are separated by `!`,
+/// properties use `property=value` syntax, and named elements use
+/// `name=identifier`.
 ///
 /// ```swift
 /// // Simple pipeline
@@ -97,9 +96,9 @@ import Synchronization
 /// for most operations, but some concurrent modifications may require external
 /// synchronization. The cached bus instance uses a `Mutex` for thread-safe access.
 ///
-/// - Note: While the Pipeline can be safely passed between isolation domains,
-///   concurrent modifications to element properties should be avoided or externally
-///   synchronized.
+/// > Note: While the Pipeline can be safely passed between isolation domains,
+/// > concurrent modifications to element properties should be avoided or
+/// > externally synchronized.
 public final class Pipeline: @unchecked Sendable {
 
   /// Pipeline playback state.
@@ -201,7 +200,7 @@ public final class Pipeline: @unchecked Sendable {
   /// This begins media processing. Data flows from sources through the pipeline
   /// to sinks. The state change is asynchronous.
   ///
-  /// - Throws: ``GStreamerError/stateChangeFailed`` if the state change fails.
+  /// - Throws: ``GStreamerError/stateChangeFailed(element:from:to:)`` if the state change fails.
   ///
   /// ## Example
   ///
@@ -219,7 +218,7 @@ public final class Pipeline: @unchecked Sendable {
   /// The pipeline stops processing but retains its resources. It can be
   /// resumed by calling ``play()`` again.
   ///
-  /// - Throws: ``GStreamerError/stateChangeFailed`` if the state change fails.
+  /// - Throws: ``GStreamerError/stateChangeFailed(element:from:to:)`` if the state change fails.
   public func pause() throws {
     try setState(.paused)
   }
@@ -235,7 +234,7 @@ public final class Pipeline: @unchecked Sendable {
   /// Set the pipeline to a specific state.
   ///
   /// - Parameter state: The desired state.
-  /// - Throws: ``GStreamerError/stateChangeFailed`` if the state change fails.
+  /// - Throws: ``GStreamerError/stateChangeFailed(element:from:to:)`` if the state change fails.
   ///
   /// ## Example
   ///
@@ -316,7 +315,7 @@ public final class Pipeline: @unchecked Sendable {
     guard let el = swift_gst_bin_get_by_name(_element, name) else {
       return nil
     }
-    return Element(element: el)
+    return Element(element: el, transfer: .full)
   }
 
   /// Get an appsink element from the pipeline.
@@ -460,7 +459,7 @@ public final class Pipeline: @unchecked Sendable {
   /// This performs a flush seek with keyframe alignment for fast response.
   ///
   /// - Parameter position: The target position in nanoseconds.
-  /// - Throws: ``GStreamerError/stateChangeFailed`` if the seek fails.
+  /// - Throws: ``GStreamerError/stateChangeFailed(element:from:to:)`` if the seek fails.
   ///
   /// ## Example
   ///
@@ -484,7 +483,7 @@ public final class Pipeline: @unchecked Sendable {
   /// - Parameters:
   ///   - position: The target position in nanoseconds.
   ///   - flags: Seek flags controlling the behavior.
-  /// - Throws: ``GStreamerError/stateChangeFailed`` if the seek fails.
+  /// - Throws: ``GStreamerError/stateChangeFailed(element:from:to:)`` if the seek fails.
   ///
   /// ## Example
   ///
@@ -622,6 +621,9 @@ public final class Pipeline: @unchecked Sendable {
   /// Add an element to the pipeline.
   ///
   /// The element must be created separately and will be added to this pipeline.
+  /// Adding associates the element with the pipeline/bin while the Swift wrapper
+  /// still keeps its own strong reference. The wrapper may be dropped after a
+  /// successful add.
   ///
   /// - Parameter element: The element to add.
   /// - Returns: `true` if successful.

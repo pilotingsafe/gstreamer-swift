@@ -57,11 +57,13 @@ public final class AudioSource: @unchecked Sendable {
     }
   }
 
-  private let pipeline: Pipeline
+  internal let pipeline: Pipeline
   private let audioSink: AudioBufferSink?
   private let packetSink: AudioPacketSink?
   private let pipelineDescription: String
   private let buildDiagnostics: [String]
+  internal let reliableCoordinator: LiveAudioReliablePacketCoordinator?
+  internal let shutdownCoordinator = AudioSourceShutdownCoordinator()
 
   /// The encoding configured for this source.
   public let encoding: Encoding
@@ -70,6 +72,7 @@ public final class AudioSource: @unchecked Sendable {
     pipeline: Pipeline,
     audioSink: AudioBufferSink?,
     packetSink: AudioPacketSink?,
+    reliableCoordinator: LiveAudioReliablePacketCoordinator?,
     pipelineDescription: String,
     diagnostics: [String],
     encoding: Encoding
@@ -77,12 +80,14 @@ public final class AudioSource: @unchecked Sendable {
     self.pipeline = pipeline
     self.audioSink = audioSink
     self.packetSink = packetSink
+    self.reliableCoordinator = reliableCoordinator
     self.pipelineDescription = pipelineDescription
     self.buildDiagnostics = diagnostics
     self.encoding = encoding
   }
 
   deinit {
+    reliableCoordinator?.stopFromSource()
     pipeline.stop()
   }
 
@@ -112,7 +117,9 @@ public final class AudioSource: @unchecked Sendable {
   /// Encoded packet streams are realtime best-effort streams. They keep a
   /// bounded queue of recent packets and may drop older packets under
   /// slow-consumer backpressure. For raw capture, this returns an empty stream;
-  /// prefer ``buffers()``.
+  /// prefer ``buffers()``. For sources built with reliable delivery, this
+  /// returns an empty stream so the reliable bridge remains the only consumer
+  /// of the live appsink.
   public func packets() -> AsyncStream<Buffer> {
     guard let packetSink else {
       return AsyncStream { $0.finish() }
@@ -120,9 +127,120 @@ public final class AudioSource: @unchecked Sendable {
     return packetSink.packets()
   }
 
-  /// Stop the underlying pipeline.
+  /// Return encoded live reliable packets for a source built with reliable delivery.
+  ///
+  /// Reliable live delivery is available only for encoded audio sources built
+  /// with ``AudioSourceBuilder/withReliableDelivery(leaky:maxBuffers:maxBytes:maxTime:)``.
+  /// Raw live audio should continue to use ``buffers()``; realtime monitoring
+  /// should continue to use ``packets()``.
+  ///
+  /// The returned sequence owns the one live appsink reliable bridge for this
+  /// `AudioSource`. A source supports only one reliable sequence.
+  ///
+  /// - Throws: ``GStreamerError/invalidArgument(parameter:reason:)`` if reliable
+  ///   delivery was not configured or the reliable appsink is already owned.
+  public func reliablePackets() throws -> ReliablePackets<ReliablePacket<Buffer>> {
+    guard let reliableCoordinator else {
+      throw GStreamerError.invalidArgument(
+        parameter: "AudioSource.reliablePackets",
+        reason: "Reliable delivery is not configured; call withReliableDelivery(...) before build()."
+      )
+    }
+    return try reliableCoordinator.reliablePackets()
+  }
+
+  /// Stop the underlying pipeline immediately.
+  ///
+  /// This is the realtime shutdown path. It does not send EOS and does not
+  /// guarantee delivery of encoder tail packets. Reliable live callers that
+  /// need an EOS drain should use ``finalize(timeout:)``.
   public func stop() async {
-    pipeline.stop()
+    shutdownCoordinator.stop(
+      pipeline: pipeline,
+      reliableCoordinator: reliableCoordinator
+    )
+  }
+
+  /// Gracefully finalize a live reliable source.
+  ///
+  /// `finalize(timeout:)` sends EOS, waits for Bus EOS or ERROR, then waits
+  /// for the active reliable iterator to drain to `nil` or be cancelled before
+  /// stopping the pipeline. Calling it more than once is safe. Calling
+  /// ``stop()`` first keeps the immediate-stop behavior and does not restart
+  /// the pipeline.
+  ///
+  /// - Parameter timeout: Maximum time to wait for Bus EOS or ERROR.
+  /// - Throws: ``GStreamerError/busError(_:source:debug:)`` on EOS send
+  ///   failure, bus error, or timeout.
+  public func finalize(timeout: Duration = .seconds(5)) async throws {
+    try await shutdownCoordinator.finalize(
+      pipeline: pipeline,
+      reliableCoordinator: reliableCoordinator,
+      timeout: timeout
+    )
+  }
+
+  internal func reliablePacketRuntimeSnapshotForTesting()
+    -> ReliablePacketRuntimeSnapshotForTesting
+  {
+    let shutdownState = shutdownCoordinator.snapshot()
+    return reliableCoordinator?.runtimeSnapshot(
+      shutdownState: shutdownState
+    ) ?? ReliablePacketRuntimeSnapshotForTesting(
+      newSampleHandlerCount: 0,
+      pendingContinuationCount: 0,
+      cleanupAcknowledgementCount: 0,
+      finalized: shutdownState.finalized,
+      stopped: shutdownState.stopped,
+      activePipeline: nil,
+      activeSequence: false
+    )
+  }
+
+  internal func reliablePacketPipelineForTesting() -> Pipeline? {
+    reliableCoordinator?.activePipelineForTesting()
+  }
+
+  internal func reliableFirstSampleCapsForTesting() async throws -> String {
+    guard let reliableCoordinator else {
+      throw GStreamerError.invalidArgument(
+        parameter: "AudioSource.reliablePackets",
+        reason: "Reliable delivery is not configured; call withReliableDelivery(...) before build()."
+      )
+    }
+    return try await reliableCoordinator.firstSampleCapsForTesting()
+  }
+
+  internal func injectReliablePacketBusErrorForTesting(
+    message: String,
+    source: String? = "AudioSource.reliablePackets",
+    debug: String? = nil
+  ) {
+    reliableCoordinator?.injectBusErrorForTesting(
+      GStreamerError.busError(message, source: source, debug: debug)
+    )
+  }
+
+  internal func injectReliableDiscontinuityForTesting(
+    kind: Discontinuity.Kind,
+    pts: UInt64? = nil,
+    duration: UInt64? = nil
+  ) {
+    reliableCoordinator?.injectDiscontinuityForTesting(
+      kind: kind,
+      pts: pts,
+      duration: duration
+    )
+  }
+
+  internal func injectReliableFinalizeBusErrorForTesting(
+    message: String,
+    source: String? = "AudioSource.finalize",
+    debug: String? = nil
+  ) {
+    shutdownCoordinator.injectFinalizeBusErrorForTesting(
+      GStreamerError.busError(message, source: source, debug: debug)
+    )
   }
 
   /// Discover available microphones on the system.
@@ -283,6 +401,9 @@ public struct AudioSourceBuilder: Sendable {
   private var channels: Int?
   private var format: AudioFormat?
   private var encoding: AudioSource.Encoding = .raw
+  private var reliableDeliveryRequest: AudioSourceReliableDeliveryRequest?
+  private var reliableDeliveryHooks = AudioSourceReliableDeliveryHooks()
+  private var sourcePipelineCandidatesForTesting: [String]?
 
   fileprivate init(selection: DeviceSelection) {
     self.selection = selection
@@ -326,6 +447,161 @@ public struct AudioSourceBuilder: Sendable {
     withEncoding(.aac(bitrate: bitrate))
   }
 
+  /// Opt into encoded live reliable delivery with an explicit GStreamer queue policy.
+  ///
+  /// Reliable live delivery inserts a bounded `queue` before the encoder and
+  /// uses a bounded non-dropping appsink. `QueueLeaky.none` blocks upstream
+  /// when the queue is full, which avoids silent queue drops when consumers
+  /// keep up but can surface source xruns or device-level loss under sustained
+  /// slowness. `QueueLeaky.upstream` drops incoming buffers when full, keeping
+  /// older queued data. `QueueLeaky.downstream` drops older queued buffers to
+  /// keep latency lower.
+  ///
+  /// Reliable live delivery is encoded-audio-only in this phase; configure
+  /// Opus or AAC before calling ``build()``. Raw reliable live buffers,
+  /// VideoSource reliable delivery, fan-out, and recording conveniences are
+  /// future work.
+  public func withReliableDelivery(
+    leaky: QueueLeaky = .none,
+    maxBuffers: UInt? = 256,
+    maxBytes: UInt? = nil,
+    maxTime: Duration? = .seconds(2)
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryRequest = AudioSourceReliableDeliveryRequest(
+      leaky: leaky,
+      maxBuffers: maxBuffers,
+      maxBytes: maxBytes,
+      maxTime: maxTime
+    )
+    return copy
+  }
+
+  internal func withReliableDeliveryCandidateDescriptionsForTesting(
+    _ descriptions: [String],
+    sinkName: String,
+    queueName: String? = nil
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.candidateDescriptionsForTesting = descriptions
+    copy.reliableDeliveryHooks.candidateSinkNameForTesting = sinkName
+    copy.reliableDeliveryHooks.candidateQueueNameForTesting = queueName
+    return copy
+  }
+
+  internal func withReliablePacketCandidateDescriptionsForTesting(
+    _ descriptions: [String],
+    sinkName: String,
+    queueName: String? = nil
+  ) -> AudioSourceBuilder {
+    withReliableDeliveryCandidateDescriptionsForTesting(
+      descriptions,
+      sinkName: sinkName,
+      queueName: queueName
+    )
+  }
+
+  internal func withReliableDeliveryOnCandidateStartForTesting(
+    _ callback: @escaping @Sendable (Pipeline, String) -> Void
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.onCandidateStartForTesting = callback
+    return copy
+  }
+
+  internal func withReliablePacketOnCandidateStartForTesting(
+    _ callback: @escaping @Sendable (Pipeline, String) -> Void
+  ) -> AudioSourceBuilder {
+    withReliableDeliveryOnCandidateStartForTesting(callback)
+  }
+
+  internal func withReliableDeliveryOnCleanupForTesting(
+    _ callback: @escaping @Sendable () -> Void
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.onCleanupForTesting = callback
+    return copy
+  }
+
+  internal func withReliablePacketOnCleanupForTesting(
+    _ callback: @escaping @Sendable () -> Void
+  ) -> AudioSourceBuilder {
+    withReliableDeliveryOnCleanupForTesting(callback)
+  }
+
+  internal func _withReliableDeliveryFirstSampleCapsProbe(
+    _ probe: (@Sendable (String) -> Void)?
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.firstSampleCapsProbe = probe
+    return copy
+  }
+
+  internal func _withFirstSampleCapsProbe(
+    _ probe: (@Sendable (String) -> Void)?
+  ) -> AudioSourceBuilder {
+    _withReliableDeliveryFirstSampleCapsProbe(probe)
+  }
+
+  internal func withReliableDeliverySendEOSForTesting(
+    _ sendEOS: @escaping @Sendable (Pipeline) -> Bool
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.sendEOSForTesting = sendEOS
+    return copy
+  }
+
+  internal func withReliablePacketSendEOSForTesting(
+    _ sendEOS: @escaping @Sendable (Pipeline) -> Bool
+  ) -> AudioSourceBuilder {
+    withReliableDeliverySendEOSForTesting(sendEOS)
+  }
+
+  internal func withReliableDeliveryFinalizeErrorForTesting(
+    _ error: (@Sendable () -> GStreamerError?)?
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.finalizeErrorAfterSendEOSForTesting = error
+    return copy
+  }
+
+  internal func withReliableDeliverySuppressEOSCallbacksForTesting(
+    _ enabled: Bool = true
+  ) -> AudioSourceBuilder {
+    var copy = self
+    copy.reliableDeliveryHooks.suppressEOSCallbacksForTesting = enabled
+    return copy
+  }
+
+  internal func withReliablePacketSuppressEOSCallbacksForTesting(
+    _ enabled: Bool = true
+  ) -> AudioSourceBuilder {
+    withReliableDeliverySuppressEOSCallbacksForTesting(enabled)
+  }
+
+  internal func _withSourcePipelineCandidatesForTesting(_ candidates: [String])
+    -> AudioSourceBuilder
+  {
+    var copy = self
+    copy.sourcePipelineCandidatesForTesting = candidates
+    return copy
+  }
+
+  internal func _pipelineDescriptionForTesting(
+    source: String,
+    sinkName: String,
+    queueName: String
+  ) throws -> String {
+    let reliableDelivery = try makeReliableDeliveryConfiguration(allowUnboundedForTesting: true)
+    return buildPipelineDescription(
+      source: source,
+      encoder: resolveEncoderCandidates().first ?? nil,
+      sinkName: sinkName,
+      queueName: queueName,
+      reliableDelivery: reliableDelivery
+    )
+  }
+
   /// Build the AudioSource, selecting the first working pipeline.
   public func build() throws -> AudioSource {
     if let sampleRate, sampleRate <= 0 {
@@ -344,37 +620,67 @@ public struct AudioSourceBuilder: Sendable {
       throw AudioSource.AudioSourceError.invalidConfiguration("AAC bitrate must be positive")
     }
 
-    let sinkName = "sink\(UInt32.random(in: 0...UInt32.max))"
+    let reliableDelivery = try makeReliableDeliveryConfiguration()
 
-    let sourceCandidates = resolveSourceCandidates()
+    let sinkName = reliableDeliveryHooks.candidateSinkNameForTesting
+      ?? "sink\(UInt32.random(in: 0...UInt32.max))"
+    let queueName = reliableDeliveryHooks.candidateQueueNameForTesting
+      ?? "reliableQueue\(UInt32.random(in: 0...UInt32.max))"
+
+    let sourceCandidates = sourcePipelineCandidatesForTesting ?? resolveSourceCandidates()
     let encoderCandidates = resolveEncoderCandidates()
+    let explicitDescriptions = reliableDelivery?.candidateDescriptionsForTesting
 
     var diagnostics: [String] = []
 
-    for source in sourceCandidates {
-      for encoder in encoderCandidates {
-        let description = buildPipelineDescription(
-          source: source,
-          encoder: encoder,
-          sinkName: sinkName
-        )
+    let descriptions: [String]
+    if let explicitDescriptions {
+      descriptions = explicitDescriptions
+    } else {
+      descriptions = sourceCandidates.flatMap { source in
+        encoderCandidates.map { encoder in
+          buildPipelineDescription(
+            source: source,
+            encoder: encoder,
+            sinkName: sinkName,
+            queueName: queueName,
+            reliableDelivery: reliableDelivery
+          )
+        }
+      }
+    }
 
+    for description in descriptions {
         do {
           let pipeline = try Pipeline(description)
           let audioSink: AudioBufferSink?
           let packetSink: AudioPacketSink?
+          let reliableCoordinator: LiveAudioReliablePacketCoordinator?
+
+          reliableDelivery?.onCandidateStartForTesting?(pipeline, sinkName)
 
           if encoding == .raw {
             audioSink = try pipeline.audioBufferSink(named: sinkName)
             packetSink = nil
+            reliableCoordinator = nil
+          } else if let reliableDelivery {
+            audioSink = nil
+            packetSink = nil
+            reliableCoordinator = try LiveAudioReliablePacketCoordinator(
+              pipeline: pipeline,
+              sinkName: sinkName,
+              configuration: reliableDelivery
+            )
           } else {
             audioSink = nil
             packetSink = try AudioPacketSink(pipeline: pipeline, name: sinkName)
+            reliableCoordinator = nil
           }
 
           do {
             try pipeline.play()
           } catch {
+            reliableCoordinator?.stopFromSource()
             pipeline.stop()
             throw error
           }
@@ -383,6 +689,7 @@ public struct AudioSourceBuilder: Sendable {
             pipeline: pipeline,
             audioSink: audioSink,
             packetSink: packetSink,
+            reliableCoordinator: reliableCoordinator,
             pipelineDescription: description,
             diagnostics: diagnostics,
             encoding: encoding
@@ -391,10 +698,63 @@ public struct AudioSourceBuilder: Sendable {
           diagnostics.append("Failed: \(description) -> \(error)")
           continue
         }
-      }
     }
 
     throw AudioSource.AudioSourceError.noWorkingPipeline(diagnostics)
+  }
+
+  private func makeReliableDeliveryConfiguration(
+    allowUnboundedForTesting: Bool = false
+  ) throws
+    -> AudioSourceReliableDeliveryConfiguration?
+  {
+    guard let request = reliableDeliveryRequest else {
+      return nil
+    }
+
+    if encoding == .raw {
+      throw AudioSource.AudioSourceError.invalidConfiguration(
+        "Reliable live packet delivery requires encoded audio output; configure Opus or AAC encoding before build"
+      )
+    }
+
+    if let maxTime = request.maxTime,
+      !ReliableDurationConversion.validateNonNegative(maxTime)
+    {
+      throw AudioSource.AudioSourceError.invalidConfiguration(
+        "Reliable delivery maxTime must be non-negative"
+      )
+    }
+
+    let maxTimeNanoseconds = request.maxTime.map {
+      ReliableDurationConversion.nanosecondsClampingNegativeToZero($0)
+    }
+    let maxBuffers = request.maxBuffers ?? 0
+    let maxBytes = request.maxBytes ?? 0
+    let maxTime = maxTimeNanoseconds ?? 0
+
+    if !allowUnboundedForTesting && maxBuffers == 0 && maxBytes == 0 && maxTime == 0 {
+      throw AudioSource.AudioSourceError.invalidConfiguration(
+        "Reliable delivery requires at least one finite non-zero queue bound"
+      )
+    }
+
+    return AudioSourceReliableDeliveryConfiguration(
+      leaky: request.leaky,
+      maxBuffers: maxBuffers,
+      maxBytes: maxBytes,
+      maxTimeNanoseconds: maxTime,
+      firstSampleCapsProbe: reliableDeliveryHooks.firstSampleCapsProbe,
+      candidateDescriptionsForTesting: reliableDeliveryHooks.candidateDescriptionsForTesting,
+      onCandidateStartForTesting: reliableDeliveryHooks.onCandidateStartForTesting,
+      onCleanupForTesting: reliableDeliveryHooks.onCleanupForTesting,
+      sendEOSForTesting: reliableDeliveryHooks.sendEOSForTesting,
+      finalizeErrorAfterSendEOSForTesting:
+        reliableDeliveryHooks.finalizeErrorAfterSendEOSForTesting,
+      suppressEOSCallbacksForTesting:
+        reliableDeliveryHooks.suppressEOSCallbacksForTesting,
+      probeState: AudioSourceReliablePacketProbeState()
+    )
   }
 
   private func resolveSourceCandidates() -> [String] {
@@ -460,7 +820,9 @@ public struct AudioSourceBuilder: Sendable {
   private func buildPipelineDescription(
     source: String,
     encoder: String?,
-    sinkName: String
+    sinkName: String,
+    queueName: String,
+    reliableDelivery: AudioSourceReliableDeliveryConfiguration?
   ) -> String {
     var parts: [String] = [source, "audioconvert", "audioresample"]
 
@@ -469,11 +831,23 @@ public struct AudioSourceBuilder: Sendable {
       parts.append(caps)
     }
 
+    if let reliableDelivery {
+      parts.append(
+        "queue name=\(queueName) leaky=\(reliableDelivery.leaky.rawValue) max-size-buffers=\(reliableDelivery.maxBuffers) max-size-bytes=\(reliableDelivery.maxBytes) max-size-time=\(reliableDelivery.maxTimeNanoseconds)"
+      )
+    }
+
     if let encoder {
       parts.append(encoder)
     }
 
-    parts.append("appsink name=\(sinkName) sync=false drop=true max-buffers=1 emit-signals=true")
+    if reliableDelivery == nil {
+      parts.append("appsink name=\(sinkName) sync=false drop=true max-buffers=1 emit-signals=true")
+    } else {
+      parts.append(
+        "appsink name=\(sinkName) drop=false sync=false emit-signals=true enable-last-sample=false wait-on-eos=true max-buffers=1"
+      )
+    }
 
     return parts.joined(separator: " ! ")
   }

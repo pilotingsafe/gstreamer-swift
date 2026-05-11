@@ -113,6 +113,226 @@ struct APISafetyStaticTests {
         #expect(appSink.contains("public func frames() -> Frames"))
     }
 
+    @Test("ReliablePackets public API surface remains source-compatible")
+    func reliablePacketsPublicAPISurfaceRemainsSourceCompatible() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.combinedSwiftSources(in: root.appendingPathComponent("Sources/GStreamer"))
+
+        #expect(
+            Self.containsStructConformance(
+                typeName: "ReliablePackets",
+                genericClause: "<Element: Sendable>",
+                conformances: ["AsyncSequence", "Sendable"],
+                in: source
+            ),
+            "ReliablePackets must be public, generic over Sendable elements, and conform to AsyncSequence + Sendable"
+        )
+        #expect(
+            Self.containsNestedIteratorConformance(in: source),
+            "ReliablePackets.AsyncIterator must conform to AsyncIteratorProtocol + Sendable"
+        )
+        #expect(
+            Self.containsReliableNextSignature(in: source),
+            "ReliablePackets.AsyncIterator.next() must be @concurrent/equivalent and async throws -> Element?"
+        )
+        #expect(
+            source.range(
+                of: #"public\s+func\s+makeAsyncIterator\(\)\s*->\s*AsyncIterator"#,
+                options: .regularExpression
+            ) != nil,
+            "ReliablePackets must expose public makeAsyncIterator() -> AsyncIterator"
+        )
+    }
+
+    @Test("Audio file source API exposes only the reliable file/decode surface")
+    func audioFileSourceAPIExposesOnlyReliableFileDecodeSurface() throws {
+        let root = try Self.packageRoot()
+        let audioSource = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/AudioSource.swift"))
+        let source = try Self.combinedSwiftSources(in: root.appendingPathComponent("Sources/GStreamer"))
+        let microphoneBuilder = try Self.bracedDeclaration(beginningWith: "public struct AudioSourceBuilder", in: audioSource)
+
+        #expect(source.contains("public static func file(path: String) -> AudioFileSourceBuilder"))
+        #expect(Self.containsSendableType("AudioFileSourceBuilder", in: source))
+        #expect(Self.containsSendableType("AudioFileSource", in: source))
+        #expect(source.contains("public func build() throws -> AudioFileSource"))
+        #expect(source.contains("public func withEncoding(_ encoding: AudioSource.Encoding) -> AudioFileSourceBuilder"))
+        #expect(source.contains("public func withOpusEncoding(bitrate: Int) -> AudioFileSourceBuilder"))
+        #expect(source.contains("public func withAACEncoding(bitrate: Int) -> AudioFileSourceBuilder"))
+        #expect(source.contains("public func withFormat(_ format: AudioFormat) -> AudioFileSourceBuilder"))
+        #expect(source.contains("public func withSampleRate(_ rate: Int) -> AudioFileSourceBuilder"))
+        #expect(source.contains("public func withChannels(_ channels: Int) -> AudioFileSourceBuilder"))
+        #expect(source.contains("case raw"))
+        #expect(source.contains("case opus(bitrate: Int)"))
+        #expect(source.contains("case aac(bitrate: Int)"))
+        #expect(source.contains("public func reliablePackets() -> ReliablePackets<Buffer>"))
+        #expect(!microphoneBuilder.contains("reliablePackets("))
+    }
+
+    @Test("RFC-002 live reliable audio public API surface is additive and scoped")
+    func rfc002LiveReliableAudioPublicAPISurfaceIsAdditiveAndScoped() throws {
+        let root = try Self.packageRoot()
+        let audioSource = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/AudioSource.swift"))
+        let audioFileSource = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioFileSource.swift")
+        )
+        let videoSource = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/VideoSource.swift"))
+        let source = try Self.combinedSwiftSources(in: root.appendingPathComponent("Sources/GStreamer"))
+        let audioSourceClass = try Self.bracedDeclaration(beginningWith: "public final class AudioSource", in: audioSource)
+        let audioBuilder = try Self.bracedDeclaration(beginningWith: "public struct AudioSourceBuilder", in: audioSource)
+        let videoSourceClass = try Self.bracedDeclaration(beginningWith: "public final class VideoSource", in: videoSource)
+        let videoBuilder = try Self.bracedDeclaration(beginningWith: "public struct VideoSourceBuilder", in: videoSource)
+        let audioFileSourceType = try Self.bracedDeclaration(beginningWith: "public struct AudioFileSource", in: audioFileSource)
+
+        #expect(
+            Self.containsReliableDeliveryBuilderSignature(in: audioBuilder),
+            "AudioSourceBuilder.withReliableDelivery must default to leaky: .none, maxBuffers: 256, maxBytes: nil, maxTime: .seconds(2)"
+        )
+        #expect(
+            audioSourceClass.range(
+                of: #"public\s+func\s+reliablePackets\(\)\s+throws\s*->\s*ReliablePackets<\s*ReliablePacket<\s*Buffer\s*>\s*>"#,
+                options: .regularExpression
+            ) != nil,
+            "AudioSource must expose reliablePackets() throws -> ReliablePackets<ReliablePacket<Buffer>>"
+        )
+        #expect(
+            audioSourceClass.range(
+                of: #"public\s+func\s+finalize\(\s*timeout:\s*Duration\s*=\s*\.seconds\(\s*5\s*\)\s*\)\s+async\s+throws"#,
+                options: .regularExpression
+            ) != nil,
+            "AudioSource.finalize(timeout:) must default to .seconds(5)"
+        )
+        #expect(
+            Self.containsReliablePacketDeclaration(in: source),
+            "ReliablePacket must be public, generic over Sendable payloads, and Sendable"
+        )
+        #expect(
+            Self.containsDiscontinuityDeclarationWithExactKinds(in: source),
+            "Discontinuity.Kind must expose exactly formatChange, discont, gap, and dropped"
+        )
+        #expect(
+            !source.contains("public enum LiveSourceDeliveryPolicy")
+                && !source.contains("public struct LiveSourceDeliveryPolicy")
+                && !source.contains("public final class LiveSourceDeliveryPolicy"),
+            "RFC-002 must not add a public LiveSourceDeliveryPolicy type"
+        )
+        #expect(
+            !videoSourceClass.contains("public func reliablePackets("),
+            "RFC-002 is audio-only; VideoSource must not expose reliablePackets()"
+        )
+        #expect(
+            !videoBuilder.contains("public func withReliableDelivery("),
+            "RFC-002 is audio-only; VideoSourceBuilder must not expose withReliableDelivery(...)"
+        )
+        #expect(
+            audioFileSourceType.contains("public func reliablePackets() -> ReliablePackets<Buffer>"),
+            "AudioFileSource.reliablePackets() must remain source-compatible"
+        )
+    }
+
+    @Test("Audio file build remains lazy until reliable packet iteration starts")
+    func audioFileBuildRemainsLazyUntilReliablePacketIterationStarts() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.combinedSwiftSources(in: root.appendingPathComponent("Sources/GStreamer"))
+        let builder = try Self.bracedDeclaration(beginningWith: "public struct AudioFileSourceBuilder", in: source)
+        let build = try Self.bracedDeclaration(beginningWith: "public func build() throws -> AudioFileSource", in: builder)
+
+        #expect(build.contains("GStreamerError.invalidArgument"))
+        #expect(!build.contains("Pipeline("))
+        #expect(!build.contains(".play()"))
+        #expect(!build.contains("setState(.playing)"))
+    }
+
+    @Test("Reliable audio file construction does not interpolate raw file paths or URIs")
+    func reliableAudioFileConstructionDoesNotInterpolateRawFilePathsOrURIs() throws {
+        let root = try Self.packageRoot()
+        let files = try Self.recursiveRegularFiles(in: root.appendingPathComponent("Sources/GStreamer")) { file in
+            file.pathExtension == "swift"
+        }
+        let disallowedSnippets = [
+            #"file://\(path)"#,
+            #"file://\(url.path)"#,
+            #"uri=\(uri)"#,
+            #"uri=\(path)"#,
+            #"uri=\(filePath)"#,
+            #"location=\(path)"#,
+            #"URIDecodeSource(uri: "file://\(path)")"#,
+        ]
+        var violations: [String] = []
+
+        for file in files {
+            let contents = try Self.contents(of: file)
+            let scansReliableAudioConstruction = contents.contains("AudioFileSource")
+                || contents.contains("ReliablePackets")
+                || file.lastPathComponent == "URIDecodeSource.swift"
+
+            guard scansReliableAudioConstruction else { continue }
+
+            for snippet in disallowedSnippets where contents.contains(snippet) {
+                violations.append("\(Self.relativePath(file, to: root)): \(snippet)")
+            }
+        }
+
+        #expect(
+            violations.isEmpty,
+            "Use URL/path property escaping instead of raw interpolation in file/decode pipeline construction:\n\(violations.joined(separator: "\n"))"
+        )
+    }
+
+    @Test("Reliable bridge is pull based, cancellable, and non-dropping")
+    func reliableBridgeIsPullBasedCancellableAndNonDropping() throws {
+        let root = try Self.packageRoot()
+        let reliablePackets = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/ReliablePackets.swift")
+        )
+        let audioFileSource = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioFileSource.swift")
+        )
+        let reliableSource = try Self.bracedDeclaration(
+            beginningWith: "private final class AudioFileReliablePacketSource",
+            in: audioFileSource
+        )
+        let activeCandidate = try Self.bracedDeclaration(
+            beginningWith: "private final class ActiveCandidate",
+            in: audioFileSource
+        )
+        let source = [reliablePackets, reliableSource, activeCandidate].joined(separator: "\n")
+
+        #expect(source.contains("withTaskCancellationHandler"))
+        #expect(source.contains("swift_gst_app_sink_try_pull_sample"))
+        #expect(!source.contains("swift_gst_app_sink_pull_sample"))
+        #expect(!source.contains(".bufferingNewest"))
+        #expect(!source.contains(".bufferingOldest"))
+    }
+
+    @Test("Realtime AudioSource.packets stays delegated and lossy")
+    func realtimeAudioSourcePacketsStaysDelegatedAndLossy() throws {
+        let root = try Self.packageRoot()
+        let audioSource = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/AudioSource.swift"))
+        let publicPackets = try Self.bracedDeclaration(
+            beginningWith: "public func packets() -> AsyncStream<Buffer>",
+            in: audioSource
+        )
+        let audioPacketSink = try Self.bracedDeclaration(
+            beginningWith: "private final class AudioPacketSink",
+            in: audioSource
+        )
+        let delegatedPackets = try Self.bracedDeclaration(
+            beginningWith: "func packets() -> AsyncStream<Buffer>",
+            in: audioPacketSink
+        )
+
+        #expect(publicPackets.contains("return packetSink.packets()"))
+        #expect(
+            Self.containsBufferingNewestPolicy(
+                source: audioSource,
+                implementation: delegatedPackets,
+                expectedCount: 8
+            )
+        )
+        #expect(audioSource.contains("drop=true"))
+        #expect(audioSource.contains("max-buffers=1"))
+    }
+
     @Test("Bus-derived streams keep non-dropping buffering behavior")
     func busDerivedStreamsDoNotUseDroppingBufferPolicies() throws {
         let root = try Self.packageRoot()
@@ -326,6 +546,15 @@ struct APISafetyStaticTests {
         return files.sorted { $0.path < $1.path }
     }
 
+    private static func combinedSwiftSources(in directory: URL) throws -> String {
+        let files = try recursiveRegularFiles(in: directory) { $0.pathExtension == "swift" }
+            .sorted { $0.path < $1.path }
+        let chunks = try files.map { file in
+            try "// \(file.lastPathComponent)\n" + contents(of: file)
+        }
+        return chunks.joined(separator: "\n")
+    }
+
     private static func recursiveRegularFiles(
         in directory: URL,
         including shouldInclude: (URL) -> Bool
@@ -409,6 +638,147 @@ struct APISafetyStaticTests {
         }
 
         throw StaticAPISafetyError.unbalancedDeclaration(declaration)
+    }
+
+    private static func containsStructConformance(
+        typeName: String,
+        genericClause: String,
+        conformances: [String],
+        in source: String
+    ) -> Bool {
+        guard let declarationLine = source
+            .split(separator: "\n")
+            .first(where: {
+                $0.contains("public struct \(typeName)\(genericClause)")
+            })
+        else {
+            return false
+        }
+
+        return conformances.allSatisfy { declarationLine.contains($0) }
+    }
+
+    private static func containsNestedIteratorConformance(in source: String) -> Bool {
+        guard let reliablePackets = try? bracedDeclaration(beginningWith: "public struct ReliablePackets", in: source),
+              let iteratorLine = reliablePackets
+                .split(separator: "\n")
+                .first(where: { $0.contains("struct AsyncIterator") || $0.contains("public struct AsyncIterator") })
+        else {
+            return false
+        }
+
+        return iteratorLine.contains("AsyncIteratorProtocol") && iteratorLine.contains("Sendable")
+    }
+
+    private static func containsReliableNextSignature(in source: String) -> Bool {
+        guard let reliablePackets = try? bracedDeclaration(beginningWith: "public struct ReliablePackets", in: source),
+              let iterator = try? bracedDeclaration(beginningWith: "public struct AsyncIterator", in: reliablePackets)
+        else {
+            return false
+        }
+
+        let normalized = iterator.replacingOccurrences(of: "\n", with: " ")
+        let hasThrowingSignature = normalized.range(
+            of: #"(?:mutating\s+)?func\s+next\(\)\s+async\s+throws\s*->\s*Element\?"#,
+            options: .regularExpression
+        ) != nil
+        let hasConcurrentIsolation = normalized.contains("@concurrent")
+            || normalized.contains("nonisolated")
+
+        return hasThrowingSignature && hasConcurrentIsolation
+    }
+
+    private static func containsSendableType(_ typeName: String, in source: String) -> Bool {
+        source.range(
+            of: #"public\s+(?:struct|final\s+class|actor)\s+\#(typeName)\b[^\n{]*(?:@unchecked\s+)?Sendable"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func containsReliableDeliveryBuilderSignature(in source: String) -> Bool {
+        guard let declaration = try? bracedDeclaration(
+            beginningWith: "public func withReliableDelivery",
+            in: source
+        ) else {
+            return false
+        }
+
+        let signatureSource = declaration.split(separator: "{", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? declaration
+        let signature = signatureSource.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+
+        return signature.range(of: #"->\s*AudioSourceBuilder"#, options: .regularExpression) != nil
+            && signature.range(
+                of: #"leaky:\s*QueueLeaky\s*=\s*\.none"#,
+                options: .regularExpression
+            ) != nil
+            && signature.range(
+                of: #"maxBuffers:\s*(?:UInt|Int)\?\s*=\s*256"#,
+                options: .regularExpression
+            ) != nil
+            && signature.range(
+                of: #"maxBytes:\s*(?:UInt|Int)\?\s*=\s*nil"#,
+                options: .regularExpression
+            ) != nil
+            && signature.range(
+                of: #"maxTime:\s*Duration\?\s*=\s*\.seconds\(\s*2\s*\)"#,
+                options: .regularExpression
+            ) != nil
+    }
+
+    private static func containsReliablePacketDeclaration(in source: String) -> Bool {
+        source.range(
+            of: #"public\s+struct\s+ReliablePacket\s*<\s*Payload\s*:\s*Sendable\s*>\s*:\s*Sendable\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func containsDiscontinuityDeclarationWithExactKinds(in source: String) -> Bool {
+        guard source.range(
+            of: #"public\s+struct\s+Discontinuity\s*:\s*Sendable\b"#,
+            options: .regularExpression
+        ) != nil,
+            let discontinuity = try? bracedDeclaration(beginningWith: "public struct Discontinuity", in: source),
+            let kind = try? bracedDeclaration(beginningWith: "public enum Kind", in: discontinuity)
+        else {
+            return false
+        }
+
+        let cases = kind
+            .split(separator: "\n")
+            .flatMap { line -> [String] in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("case ") else { return [] }
+                return trimmed
+                    .dropFirst("case ".count)
+                    .split(separator: ",")
+                    .map { String($0.trimmingCharacters(in: .whitespaces)) }
+                    .map { name in
+                        if let paren = name.firstIndex(of: "(") {
+                            return String(name[..<paren])
+                        }
+                        return name
+                    }
+            }
+
+        let requiredFields = [
+            "public let kind: Kind",
+            "public let priorPTS: UInt64?",
+            "public let priorDuration: UInt64?",
+            "public let nextPTS: UInt64?",
+            "public let duration: UInt64?",
+            "public let droppedCount: Int?",
+        ]
+
+        return cases == ["formatChange", "discont", "gap", "dropped"]
+            && kind.split(separator: "\n").first(where: { $0.contains("public enum Kind") })?.contains("Sendable") == true
+            && requiredFields.allSatisfy { discontinuity.contains($0) }
+            && discontinuity.range(of: #"public\s+var\s+pts\b"#, options: .regularExpression) == nil
     }
 
     private static func leadingDocumentationComment(for declaration: String, in source: String) throws -> String {
