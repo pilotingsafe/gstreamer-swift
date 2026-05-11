@@ -90,6 +90,7 @@ public struct AudioFileSourceBuilder: Sendable {
   private var candidateDescriptionsForTesting: [String]?
   private var candidateSinkNameForTesting: String?
   private var onCandidateStartForTesting: (@Sendable (Pipeline, String) -> Void)?
+  private var afterCandidatePlayForTesting: (@Sendable (Pipeline, String) -> Void)?
   private var onCleanupForTesting: (@Sendable () -> Void)?
 
   fileprivate init(path: String) {
@@ -178,6 +179,7 @@ public struct AudioFileSourceBuilder: Sendable {
       candidateDescriptionsForTesting: candidateDescriptionsForTesting,
       candidateSinkNameForTesting: candidateSinkNameForTesting,
       onCandidateStartForTesting: onCandidateStartForTesting,
+      afterCandidatePlayForTesting: afterCandidatePlayForTesting,
       onCleanupForTesting: onCleanupForTesting,
       probeState: AudioFileReliablePacketProbeState()
     )
@@ -221,6 +223,14 @@ public struct AudioFileSourceBuilder: Sendable {
   ) -> AudioFileSourceBuilder {
     var copy = self
     copy.onCandidateStartForTesting = callback
+    return copy
+  }
+
+  internal func withReliablePacketAfterCandidatePlayForTesting(
+    _ callback: @escaping @Sendable (Pipeline, String) -> Void
+  ) -> AudioFileSourceBuilder {
+    var copy = self
+    copy.afterCandidatePlayForTesting = callback
     return copy
   }
 
@@ -285,6 +295,7 @@ private struct AudioFileSourceConfiguration: Sendable {
   let candidateDescriptionsForTesting: [String]?
   let candidateSinkNameForTesting: String?
   let onCandidateStartForTesting: (@Sendable (Pipeline, String) -> Void)?
+  let afterCandidatePlayForTesting: (@Sendable (Pipeline, String) -> Void)?
   let onCleanupForTesting: (@Sendable () -> Void)?
   let probeState: AudioFileReliablePacketProbeState
 }
@@ -543,6 +554,7 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
         active.stop()
         throw CancellationError()
       }
+      configuration.afterCandidatePlayForTesting?(active.pipeline, candidate.sinkName)
     } catch is CancellationError {
       stopActiveCandidate(active)
       throw CancellationError()
@@ -595,33 +607,35 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
   }
 
   private func pullPacket(from active: ActiveCandidate) throws -> Buffer? {
-    guard isCurrent(active) else {
-      throw CancellationError()
-    }
+    while true {
+      guard isCurrent(active) else {
+        throw CancellationError()
+      }
 
-    guard let sample = swift_gst_app_sink_try_pull_sample(active.appSink, 0) else {
-      return nil
-    }
-    defer { swift_gst_sample_unref(UnsafeMutableRawPointer(sample)) }
+      guard let sample = swift_gst_app_sink_try_pull_sample(active.appSink, 0) else {
+        return nil
+      }
+      defer { swift_gst_sample_unref(UnsafeMutableRawPointer(sample)) }
 
-    if shouldReportFirstSampleCaps(),
-      let caps = swift_gst_sample_get_caps(UnsafeMutableRawPointer(sample)),
-      let capsString = GLibString.takeOwnership(swift_gst_caps_to_string(caps))
-    {
-      configuration.probeState.recordFirstSampleCaps(capsString)
-      configuration.firstSampleCapsProbe?(capsString)
-    }
+      if shouldReportFirstSampleCaps(),
+        let caps = swift_gst_sample_get_caps(UnsafeMutableRawPointer(sample)),
+        let capsString = GLibString.takeOwnership(swift_gst_caps_to_string(caps))
+      {
+        configuration.probeState.recordFirstSampleCaps(capsString)
+        configuration.firstSampleCapsProbe?(capsString)
+      }
 
-    guard let gstBuffer = swift_gst_sample_get_buffer(UnsafeMutableRawPointer(sample)) else {
-      throw GStreamerError.bufferMapFailed
-    }
+      guard let gstBuffer = swift_gst_sample_get_buffer(UnsafeMutableRawPointer(sample)) else {
+        throw GStreamerError.bufferMapFailed
+      }
 
-    guard swift_gst_buffer_get_size(gstBuffer) > 0 else {
-      throw GStreamerError.bufferMapFailed
-    }
+      guard swift_gst_buffer_get_size(gstBuffer) > 0 else {
+        continue
+      }
 
-    _ = swift_gst_buffer_ref(gstBuffer)
-    return Buffer(buffer: gstBuffer, ownsReference: true)
+      _ = swift_gst_buffer_ref(gstBuffer)
+      return Buffer(buffer: gstBuffer, ownsReference: true)
+    }
   }
 
   private func waitForEvent(after generation: UInt64) async throws -> Bool {

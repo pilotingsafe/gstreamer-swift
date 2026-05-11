@@ -113,12 +113,41 @@ struct APISafetyStaticTests {
         #expect(bus.contains("public func errors() -> AsyncStream<(message: String, debug: String?)>"))
         #expect(bus.contains("public func warnings() -> AsyncStream<(message: String, debug: String?)>"))
         #expect(bus.contains("public func stateChanges() -> AsyncStream<(old: Pipeline.State, new: Pipeline.State)>"))
+        #expect(bus.contains("public func waitForEOSOrError() async throws"))
         #expect(bus.contains("public func waitForEOS() async"))
         #expect(
             bus.range(of: #"public\s+func\s+parseMessage\b"#, options: .regularExpression) == nil,
             "Bus message parsing must not become a public API"
         )
         #expect(appSink.contains("public func frames() -> Frames"))
+    }
+
+    @Test("Bus EOS wait convenience APIs preserve compatibility and error handling")
+    func busEOSWaitConvenienceAPIsPreserveCompatibilityAndErrorHandling() throws {
+        let root = try Self.packageRoot()
+        let bus = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let busType = try Self.bracedDeclaration(beginningWith: "public final class Bus", in: bus)
+        let waitForEOSOrError = try Self.bracedDeclaration(
+            beginningWith: "public func waitForEOSOrError()",
+            in: busType
+        )
+        let waitForEOS = try Self.bracedDeclaration(
+            beginningWith: "public func waitForEOS()",
+            in: busType
+        )
+        let waitForEOSOrErrorSignature = Self.normalizedWhitespace(Self.declarationSignature(waitForEOSOrError))
+        let waitForEOSSignature = Self.normalizedWhitespace(Self.declarationSignature(waitForEOS))
+
+        #expect(waitForEOSOrErrorSignature.contains("public func waitForEOSOrError() async throws"))
+        #expect(waitForEOSSignature.contains("public func waitForEOS() async"))
+        #expect(
+            Self.containsWaitForEOSDeprecationMarker(in: busType),
+            "waitForEOS() must be deprecated with a message mentioning waitForEOSOrError()"
+        )
+        #expect(
+            Self.waitForEOSDelegatesToThrowingHelperAndSwallowsErrors(waitForEOS),
+            "Deprecated waitForEOS() must delegate to waitForEOSOrError() and swallow the error"
+        )
     }
 
     @Test("Bus message pull sequence public API is additive and Sendable")
@@ -807,6 +836,26 @@ struct APISafetyStaticTests {
             || normalized.contains("nonisolated")
 
         return hasNonThrowingSignature && !hasThrowingSignature && hasNonisolatedExecutorMarker
+    }
+
+    private static func containsWaitForEOSDeprecationMarker(in source: String) -> Bool {
+        source.range(
+            of: #"@available\s*\(\s*\*\s*,\s*deprecated\s*,\s*message:\s*"[^"]*waitForEOSOrError\(\)[^"]*"\s*\)\s*public\s+func\s+waitForEOS\(\)\s+async\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func waitForEOSDelegatesToThrowingHelperAndSwallowsErrors(_ implementation: String) -> Bool {
+        let delegates = implementation.range(
+            of: #"try\??\s+await\s+(?:self\.)?waitForEOSOrError\(\)"#,
+            options: .regularExpression
+        ) != nil
+        let swallowsError = implementation.contains("try?") || implementation.range(
+            of: #"\bcatch\b"#,
+            options: .regularExpression
+        ) != nil
+
+        return delegates && swallowsError
     }
 
     private static func publicStaticMemberNames(in source: String) -> Set<String> {

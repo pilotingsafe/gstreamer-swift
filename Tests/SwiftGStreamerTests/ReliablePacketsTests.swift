@@ -644,6 +644,154 @@ struct ReliablePacketEOSSemanticsTests {
     }
 }
 
+@Suite("Reliable Packet Zero-Length Markers", .timeLimit(.minutes(1)))
+struct ReliablePacketZeroLengthMarkerTests {
+    private static let sourceName = "zero_src"
+    private static let sinkName = "reliable_sink"
+
+    init() throws {
+        try GStreamer.initialize()
+    }
+
+    @Test("Pre-first zero-length marker is skipped without fallback")
+    func preFirstZeroLengthMarkerIsSkippedWithoutFallback() async throws {
+        let payloadPTS: UInt64 = 40_000_000
+        let payload: [UInt8] = [1, 0, 2, 0]
+        let fixture = try Self.makePlaceholderFile()
+        let candidateStarts = ThreadSafeCounterProbe()
+        let driver = ReliablePacketAppSourceDriverProbe(
+            sourceName: Self.sourceName,
+            sinkName: Self.sinkName,
+            pushes: [
+                ReliablePacketAppSourcePush(payload: [], pts: 0),
+                ReliablePacketAppSourcePush(payload: payload, pts: payloadPTS),
+            ]
+        )
+        let source = try Self.makeSource(
+            fixture: fixture,
+            candidateStarts: candidateStarts,
+            driver: driver
+        )
+
+        let trace = try await Self.collectTraceWithoutBufferMapFailure(source)
+
+        #expect(trace.points == [PacketPoint(pts: payloadPTS, size: UInt64(payload.count))])
+        #expect(trace.reachedCleanEOS)
+        #expect(candidateStarts.value == 1, "Expected the custom appsrc candidate to satisfy iteration without fallback")
+        try await Self.expectDriverCompletedWithoutError(driver)
+    }
+
+    @Test("Post-first zero-length marker is skipped and iteration reaches EOS")
+    func postFirstZeroLengthMarkerIsSkippedAndIterationReachesEOS() async throws {
+        let firstPTS: UInt64 = 20_000_000
+        let secondPTS: UInt64 = 80_000_000
+        let firstPayload: [UInt8] = [1, 0, 2, 0]
+        let secondPayload: [UInt8] = [3, 0, 4, 0, 5, 0]
+        let fixture = try Self.makePlaceholderFile()
+        let candidateStarts = ThreadSafeCounterProbe()
+        let driver = ReliablePacketAppSourceDriverProbe(
+            sourceName: Self.sourceName,
+            sinkName: Self.sinkName,
+            pushes: [
+                ReliablePacketAppSourcePush(payload: firstPayload, pts: firstPTS),
+                ReliablePacketAppSourcePush(payload: [], pts: 50_000_000),
+                ReliablePacketAppSourcePush(payload: secondPayload, pts: secondPTS),
+            ]
+        )
+        let source = try Self.makeSource(
+            fixture: fixture,
+            candidateStarts: candidateStarts,
+            driver: driver
+        )
+
+        let trace = try await Self.collectTraceWithoutBufferMapFailure(source)
+
+        #expect(
+            trace.points == [
+                PacketPoint(pts: firstPTS, size: UInt64(firstPayload.count)),
+                PacketPoint(pts: secondPTS, size: UInt64(secondPayload.count)),
+            ]
+        )
+        #expect(trace.points.allSatisfy { $0.size > 0 })
+        #expect(trace.reachedCleanEOS)
+        #expect(candidateStarts.value == 1, "Expected the custom appsrc candidate to satisfy iteration without fallback")
+        try await Self.expectDriverCompletedWithoutError(driver)
+    }
+
+    private static func makeSource(
+        fixture: URL,
+        candidateStarts: ThreadSafeCounterProbe,
+        driver: ReliablePacketAppSourceDriverProbe
+    ) throws -> AudioFileSource {
+        try AudioSource.file(path: fixture.path)
+            .withEncoding(.raw)
+            ._withReliablePacketStartupTimeoutNanoseconds(2_000_000_000)
+            .withReliablePacketCandidateDescriptionsForTesting(
+                [
+                    appsrcCandidateDescription(),
+                    fallbackCandidateDescription(),
+                ],
+                sinkName: sinkName
+            )
+            .withReliablePacketOnCandidateStartForTesting { _, _ in
+                candidateStarts.increment()
+            }
+            .withReliablePacketAfterCandidatePlayForTesting { pipeline, sinkName in
+                driver.start(pipeline: pipeline, sinkName: sinkName)
+            }
+            .build()
+    }
+
+    private static func makePlaceholderFile() throws -> URL {
+        let directory = try ReliablePacketsTests.makeTemporaryDirectory()
+        let fixture = directory.appendingPathComponent("placeholder.wav")
+        try Data([0]).write(to: fixture)
+        return fixture
+    }
+
+    private static func collectTraceWithoutBufferMapFailure(_ source: AudioFileSource) async throws -> PacketTrace {
+        do {
+            return try await ReliablePacketsTests.collectTrace(source.reliablePackets())
+        } catch GStreamerError.bufferMapFailed {
+            Issue.record("Zero-length reliable packet markers must not surface bufferMapFailed")
+            throw GStreamerError.bufferMapFailed
+        }
+    }
+
+    private static func expectDriverCompletedWithoutError(
+        _ driver: ReliablePacketAppSourceDriverProbe
+    ) async throws {
+        let completed = await ReliablePacketsTests.waitUntil(timeout: .seconds(2)) {
+            await driver.result != nil
+        }
+        #expect(completed, "Expected appsrc driver to finish after reliable packet collection")
+
+        let result = try #require(await driver.result, "Expected appsrc driver result")
+        switch result {
+        case .success:
+            break
+        case .failure(let error):
+            Issue.record("Appsrc driver failed: \(error.description)")
+        }
+    }
+
+    private static func appsrcCandidateDescription() -> String {
+        """
+        appsrc name=\(sourceName) is-live=false format=time do-timestamp=false block=true max-bytes=0 ! \
+        audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! \
+        appsink name=\(sinkName) sync=false drop=false max-buffers=32 emit-signals=true enable-last-sample=false wait-on-eos=false
+        """
+    }
+
+    private static func fallbackCandidateDescription() -> String {
+        """
+        audiotestsrc num-buffers=1 samplesperbuffer=2 ! \
+        audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! \
+        appsink name=\(sinkName) sync=false drop=false max-buffers=32 emit-signals=true enable-last-sample=false wait-on-eos=false
+        """
+    }
+}
+
 @Suite("Reliable Packet Cancellation", .timeLimit(.minutes(1)))
 struct ReliablePacketCancellationTests {
 
@@ -1244,9 +1392,94 @@ struct PacketPoint: Equatable, Sendable {
     var pts: UInt64
     var size: UInt64
 
+    init(pts: UInt64, size: UInt64) {
+        self.pts = pts
+        self.size = size
+    }
+
     init(packet: Buffer) throws {
         self.pts = try #require(packet.pts, "Reliable packets must preserve PTS for ordering assertions")
         self.size = UInt64(packet.size)
+    }
+}
+
+private struct ReliablePacketAppSourcePush: Sendable {
+    var payload: [UInt8]
+    var pts: UInt64
+}
+
+private struct ReliablePacketAppSourceDriverError: Error, Sendable, CustomStringConvertible, Equatable {
+    let description: String
+
+    init(_ description: String) {
+        self.description = description
+    }
+
+    init(_ error: Error) {
+        self.description = String(describing: error)
+    }
+}
+
+private actor ReliablePacketAppSourceDriverProbe {
+    private let sourceName: String
+    private let sinkName: String
+    private let pushes: [ReliablePacketAppSourcePush]
+    private var storage: Result<Void, ReliablePacketAppSourceDriverError>?
+
+    var result: Result<Void, ReliablePacketAppSourceDriverError>? {
+        storage
+    }
+
+    init(sourceName: String, sinkName: String, pushes: [ReliablePacketAppSourcePush]) {
+        self.sourceName = sourceName
+        self.sinkName = sinkName
+        self.pushes = pushes
+    }
+
+    nonisolated func start(pipeline: Pipeline, sinkName actualSinkName: String) {
+        Task {
+            await self.drive(pipeline: pipeline, sinkName: actualSinkName)
+        }
+    }
+
+    private func drive(pipeline: Pipeline, sinkName actualSinkName: String) {
+        do {
+            guard actualSinkName == sinkName else {
+                throw ReliablePacketAppSourceDriverError(
+                    "Expected sink \(sinkName), got \(actualSinkName)"
+                )
+            }
+
+            let source = try pipeline.appSource(named: sourceName)
+            for push in pushes {
+                try source.push(data: push.payload, pts: push.pts)
+            }
+            source.endOfStream()
+            complete(.success(()))
+        } catch let error as ReliablePacketAppSourceDriverError {
+            complete(.failure(error))
+        } catch {
+            complete(.failure(ReliablePacketAppSourceDriverError(error)))
+        }
+    }
+
+    private func complete(_ result: Result<Void, ReliablePacketAppSourceDriverError>) {
+        guard storage == nil else {
+            return
+        }
+        storage = result
+    }
+}
+
+private final class ThreadSafeCounterProbe: @unchecked Sendable {
+    private let storage = Mutex(0)
+
+    var value: Int {
+        storage.withLock { $0 }
+    }
+
+    func increment() {
+        storage.withLock { $0 += 1 }
     }
 }
 

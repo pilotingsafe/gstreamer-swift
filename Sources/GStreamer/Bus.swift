@@ -719,10 +719,48 @@ public final class Bus: @unchecked Sendable {
 
     // MARK: - Convenience Methods
 
+    /// Wait for end-of-stream or a pipeline error.
+    ///
+    /// This method returns when an EOS message is received. If the bus receives
+    /// an ERROR message first, it throws ``GStreamerError/busError(_:source:debug:)``
+    /// with the exact message and debug strings from the bus message and a nil
+    /// source.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let pipeline = try Pipeline("filesrc location=video.mp4 ! decodebin ! autovideosink")
+    /// try pipeline.play()
+    ///
+    /// do {
+    ///     try await pipeline.bus.waitForEOSOrError()
+    /// } catch GStreamerError.busError(let message, _, let debug) {
+    ///     print("Pipeline error: \(message)")
+    ///     if let debug { print("Debug: \(debug)") }
+    /// }
+    ///
+    /// pipeline.stop()
+    /// ```
+    public func waitForEOSOrError() async throws {
+        for await message in messageSequence(filter: [.eos, .error]) {
+            switch message {
+            case .eos:
+                return
+            case .error(let message, let debug):
+                throw GStreamerError.busError(message, source: nil, debug: debug)
+            default:
+                continue
+            }
+        }
+
+        throw CancellationError()
+    }
+
     /// Wait for the end-of-stream message.
     ///
-    /// This method blocks until an EOS message is received, making it useful
-    /// for simple playback scenarios where you want to wait for completion.
+    /// This source-compatible method returns when EOS is received. It is
+    /// deprecated because callers usually need to distinguish successful EOS
+    /// from pipeline ERROR; use ``waitForEOSOrError()`` for new code.
     ///
     /// ## Example
     ///
@@ -734,12 +772,9 @@ public final class Bus: @unchecked Sendable {
     /// await pipeline.bus.waitForEOS()
     /// pipeline.stop()
     /// ```
+    @available(*, deprecated, message: "Use waitForEOSOrError() to wait for EOS and throw pipeline errors.")
     public func waitForEOS() async {
-        for await message in messages(filter: .eos) {
-            if case .eos = message {
-                return
-            }
-        }
+        try? await waitForEOSOrError()
     }
 
     /// An async stream of only error messages.

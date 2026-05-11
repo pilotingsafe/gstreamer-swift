@@ -214,6 +214,75 @@ struct BusMessageSequenceTests {
         }
     }
 
+    @Test("waitForEOSOrError returns for finite EOS")
+    func waitForEOSOrErrorReturnsForFiniteEOS() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+
+        try pipeline.play()
+        defer { pipeline.stop() }
+
+        try await Self.withTimeout(.seconds(2)) {
+            try await pipeline.bus.waitForEOSOrError()
+        }
+    }
+
+    @Test("waitForEOSOrError throws exact injected bus error")
+    func waitForEOSOrErrorThrowsExactInjectedBusError() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+        let message = "ADR-002 waitForEOSOrError injected bus error"
+        let debug = "wait-for-eos-or-error"
+
+        #expect(swift_gst_test_post_bus_error(pipeline._element, message, debug) != 0)
+
+        let error = try #require(await Self.captureAsyncError {
+            try await Self.withTimeout(.seconds(2)) {
+                try await pipeline.bus.waitForEOSOrError()
+            }
+        })
+
+        Self.expectBusError(
+            error,
+            message: message,
+            source: nil,
+            debug: debug
+        )
+    }
+
+    @Test("waitForEOSOrError throws CancellationError when cancelled before EOS or ERROR")
+    func waitForEOSOrErrorThrowsCancellationErrorWhenCancelledBeforeEOSOrError() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+        let task = Task {
+            try await pipeline.bus.waitForEOSOrError()
+        }
+        defer { task.cancel() }
+
+        await Task.yield()
+        task.cancel()
+
+        let error = try #require(await Self.captureAsyncError {
+            try await Self.withTimeout(.milliseconds(500)) {
+                try await task.value
+            }
+        })
+
+        #expect(error is CancellationError)
+    }
+
+    @Test("Deprecated waitForEOS returns on ERROR before EOS")
+    func deprecatedWaitForEOSReturnsOnErrorBeforeEOS() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+
+        #expect(swift_gst_test_post_bus_error(
+            pipeline._element,
+            "ADR-002 deprecated waitForEOS injected bus error",
+            "deprecated-wait-for-eos"
+        ) != 0)
+
+        try await Self.withTimeout(.seconds(2)) {
+            await pipeline.bus.waitForEOS()
+        }
+    }
+
     private static func firstMessage(
         in sequence: Bus.Messages,
         timeout: Duration
@@ -266,6 +335,31 @@ struct BusMessageSequenceTests {
             }
             return result
         }
+    }
+
+    private static func captureAsyncError(_ body: () async throws -> Void) async -> Error? {
+        do {
+            try await body()
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    private static func expectBusError(
+        _ error: Error,
+        message expectedMessage: String,
+        source expectedSource: String?,
+        debug expectedDebug: String?
+    ) {
+        guard case GStreamerError.busError(let message, let source, let debug) = error else {
+            Issue.record("Expected busError(\(expectedMessage)), got \(error)")
+            return
+        }
+
+        #expect(message == expectedMessage)
+        #expect(source == expectedSource)
+        #expect(debug == expectedDebug)
     }
 
     private static func isNil(_ message: BusMessage?) -> Bool {
