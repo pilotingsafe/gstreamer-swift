@@ -8,8 +8,9 @@ import CGStreamerShim
 ///
 /// ## Overview
 ///
-/// Messages are delivered through the ``Bus/messages(filter:)`` async stream.
-/// Each message type provides relevant information about the event.
+/// Messages are delivered through ``Bus/messageSequence(filter:)`` or the
+/// ``Bus/messages(filter:)`` async stream. Each message type provides relevant
+/// information about the event.
 ///
 /// ## Topics
 ///
@@ -24,13 +25,15 @@ import CGStreamerShim
 /// ## Example
 ///
 /// ```swift
-/// for await message in pipeline.bus.messages() {
+/// messageLoop: for await message in pipeline.bus.messageSequence(filter: [.eos, .error, .stateChanged]) {
 ///     switch message {
 ///     case .eos:
 ///         print("Stream ended")
+///         break messageLoop
 ///     case .error(let msg, let debug):
 ///         print("Error: \(msg)")
 ///         if let debug { print("Debug: \(debug)") }
+///         break messageLoop
 ///     case .stateChanged(let old, let new):
 ///         print("State: \(old) → \(new)")
 ///     default:
@@ -238,19 +241,22 @@ extension BusMessage: CustomStringConvertible {
 
 /// A GStreamer bus for receiving messages from a pipeline.
 ///
-/// The bus provides an async stream of messages that can be used to monitor
-/// pipeline state, handle errors, and detect end-of-stream conditions.
+/// The bus provides async message APIs that can be used to monitor pipeline
+/// state, handle errors, and detect end-of-stream conditions.
 ///
 /// ## Overview
 ///
 /// Every pipeline has a bus that delivers messages about events occurring
-/// in the pipeline. Use ``messages(filter:)`` to receive messages as an
-/// async stream.
+/// in the pipeline. Use ``messageSequence(filter:)`` for pull-based
+/// consumption, or ``messages(filter:)`` to receive messages as an async
+/// stream.
 ///
 /// ## Topics
 ///
 /// ### Receiving Messages
 ///
+/// - ``messageSequence(filter:)``
+/// - ``Messages``
 /// - ``messages(filter:)``
 /// - ``Filter``
 ///
@@ -261,14 +267,14 @@ extension BusMessage: CustomStringConvertible {
 /// try pipeline.play()
 ///
 /// // Wait for end of stream
-/// for await message in pipeline.bus.messages(filter: [.eos, .error]) {
+/// messageLoop: for await message in pipeline.bus.messageSequence(filter: [.eos, .error]) {
 ///     switch message {
 ///     case .eos:
 ///         print("Done!")
-///         break
+///         break messageLoop
 ///     case .error(let msg, _):
 ///         print("Error: \(msg)")
-///         break
+///         break messageLoop
 ///     default:
 ///         continue
 ///     }
@@ -300,7 +306,9 @@ extension BusMessage: CustomStringConvertible {
 /// Bus is marked as `@unchecked Sendable` because it wraps a GStreamer C pointer.
 /// GStreamer's bus is internally thread-safe for posting and receiving messages.
 /// The async stream returned by ``messages(filter:)`` uses `Task.detached` with
-/// proper cancellation handling for safe concurrent access.
+/// proper cancellation handling for safe concurrent access. The pull-based
+/// ``messageSequence(filter:)`` path performs timed bus pops only when its
+/// iterator is asked for the next value.
 public final class Bus: @unchecked Sendable {
     /// Filter for bus messages.
     ///
@@ -392,6 +400,118 @@ public final class Bus: @unchecked Sendable {
 
     deinit {
         swift_gst_object_unref(_bus)
+    }
+
+    /// A pull-based async sequence of messages from a GStreamer bus.
+    ///
+    /// `Messages` destructively consumes the underlying `GstBus`: every
+    /// successful pop removes one message from the bus queue. It is intended
+    /// for callers that want direct backpressure from `for await` iteration
+    /// instead of the detached producer and Swift-side buffering used by
+    /// ``messages(filter:)``.
+    ///
+    /// The sequence uses GStreamer's filtered timed pop API. While searching
+    /// for a matching message, that C API may discard queued messages that do
+    /// not match the requested filter. The default ``Filter/all`` filter is the
+    /// broadest set of message kinds modeled by this Swift wrapper; it is not
+    /// `GST_MESSAGE_ANY`, so unmodeled GStreamer message kinds are outside that
+    /// default.
+    ///
+    /// Treat a bus as having one active drainer. Multiple consumers, including
+    /// independent ``Messages`` values, ``messages(filter:)`` streams, and the
+    /// convenience APIs, compete for the same underlying queue and can consume
+    /// messages before each other sees them. This type does not provide
+    /// fan-out, replay, an observer registry, or message ownership transfer.
+    ///
+    /// Errors are delivered as ``BusMessage/error(message:debug:)`` values and
+    /// do not throw from iteration. End-of-stream is delivered as ``BusMessage/eos``
+    /// and does not automatically end the sequence; callers should break their
+    /// loop when EOS is the desired stopping point. Cancellation is observed
+    /// between timed pops, so exit latency is bounded by the 100 ms polling
+    /// interval plus task scheduling delay.
+    public struct Messages: AsyncSequence, Sendable {
+        public typealias Element = BusMessage
+
+        private let bus: Bus
+        private let filter: Filter
+
+        internal init(bus: Bus, filter: Filter) {
+            self.bus = bus
+            self.filter = filter
+        }
+
+        /// Creates an iterator that polls the bus only when `next()` is awaited.
+        public func makeAsyncIterator() -> AsyncIterator {
+            AsyncIterator(bus: bus, filter: filter)
+        }
+
+        /// The pull-based iterator for ``Bus/Messages``.
+        public struct AsyncIterator: AsyncIteratorProtocol, Sendable {
+            private let bus: Bus
+            private let filter: Filter
+
+            internal init(bus: Bus, filter: Filter) {
+                self.bus = bus
+                self.filter = filter
+            }
+
+            /// Returns the next parsed bus message, or `nil` after cancellation.
+            ///
+            /// Each call performs the bus polling work itself. Messages that
+            /// the Swift wrapper does not model are consumed and ignored.
+            @concurrent
+            public mutating func next() async -> BusMessage? {
+                while true {
+                    if Task.isCancelled {
+                        return nil
+                    }
+
+                    if let msg = swift_gst_bus_timed_pop_filtered(
+                        bus._bus,
+                        100_000_000,
+                        filter.gstMessageType
+                    ) {
+                        defer { swift_gst_message_unref(msg) }
+
+                        if let busMessage = bus.parseMessage(msg) {
+                            return busMessage
+                        }
+
+                        continue
+                    }
+
+                    if Task.isCancelled {
+                        return nil
+                    }
+
+                    await Task.yield()
+                }
+            }
+        }
+    }
+
+    /// Returns a pull-based async sequence of bus messages.
+    ///
+    /// This API destructively drains the underlying `GstBus` when the consumer
+    /// awaits the iterator's `next()` method. Prefer it when the caller owns bus
+    /// draining and wants demand-driven polling without the detached producer
+    /// and Swift-side buffering used by ``messages(filter:)``.
+    ///
+    /// `messageSequence(filter:)` uses GStreamer's C-side filtered timed pop.
+    /// Non-matching queued messages may be discarded by that C API while it
+    /// searches for a matching message. The default ``Filter/all`` is the
+    /// broadest set of message kinds modeled by this Swift wrapper, not raw
+    /// `GST_MESSAGE_ANY`.
+    ///
+    /// Keep one active drainer per bus. Multiple sequences, streams, or
+    /// convenience API calls compete for the same queue. ERROR messages are
+    /// returned as values, EOS is returned as a value and does not terminate the
+    /// sequence, and cancellation is checked between 100 ms timed polls.
+    ///
+    /// - Parameter filter: Message types to receive. Defaults to ``Filter/all``.
+    /// - Returns: A pull-based ``Messages`` sequence.
+    public func messageSequence(filter: Filter = .all) -> Messages {
+        Messages(bus: self, filter: filter)
     }
 
     /// An async stream of messages from the bus.

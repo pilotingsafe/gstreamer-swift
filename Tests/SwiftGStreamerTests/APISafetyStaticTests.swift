@@ -110,7 +110,148 @@ struct APISafetyStaticTests {
         #expect(audioSource.contains("public func packets() -> AsyncStream<Buffer>"))
         #expect(audioBufferSink.contains("public func buffers() -> AsyncStream<AudioBuffer>"))
         #expect(bus.contains("public func messages(filter: Filter = [.error, .eos, .stateChanged]) -> AsyncStream<BusMessage>"))
+        #expect(bus.contains("public func errors() -> AsyncStream<(message: String, debug: String?)>"))
+        #expect(bus.contains("public func warnings() -> AsyncStream<(message: String, debug: String?)>"))
+        #expect(bus.contains("public func stateChanges() -> AsyncStream<(old: Pipeline.State, new: Pipeline.State)>"))
+        #expect(bus.contains("public func waitForEOS() async"))
+        #expect(
+            bus.range(of: #"public\s+func\s+parseMessage\b"#, options: .regularExpression) == nil,
+            "Bus message parsing must not become a public API"
+        )
         #expect(appSink.contains("public func frames() -> Frames"))
+    }
+
+    @Test("Bus message pull sequence public API is additive and Sendable")
+    func busMessagePullSequencePublicAPIIsAdditiveAndSendable() throws {
+        let root = try Self.packageRoot()
+        let bus = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let busType = try Self.bracedDeclaration(beginningWith: "public final class Bus", in: bus)
+        let messages = try Self.bracedDeclaration(beginningWith: "public struct Messages", in: busType)
+        let iterator = try Self.bracedDeclaration(beginningWith: "public struct AsyncIterator", in: messages)
+        let messagesSignature = Self.normalizedWhitespace(Self.declarationSignature(messages))
+        let iteratorSignature = Self.normalizedWhitespace(Self.declarationSignature(iterator))
+
+        #expect(messagesSignature.contains("public struct Messages"))
+        #expect(messagesSignature.contains("AsyncSequence"))
+        #expect(messagesSignature.contains("Sendable"))
+        #expect(
+            messages.range(
+                of: #"public\s+typealias\s+Element\s*=\s*BusMessage\b"#,
+                options: .regularExpression
+            ) != nil,
+            "Bus.Messages.Element must be BusMessage"
+        )
+        #expect(iteratorSignature.contains("public struct AsyncIterator"))
+        #expect(iteratorSignature.contains("AsyncIteratorProtocol"))
+        #expect(iteratorSignature.contains("Sendable"))
+        #expect(
+            messages.range(
+                of: #"public\s+func\s+makeAsyncIterator\(\)\s*->\s*AsyncIterator\b"#,
+                options: .regularExpression
+            ) != nil,
+            "Bus.Messages must expose public makeAsyncIterator() -> AsyncIterator"
+        )
+        #expect(
+            busType.range(
+                of: #"public\s+func\s+messageSequence\(\s*filter:\s*Filter\s*=\s*\.all\s*\)\s*->\s*Messages\b"#,
+                options: .regularExpression
+            ) != nil,
+            "Bus must expose public messageSequence(filter: Filter = .all) -> Messages"
+        )
+        #expect(
+            Self.containsBusMessagesNextSignature(in: iterator),
+            "Bus.Messages.AsyncIterator.next() must be @concurrent/equivalent and async -> BusMessage? without throws"
+        )
+    }
+
+    @Test("Bus.Filter public static filters remain source-compatible")
+    func busFilterPublicStaticFiltersRemainSourceCompatible() throws {
+        let root = try Self.packageRoot()
+        let bus = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let filter = try Self.bracedDeclaration(beginningWith: "public struct Filter", in: bus)
+        let expectedNames: Set<String> = [
+            "error",
+            "warning",
+            "eos",
+            "stateChanged",
+            "element",
+            "buffering",
+            "durationChanged",
+            "latency",
+            "tag",
+            "qos",
+            "streamStart",
+            "clockLost",
+            "newClock",
+            "progress",
+            "info",
+            "all",
+        ]
+        let exactDeclarations = [
+            "public static let error = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_ERROR.rawValue))",
+            "public static let warning = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_WARNING.rawValue))",
+            "public static let eos = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_EOS.rawValue))",
+            "public static let stateChanged = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_STATE_CHANGED.rawValue))",
+            "public static let element = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_ELEMENT.rawValue))",
+            "public static let buffering = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_BUFFERING.rawValue))",
+            "public static let durationChanged = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_DURATION_CHANGED.rawValue))",
+            "public static let latency = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_LATENCY.rawValue))",
+            "public static let tag = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_TAG.rawValue))",
+            "public static let qos = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_QOS.rawValue))",
+            "public static let streamStart = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_STREAM_START.rawValue))",
+            "public static let clockLost = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_CLOCK_LOST.rawValue))",
+            "public static let newClock = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_NEW_CLOCK.rawValue))",
+            "public static let progress = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_PROGRESS.rawValue))",
+            "public static let info = Filter(rawValue: UInt32(bitPattern: GST_MESSAGE_INFO.rawValue))",
+        ]
+        let actualNames = Self.publicStaticMemberNames(in: filter)
+        let missing = expectedNames.subtracting(actualNames).sorted()
+        let unexpected = actualNames.subtracting(expectedNames).sorted()
+
+        for declaration in exactDeclarations {
+            #expect(filter.contains(declaration), "Bus.Filter declaration changed: \(declaration)")
+        }
+        #expect(
+            missing.isEmpty && unexpected.isEmpty,
+            "Bus.Filter public static filters must be exactly ADR-002's allowed set; missing=\(missing), unexpected=\(unexpected)"
+        )
+        #expect(
+            Self.containsExistingAllFilterDeclaration(in: filter),
+            "Bus.Filter.all must remain the existing Swift-modeled aggregate filter"
+        )
+    }
+
+    @Test("Bus message pull sequence stays pull-based and cancellation-aware")
+    func busMessagePullSequenceStaysPullBasedAndCancellationAware() throws {
+        let root = try Self.packageRoot()
+        let bus = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let messages = try Self.bracedDeclaration(beginningWith: "public struct Messages", in: bus)
+        let path = messages
+        let disallowedSnippets = [
+            "AsyncStream",
+            "Task.detached",
+            "continuation",
+            ".bufferingNewest",
+            ".bufferingOldest",
+        ]
+        let requiredSnippets = [
+            "swift_gst_bus_timed_pop_filtered",
+            "100_000_000",
+            "filter.gstMessageType",
+            "Task.isCancelled",
+            "swift_gst_message_unref",
+        ]
+        let violations = disallowedSnippets.filter { path.contains($0) }
+        let missing = requiredSnippets.filter { !path.contains($0) }
+
+        #expect(
+            violations.isEmpty,
+            "Bus.Messages pull path must not use Swift-side stream buffering or detached producers:\n\(violations.joined(separator: "\n"))"
+        )
+        #expect(
+            missing.isEmpty,
+            "Bus.Messages pull path is missing required polling/cancellation/ownership snippets:\n\(missing.joined(separator: "\n"))"
+        )
     }
 
     @Test("ReliablePackets public API surface remains source-compatible")
@@ -611,6 +752,18 @@ struct APISafetyStaticTests {
         return filePath
     }
 
+    private static func declarationSignature(_ declaration: String) -> String {
+        declaration
+            .split(separator: "{", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? declaration
+    }
+
+    private static func normalizedWhitespace(_ source: String) -> String {
+        source.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func bracedDeclaration(beginningWith declaration: String, in source: String) throws -> String {
         guard let declarationRange = source.range(of: declaration) else {
             throw StaticAPISafetyError.declarationNotFound(declaration)
@@ -638,6 +791,49 @@ struct APISafetyStaticTests {
         }
 
         throw StaticAPISafetyError.unbalancedDeclaration(declaration)
+    }
+
+    private static func containsBusMessagesNextSignature(in iterator: String) -> Bool {
+        let normalized = normalizedWhitespace(iterator)
+        let hasNonThrowingSignature = normalized.range(
+            of: #"(?:public\s+)?(?:mutating\s+)?func\s+next\(\)\s+async\s*->\s*BusMessage\?"#,
+            options: .regularExpression
+        ) != nil
+        let hasThrowingSignature = normalized.range(
+            of: #"func\s+next\(\)\s+async\s+throws"#,
+            options: .regularExpression
+        ) != nil
+        let hasNonisolatedExecutorMarker = normalized.contains("@concurrent")
+            || normalized.contains("nonisolated")
+
+        return hasNonThrowingSignature && !hasThrowingSignature && hasNonisolatedExecutorMarker
+    }
+
+    private static func publicStaticMemberNames(in source: String) -> Set<String> {
+        let pattern = #"\bpublic\s+static\s+(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return []
+        }
+
+        let matches = regex.matches(
+            in: source,
+            range: NSRange(source.startIndex..<source.endIndex, in: source)
+        )
+        return Set(matches.compactMap { match in
+            guard let range = Range(match.range(at: 1), in: source) else {
+                return nil
+            }
+            return String(source[range])
+        })
+    }
+
+    private static func containsExistingAllFilterDeclaration(in filter: String) -> Bool {
+        let normalized = normalizedWhitespace(filter)
+        let expected = """
+        public static let all: Filter = [ .error, .warning, .info, .eos, .stateChanged, .element, .buffering, .durationChanged, .latency, .tag, .qos, .streamStart, .clockLost, .newClock, .progress ]
+        """
+
+        return normalized.contains(normalizedWhitespace(expected))
     }
 
     private static func containsStructConformance(
