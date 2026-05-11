@@ -6,15 +6,15 @@ This PRD implements `ADR-002: Bus Message Delivery Model`. The feature adds a so
 
 The v1 implementation is intentionally close to the existing GStreamer C API behavior: `Bus.messageSequence(filter:)` destructively drains the underlying `GstBus` with C-side filtered pop semantics. It does not introduce fan-out, message replay, a dispatcher, or multi-observer ownership.
 
-ADR-002 is accepted and pending implementation. This PRD resolves ADR-002's deferred v1 implementation decisions: default filter is existing `Bus.Filter.all`, polling uses `swift_gst_bus_timed_pop_filtered`, the poll timeout is 100 ms, and parsing remains non-public.
+ADR-002 is accepted and implemented. This PRD records ADR-002's v1 implementation decisions: default filter is existing `Bus.Filter.all`, polling uses `swift_gst_bus_timed_pop_filtered`, the poll timeout is 100 ms, and parsing remains non-public.
 
 ## Status
 
 Last updated: 2026-05-11.
 
-- PRD: draft for ADR-002 implementation.
-- ADR: accepted, pending implementation.
-- Implementation: not started by this PRD.
+- PRD: complete for ADR-002 v1 implementation.
+- ADR: accepted and implemented.
+- Implementation: completed with `Bus.messageSequence(filter:)`, `Bus.Messages`, runtime tests, static API checks, README guidance, and CHANGELOG notes.
 - Related work: `docs/ADRs/ADR-002-bus-message-delivery-model.md`.
 
 ## Goals
@@ -43,122 +43,122 @@ Last updated: 2026-05-11.
 **Description:** As a library user, I want `Bus.messageSequence(filter:)` so that I can consume bus messages on demand without a Swift-side producer draining ahead of me.
 
 **Acceptance Criteria:**
-- [ ] Add `public struct Bus.Messages: AsyncSequence, Sendable`.
-- [ ] `Bus.Messages.Element` is `BusMessage`.
-- [ ] Add nested `Bus.Messages.AsyncIterator: AsyncIteratorProtocol`.
-- [ ] Add `public func messageSequence(filter: Filter = .all) -> Messages` on `Bus`.
-- [ ] `Bus.messages(filter:)` remains public and still returns `AsyncStream<BusMessage>`.
-- [ ] Typecheck passes.
+- [x] Add `public struct Bus.Messages: AsyncSequence, Sendable`.
+- [x] `Bus.Messages.Element` is `BusMessage`.
+- [x] Add nested `Bus.Messages.AsyncIterator: AsyncIteratorProtocol`.
+- [x] Add `public func messageSequence(filter: Filter = .all) -> Messages` on `Bus`.
+- [x] `Bus.messages(filter:)` remains public and still returns `AsyncStream<BusMessage>`.
+- [x] Typecheck passes.
 
 ### US-002: Implement Pull Iterator With C-Side Filtered Pop
 
 **Description:** As an implementer, I need the new iterator to align with GStreamer filtered-pop behavior so that it behaves like a low-level destructive bus consumer.
 
 **Acceptance Criteria:**
-- [ ] `AsyncIterator.next()` polls with `swift_gst_bus_timed_pop_filtered`.
-- [ ] The poll timeout is exactly `100_000_000` nanoseconds (100 ms).
-- [ ] The iterator uses the caller-provided `filter.gstMessageType`.
-- [ ] Each returned `GstMessage` is unreferenced exactly once after parsing.
-- [ ] If parsing returns `nil`, iteration continues rather than terminating.
-- [ ] The `messageSequence` implementation path does not construct `AsyncStream`.
-- [ ] Typecheck passes.
+- [x] `AsyncIterator.next()` polls with `swift_gst_bus_timed_pop_filtered`.
+- [x] The poll timeout is exactly `100_000_000` nanoseconds (100 ms).
+- [x] The iterator uses the caller-provided `filter.gstMessageType`.
+- [x] Each returned `GstMessage` is unreferenced exactly once after parsing.
+- [x] If parsing returns `nil`, iteration continues rather than terminating.
+- [x] The `messageSequence` implementation path does not construct `AsyncStream`.
+- [x] Typecheck passes.
 
 ### US-003: Preserve Error-As-Value and EOS Semantics
 
 **Description:** As a library user, I want bus ERROR and EOS messages to follow the ADR-002 value semantics so that the iterator does not hide later bus control-plane messages.
 
 **Acceptance Criteria:**
-- [ ] `GST_MESSAGE_ERROR` is returned as `BusMessage.error(message:debug:)`.
-- [ ] `AsyncIterator.next()` is not throwing.
-- [ ] `GST_MESSAGE_EOS` is returned as `BusMessage.eos`.
-- [ ] Receiving `.eos` does not automatically make later `next()` calls return `nil`.
-- [ ] Documentation tells callers to `break` after EOS when EOS should end their loop.
-- [ ] Typecheck passes.
+- [x] `GST_MESSAGE_ERROR` is returned as `BusMessage.error(message:debug:)`.
+- [x] `AsyncIterator.next()` is not throwing.
+- [x] `GST_MESSAGE_EOS` is returned as `BusMessage.eos`.
+- [x] Receiving `.eos` does not automatically make later `next()` calls return `nil`.
+- [x] Documentation tells callers to `break` after EOS when EOS should end their loop.
+- [x] Typecheck passes.
 
 ### US-004: Handle Cancellation Predictably
 
 **Description:** As an implementer, I need cancelled iteration to stop polling within a bounded time so that tasks can shut down cleanly.
 
 **Acceptance Criteria:**
-- [ ] `next()` checks `Task.isCancelled` between timed pop attempts.
-- [ ] After cancellation, `next()` returns `nil`.
-- [ ] Cancellation latency is bounded by one 100 ms poll interval plus scheduling delay.
-- [ ] Tests use a concrete upper bound of 500 ms unless the existing test harness requires a different bound.
-- [ ] No continuation or detached producer exists on the `messageSequence` path.
-- [ ] Typecheck passes.
+- [x] `next()` checks `Task.isCancelled` between timed pop attempts.
+- [x] After cancellation, `next()` returns `nil`.
+- [x] Cancellation latency is bounded by one 100 ms poll interval plus scheduling delay.
+- [x] Tests use a concrete upper bound of 500 ms unless the existing test harness requires a different bound.
+- [x] No continuation or detached producer exists on the `messageSequence` path.
+- [x] Typecheck passes.
 
 ### US-005: Reuse Message Parsing Without Public Parser API
 
 **Description:** As an implementer, I need both `messages(filter:)` and `messageSequence(filter:)` to decode `GstMessage` values consistently without exposing parser internals as public API.
 
 **Acceptance Criteria:**
-- [ ] The new sequence reuses the same parsing logic as `Bus.messages(filter:)`.
-- [ ] No public `parseMessage` API is added.
-- [ ] If `parseMessage(_:)` access changes, it remains non-public.
-- [ ] Existing parsed cases such as `.error`, `.warning`, `.stateChanged`, `.latency`, and `.clockLost` keep their current meanings.
-- [ ] Existing `BusMessageTests` continue to pass.
-- [ ] Typecheck passes.
+- [x] The new sequence reuses the same parsing logic as `Bus.messages(filter:)`.
+- [x] No public `parseMessage` API is added.
+- [x] If `parseMessage(_:)` access changes, it remains non-public.
+- [x] Existing parsed cases such as `.error`, `.warning`, `.stateChanged`, `.latency`, and `.clockLost` keep their current meanings.
+- [x] Existing `BusMessageTests` continue to pass.
+- [x] Typecheck passes.
 
 ### US-006: Preserve Existing Bus APIs
 
 **Description:** As an existing caller, I need current bus stream and convenience APIs to keep compiling and behaving as before.
 
 **Acceptance Criteria:**
-- [ ] `Bus.messages(filter:)` signature remains `public func messages(filter: Filter = [.error, .eos, .stateChanged]) -> AsyncStream<BusMessage>`.
-- [ ] `Bus.messages(filter:)` still finishes after delivering EOS.
-- [ ] `Bus.errors()` signature and return type remain unchanged.
-- [ ] `Bus.warnings()` signature and return type remain unchanged.
-- [ ] `Bus.stateChanges()` signature and return type remain unchanged.
-- [ ] `Bus.waitForEOS()` behavior remains unchanged.
-- [ ] Existing tests for stream-based bus APIs continue to pass.
+- [x] `Bus.messages(filter:)` signature remains `public func messages(filter: Filter = [.error, .eos, .stateChanged]) -> AsyncStream<BusMessage>`.
+- [x] `Bus.messages(filter:)` still finishes after delivering EOS.
+- [x] `Bus.errors()` signature and return type remain unchanged.
+- [x] `Bus.warnings()` signature and return type remain unchanged.
+- [x] `Bus.stateChanges()` signature and return type remain unchanged.
+- [x] `Bus.waitForEOS()` behavior remains unchanged.
+- [x] Existing tests for stream-based bus APIs continue to pass.
 
 ### US-007: Document C-Side Filter Semantics and `.all` Limits
 
 **Description:** As a library user, I need docs to explain that `messageSequence(filter:)` is a destructive bus consumer and that `.all` is not raw unfiltered `GstBus` access.
 
 **Acceptance Criteria:**
-- [ ] DocC for `messageSequence(filter:)` states that C-side filtered pop can discard messages outside the requested filter while searching.
-- [ ] DocC states that `.all` means the broadest Swift-modeled `Bus.Filter` set, not `GST_MESSAGE_ANY`.
-- [ ] DocC states that multiple bus consumers on the same `Bus` can compete for messages.
-- [ ] DocC explains EOS non-termination and ERROR-as-value semantics.
-- [ ] DocC states that callers should use one bus drainer at a time unless a future fan-out API owns the bus.
-- [ ] DocC generation succeeds if tooling is available.
+- [x] DocC for `messageSequence(filter:)` states that C-side filtered pop can discard messages outside the requested filter while searching.
+- [x] DocC states that `.all` means the broadest Swift-modeled `Bus.Filter` set, not `GST_MESSAGE_ANY`.
+- [x] DocC states that multiple bus consumers on the same `Bus` can compete for messages.
+- [x] DocC explains EOS non-termination and ERROR-as-value semantics.
+- [x] DocC states that callers should use one bus drainer at a time unless a future fan-out API owns the bus.
+- [x] DocC generation succeeds if tooling is available.
 
 ### US-008: Add README and CHANGELOG Guidance
 
 **Description:** As a downstream caller, I need release notes and examples that show when to use the new pull-based API and what behavior changes to expect.
 
 **Acceptance Criteria:**
-- [ ] README includes an example using `for await message in pipeline.bus.messageSequence(...)`.
-- [ ] README example breaks explicitly after `.eos` or `.error`.
-- [ ] README or adjacent docs explain when to choose `messageSequence(filter:)` instead of `messages(filter:)`.
-- [ ] CHANGELOG adds an entry for `Bus.messageSequence(filter:)`.
-- [ ] CHANGELOG states that existing `Bus.messages(filter:)` and convenience APIs are unchanged.
-- [ ] CHANGELOG notes that `messageSequence(filter:)` defaults to `.all`, which can expose more Swift-modeled messages than `messages()` default.
+- [x] README includes an example using `for await message in pipeline.bus.messageSequence(...)`.
+- [x] README example breaks explicitly after `.eos` or `.error`.
+- [x] README or adjacent docs explain when to choose `messageSequence(filter:)` instead of `messages(filter:)`.
+- [x] CHANGELOG adds an entry for `Bus.messageSequence(filter:)`.
+- [x] CHANGELOG states that existing `Bus.messages(filter:)` and convenience APIs are unchanged.
+- [x] CHANGELOG notes that `messageSequence(filter:)` defaults to `.all`, which can expose more Swift-modeled messages than `messages()` default.
 
 ### US-009: Add Runtime Tests
 
 **Description:** As an implementer, I need integration tests that prove the pull-based API receives key bus messages and handles cancellation safely.
 
 **Acceptance Criteria:**
-- [ ] A finite pipeline test receives `.eos` through `messageSequence(filter: [.eos, .error])`.
-- [ ] A deterministic invalid pipeline or injected error test receives `.error` as a value.
-- [ ] A state-change test receives at least one `.stateChanged` message.
-- [ ] An EOS non-termination test receives `.eos`, requests another `next()` in a cancellable task, cancels it, and observes `nil` within the timeout.
-- [ ] A cancellation-before-message test cancels an active iterator and observes `nil` within the timeout.
-- [ ] Tests run under the suite's existing time limits.
+- [x] A finite pipeline test receives `.eos` through `messageSequence(filter: [.eos, .error])`.
+- [x] A deterministic invalid pipeline or injected error test receives `.error` as a value.
+- [x] A state-change test receives at least one `.stateChanged` message.
+- [x] An EOS non-termination test receives `.eos`, requests another `next()` in a cancellable task, cancels it, and observes `nil` within the timeout.
+- [x] A cancellation-before-message test cancels an active iterator and observes `nil` within the timeout.
+- [x] Tests run under the suite's existing time limits.
 
 ### US-010: Add Static API Safety Tests
 
 **Description:** As a maintainer, I need static checks that pin the public API and prevent accidentally reintroducing stream buffering into the pull path.
 
 **Acceptance Criteria:**
-- [ ] Static tests verify `public struct Messages: AsyncSequence` exists under `Bus`.
-- [ ] Static tests verify `Messages` conforms to `Sendable`.
-- [ ] Static tests verify `public func messageSequence(filter: Filter = .all) -> Messages`.
-- [ ] Static tests verify the `messageSequence` implementation path does not construct `AsyncStream`.
-- [ ] Static tests verify no new public parser API is added.
-- [ ] Static tests verify `Bus.messages(filter:)` default and return type remain unchanged.
+- [x] Static tests verify `public struct Messages: AsyncSequence` exists under `Bus`.
+- [x] Static tests verify `Messages` conforms to `Sendable`.
+- [x] Static tests verify `public func messageSequence(filter: Filter = .all) -> Messages`.
+- [x] Static tests verify the `messageSequence` implementation path does not construct `AsyncStream`.
+- [x] Static tests verify no new public parser API is added.
+- [x] Static tests verify `Bus.messages(filter:)` default and return type remain unchanged.
 
 ## Functional Requirements
 

@@ -1,8 +1,9 @@
 # ADR-002: Bus Message Delivery Model
 
-**Status:** Accepted
+**Status:** Accepted, Implemented
 **Date:** 2026-05-08
 **Accepted:** 2026-05-11
+**Implemented:** 2026-05-11
 **Related work:** `GStreamerBridgeSafetyandReliabilityFixes`
 **Decision owner:** TBD
 **Scope:** `Bus.messages`, bus control-plane events, AsyncSequence design
@@ -150,9 +151,9 @@ This ADR does not decide a new named default filter set. The default filter for 
 
 ## Decision
 
-**Accepted, pending implementation.**
+**Accepted and implemented.**
 
-The package will adopt **Option D**: keep `Bus.messages(filter:)` returning `AsyncStream<BusMessage>` for source compatibility, and add a parallel pull-based `Bus.messageSequence(filter:)` returning `Bus.Messages`.
+The package adopts **Option D**: keep `Bus.messages(filter:)` returning `AsyncStream<BusMessage>` for source compatibility, and add a parallel pull-based `Bus.messageSequence(filter:)` returning `Bus.Messages`.
 
 Locked-in behavior for `Bus.messageSequence(filter:)` / `Bus.Messages`:
 
@@ -271,7 +272,7 @@ Known existing behavior:
 
 ## Resolved Questions
 
-- **ADR status.** Accepted, pending implementation.
+- **ADR status.** Accepted and implemented.
 - **Preferred public name.** Use `Bus.messageSequence(filter:)` (parallel to `Bus.messages(filter:)` without overloading the return type).
 - **Throwing vs values for `.error`.** Keep **values** (`BusMessage.error(message:debug:)`); throwing would prematurely exit iteration and hide subsequent control-plane messages.
 - **Automatic EOS termination for the new API.** **No** - the iterator does not stop solely because EOS was observed; callers opt out with `break` or by cancelling the task.
