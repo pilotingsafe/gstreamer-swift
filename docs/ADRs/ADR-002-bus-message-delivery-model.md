@@ -1,10 +1,11 @@
 # ADR-002: Bus Message Delivery Model
 
-**Status:** Accepted, Implemented
+**Status:** Accepted, Implemented, Updated
 **Date:** 2026-05-08
 **Accepted:** 2026-05-11
 **Implemented:** 2026-05-11
-**Related work:** `GStreamerBridgeSafetyandReliabilityFixes`
+**Updated:** 2026-05-11
+**Related work:** `tasks/prd-bus-message-delivery-model.md`, `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`
 **Decision owner:** TBD
 **Scope:** `Bus.messages`, bus control-plane events, AsyncSequence design
 
@@ -130,7 +131,7 @@ public func messageSequence(filter: Filter = ...) -> Bus.Messages
 
 Choose **Option D**.
 
-Keep existing `Bus.messages()` for source compatibility. Add a new pull-based bus sequence API in a future implementation (proposed as `Bus.messageSequence(filter:)` -> `Bus.Messages`).
+Keep existing `Bus.messages()` for source compatibility. Add the pull-based bus sequence API as `Bus.messageSequence(filter:) -> Bus.Messages`.
 
 Recommended API name:
 
@@ -147,7 +148,9 @@ public func events(filter: Filter = ...) -> Bus.Messages
 
 `messageSequence` is the clearest because it avoids overloading the existing `messages()` name.
 
-This ADR does not decide a new named default filter set. The default filter for `messageSequence(filter:)`, and whether to introduce any public convenience such as `.controlPlaneCritical`, should be decided in the implementation PR or a follow-up ADR.
+The implementation chose the existing `Bus.Filter.all` as the default filter for
+`messageSequence(filter:)`. This ADR still does not add or standardize a new
+public convenience such as `.controlPlaneCritical`.
 
 ## Decision
 
@@ -158,15 +161,22 @@ The package adopts **Option D**: keep `Bus.messages(filter:)` returning `AsyncSt
 Locked-in behavior for `Bus.messageSequence(filter:)` / `Bus.Messages`:
 
 - **No Swift `AsyncStream` producer buffer.** The pull-based path should not use a detached Swift producer that drains the bus ahead of consumer demand.
+- **Default filter is `.all`.** `Bus.messageSequence(filter:)` defaults to the
+  existing Swift-modeled `Bus.Filter.all`, not to `GST_MESSAGE_ANY`.
+- **Watch-backed implementation.** Current implementation uses a private `GstBus`
+  watch on a private GLib main context and native thread. Creating an iterator
+  can drain the bus and buffer matching `BusMessage` values before the consumer
+  awaits `next()`.
 - **Errors remain values.** Bus ERROR posts continue to surface as `BusMessage.error(message:debug:)` rather than throwing from `AsyncIteratorProtocol.next()`.
 - **No automatic termination on `.eos`.** Unlike `Bus.messages(filter:)`, which finishes the `AsyncStream` after delivering EOS, the pull-based iterator should keep polling until the consuming task is cancelled or the caller breaks out of iteration.
+- **Element message fields are modeled.** `GST_MESSAGE_ELEMENT` messages keep
+  the existing `BusMessage.element(name:fields:)` shape and populate available
+  `GstStructure` fields as strings.
 - **Convenience APIs unchanged by this ADR.** `Bus.errors()`, `Bus.warnings()`, and `Bus.stateChanges()` remain implemented on top of `Bus.messages(filter:)` unless a later change explicitly rewrites them.
 
 Deferred by this ADR:
 
-- The exact default filter for `messageSequence(filter:)`.
 - Whether to introduce a named public filter set.
-- Whether the implementation should use C-side filtered pop or unfiltered pop plus Swift-side filtering.
 - Whether existing convenience APIs should be rewritten around a single bus owner or fan-out dispatcher.
 
 ## Proposed API Sketch
@@ -184,12 +194,13 @@ extension Bus {
     }
 
     public func messageSequence(
-        filter: Filter = ...
+        filter: Filter = .all
     ) -> Messages
 }
 ```
 
-One possible iterator implementation is to poll with `swift_gst_bus_timed_pop_filtered` when the consumer calls `next()`:
+An earlier implementation sketch polled with `swift_gst_bus_timed_pop_filtered`
+when the consumer called `next()`:
 
 ```swift
 public mutating func next() async -> BusMessage? {
@@ -211,18 +222,24 @@ public mutating func next() async -> BusMessage? {
 }
 ```
 
-This is not the only viable implementation. If stronger retention or fan-out semantics are needed, the implementation should consider unfiltered `gst_bus_timed_pop` plus Swift-side filtering and distribution.
+That polling sketch has been superseded by the watch-backed implementation. If
+stronger retention or fan-out semantics are needed, a future implementation
+should consider a unified bus owner and Swift-side distribution.
 
 ## Delivery Semantics
 
 The new pull-based sequence should document:
 
 - It does not use a Swift `AsyncStream` producer buffer.
-- It polls the GStreamer bus when the consumer requests `next()`.
-- It stops on cancellation; if timed polling is used, worst-case exit latency is bounded by the timed-pop interval plus scheduling delay.
+- It starts a private bus watch when an iterator is created and may buffer
+  matching values before `next()` is awaited.
+- It stops a cancelled pending `next()` by removing that waiter and returning
+  `nil`; cancelling one waiter does not stop the shared pump for copied
+  iterators.
 - A `Bus` should be treated as having a single draining consumer unless a future fan-out mechanism owns the bus.
 - Multiple concurrent draining consumers compete for the same underlying `GstBus`.
-- Filter behavior depends on implementation choice: C-side filtered pop discards non-matching messages, while unfiltered pop plus Swift-side filtering can support stronger retention and fan-out semantics at higher complexity.
+- The active watch consumes delivered bus messages; messages outside the Swift
+  filter or not modeled as `BusMessage` are ignored.
 - It may still be affected by GStreamer bus behavior and message filters.
 - It should not claim to preserve messages that GStreamer itself discards or expires.
 
@@ -235,23 +252,26 @@ Known existing behavior:
 ## Compatibility Plan
 
 1. Keep `Bus.messages()` unchanged, including its current default filter.
-2. Add `Bus.messageSequence()` in a future implementation.
+2. Add `Bus.messageSequence()` as the source-compatible pull-based API.
 3. Update docs to recommend `messageSequence()` when callers need pull-based ownership and clearer backpressure semantics.
 4. Keep convenience APIs such as `errors()`, `warnings()`, and `stateChanges()` initially.
-5. If `messageSequence(filter:)` gets a different default filter than `messages(filter:)`, document that migration can expose different message sets.
+5. Document that `messageSequence(filter:)` defaults to `.all`, which can expose more Swift-modeled messages than the narrower `messages()` default.
 6. Later decide whether convenience APIs should be rewritten on top of a single bus owner, fan-out dispatcher, or `messageSequence()`.
 7. Consider deprecating `messages()` only in a future major release if needed.
 
 ## Tests Required
 
-- Pull-based sequence receives EOS from a finite pipeline.
-- Pull-based sequence receives deterministic error from an invalid pipeline.
-- Pull-based sequence receives state changes.
-- Cancellation stops polling.
-- No Swift `AsyncStream` buffering is used in the pull-based path.
-- Existing `Bus.messages()` tests continue to pass.
-- Convenience APIs remain source-compatible.
-- If the implementation uses C-side filtered pop, tests or documentation must cover that filter choice and its consequences.
+- [x] Pull-based sequence receives EOS from a finite pipeline.
+- [x] Pull-based sequence receives deterministic error from an invalid pipeline.
+- [x] Pull-based sequence receives state changes.
+- [x] Cancellation removes pending waiters and is not bounded by timed-pop polling.
+- [x] EOS remains a delivered value and does not automatically terminate the pull sequence.
+- [x] Element messages preserve available structure fields.
+- [x] No Swift `AsyncStream` buffering is used in the pull-based path.
+- [x] The pull-based path uses the private watch-backed implementation rather than blocking timed pop.
+- [x] Bus watch callback context lifetime is protected through registration.
+- [x] Existing `Bus.messages()` tests continue to pass.
+- [x] Convenience APIs remain source-compatible.
 
 ## Consequences
 
@@ -268,22 +288,23 @@ Known existing behavior:
 - Users need guidance on which bus API to use.
 - Existing `Bus.messages()` ambiguity remains until users migrate.
 - Existing multi-consumer bus competition remains until a separate fan-out or bus-owner design is implemented.
-- Default filter semantics remain a separate decision for implementation.
+- The `.all` default can expose a broader modeled message set than the legacy `messages()` default.
 
 ## Resolved Questions
 
 - **ADR status.** Accepted and implemented.
 - **Preferred public name.** Use `Bus.messageSequence(filter:)` (parallel to `Bus.messages(filter:)` without overloading the return type).
+- **Default filter.** Use existing `Bus.Filter.all`; do not add a new named default filter set in this ADR.
 - **Throwing vs values for `.error`.** Keep **values** (`BusMessage.error(message:debug:)`); throwing would prematurely exit iteration and hide subsequent control-plane messages.
 - **Automatic EOS termination for the new API.** **No** - the iterator does not stop solely because EOS was observed; callers opt out with `break` or by cancelling the task.
+- **Element payload.** Populate available `GstStructure` fields into `BusMessage.element(name:fields:)`.
 - **Named critical filter set.** Do not decide or add one in this ADR.
 
 ## Deferred Questions
 
-- The exact default filter for `Bus.messageSequence(filter:)`.
 - Whether a future named filter set is useful, and which messages it should include.
-- Whether the implementation should use `gst_bus_timed_pop_filtered` or unfiltered `gst_bus_timed_pop` plus Swift-side filtering.
 - Whether to add a fan-out dispatcher or unified bus owner to support multiple observers without competing drains.
 - Whether `Bus.errors()`, `Bus.warnings()`, and `Bus.stateChanges()` should be reimplemented to avoid nested detached tasks and competing bus consumers.
 - Whether `Bus.messages(filter:)` should be deprecated in a future major release once adoption guidance stabilizes.
-- Whether to add an event-driven delivery path (for example using `gst_bus_set_sync_handler`) as a future option that avoids timed polling while still **not** requiring a GLib main loop.
+- Whether to add a public fan-out or replay API on top of the event-driven watch
+  path.

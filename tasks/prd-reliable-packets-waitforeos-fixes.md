@@ -15,10 +15,10 @@ Last updated: 2026-05-11.
 - PRD: implemented.
 - Implementation: completed in commit `9790e93` (`Fix reliable packet markers and bus EOS waits`).
 - Verification:
-  - `swift build` passed.
-  - `swift test --filter ReliablePacketZeroLengthMarkerTests` passed.
-  - `swift test --filter BusMessageSequenceTests` passed.
-  - `swift test --filter APISafetyStaticTests` passed.
+  - `swiftly run swift build` passed.
+  - `swiftly run swift test --filter ReliablePacketZeroLengthMarkerTests` passed.
+  - `swiftly run swift test --filter BusMessageSequenceTests` passed.
+  - `swiftly run swift test --filter APISafetyStaticTests` passed.
 - Scope: reliable zero-length packet markers, EOS-or-error bus waiting, and cancellation propagation from cancelled EOS waits.
 - Related APIs: `AudioFileSource.reliablePackets()`, `Bus.waitForEOS()`, and new `Bus.waitForEOSOrError()`.
 
@@ -127,7 +127,7 @@ Last updated: 2026-05-11.
 - Bus tests prove `waitForEOSOrError()` throws `CancellationError` when cancelled before EOS or ERROR.
 - Bus tests prove deprecated `waitForEOS()` returns on ERROR instead of timing out.
 - Static API checks prove `waitForEOSOrError()` exists and `waitForEOS()` is deprecated but source-compatible.
-- Focused `swift test` runs for reliable packet and bus behavior pass.
+- Focused `swiftly run swift test` runs for reliable packet and bus behavior pass.
 
 ## Open Questions
 
