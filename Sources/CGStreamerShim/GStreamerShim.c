@@ -91,6 +91,243 @@ GstMessage* swift_gst_bus_timed_pop_filtered(GstBus* bus, GstClockTime timeout, 
     return gst_bus_timed_pop_filtered(bus, timeout, types);
 }
 
+struct SwiftGstBusWatchRegistration {
+    GstBus* bus;
+    GMainContext* context;
+    GSource* source;
+    GThread* thread;
+    guint source_id;
+    SwiftGstBusWatchMessageCallback callback;
+    void* callback_context;
+    SwiftGstBusWatchContextRetainFunc retain_context;
+    SwiftGstBusWatchContextReleaseFunc release_context;
+    GMutex mutex;
+    gboolean stopped;
+    gboolean cleanup_on_thread_exit;
+};
+
+static void swift_gst_bus_watch_retain_context(SwiftGstBusWatchRegistration* registration) {
+    if (registration->callback_context != NULL && registration->retain_context != NULL) {
+        registration->retain_context(registration->callback_context);
+    }
+}
+
+static void swift_gst_bus_watch_release_context(SwiftGstBusWatchRegistration* registration) {
+    if (registration->callback_context != NULL && registration->release_context != NULL) {
+        registration->release_context(registration->callback_context);
+    }
+}
+
+static gboolean swift_gst_bus_watch_trampoline(
+    GstBus* bus,
+    GstMessage* message,
+    gpointer data
+) {
+    (void)bus;
+
+    SwiftGstBusWatchRegistration* registration = (SwiftGstBusWatchRegistration*)data;
+    SwiftGstBusWatchMessageCallback callback = NULL;
+    void* callback_context = NULL;
+    gboolean stopped = TRUE;
+
+    g_mutex_lock(&registration->mutex);
+    stopped = registration->stopped;
+    if (!stopped) {
+        callback = registration->callback;
+        callback_context = registration->callback_context;
+    }
+    g_mutex_unlock(&registration->mutex);
+
+    if (stopped) {
+        return G_SOURCE_REMOVE;
+    }
+
+    if (callback != NULL) {
+        callback(message, callback_context);
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+static gpointer swift_gst_bus_watch_thread_main(gpointer data) {
+    SwiftGstBusWatchRegistration* registration = (SwiftGstBusWatchRegistration*)data;
+
+    g_main_context_push_thread_default(registration->context);
+    while (TRUE) {
+        gboolean stopped = FALSE;
+
+        g_mutex_lock(&registration->mutex);
+        stopped = registration->stopped;
+        g_mutex_unlock(&registration->mutex);
+
+        if (stopped) {
+            break;
+        }
+
+        g_main_context_iteration(registration->context, TRUE);
+    }
+    g_main_context_pop_thread_default(registration->context);
+
+    gboolean cleanup_on_thread_exit = FALSE;
+    g_mutex_lock(&registration->mutex);
+    cleanup_on_thread_exit = registration->cleanup_on_thread_exit;
+    g_mutex_unlock(&registration->mutex);
+
+    if (cleanup_on_thread_exit) {
+        if (registration->source != NULL) {
+            g_source_unref(registration->source);
+        }
+        if (registration->context != NULL) {
+            g_main_context_unref(registration->context);
+        }
+        if (registration->bus != NULL) {
+            gst_object_unref(registration->bus);
+        }
+
+        swift_gst_bus_watch_release_context(registration);
+        g_mutex_clear(&registration->mutex);
+        g_free(registration);
+    }
+
+    return NULL;
+}
+
+static void swift_gst_bus_watch_cleanup_start_failure(
+    SwiftGstBusWatchRegistration* registration
+) {
+    if (registration == NULL) {
+        return;
+    }
+
+    if (registration->source != NULL) {
+        g_source_destroy(registration->source);
+        g_source_unref(registration->source);
+    }
+    if (registration->context != NULL) {
+        g_main_context_unref(registration->context);
+    }
+    if (registration->bus != NULL) {
+        gst_object_unref(registration->bus);
+    }
+    swift_gst_bus_watch_release_context(registration);
+    g_mutex_clear(&registration->mutex);
+    g_free(registration);
+}
+
+SwiftGstBusWatchRegistration* swift_gst_bus_watch_start(
+    GstBus* bus,
+    SwiftGstBusWatchMessageCallback callback,
+    void* context,
+    SwiftGstBusWatchContextRetainFunc retain_context,
+    SwiftGstBusWatchContextReleaseFunc release_context
+) {
+    if (bus == NULL || callback == NULL) {
+        return NULL;
+    }
+
+    SwiftGstBusWatchRegistration* registration = g_new0(SwiftGstBusWatchRegistration, 1);
+    registration->bus = GST_BUS(gst_object_ref(bus));
+    registration->context = g_main_context_new();
+    registration->source = gst_bus_create_watch(bus);
+    registration->callback = callback;
+    registration->callback_context = context;
+    registration->retain_context = retain_context;
+    registration->release_context = release_context;
+    g_mutex_init(&registration->mutex);
+    swift_gst_bus_watch_retain_context(registration);
+
+    if (registration->context == NULL || registration->source == NULL) {
+        swift_gst_bus_watch_cleanup_start_failure(registration);
+        return NULL;
+    }
+
+    g_source_set_callback(
+        registration->source,
+        (GSourceFunc)swift_gst_bus_watch_trampoline,
+        registration,
+        NULL
+    );
+    registration->source_id = g_source_attach(registration->source, registration->context);
+    if (registration->source_id == 0) {
+        swift_gst_bus_watch_cleanup_start_failure(registration);
+        return NULL;
+    }
+
+    GError* thread_error = NULL;
+    registration->thread = g_thread_try_new(
+        "swift-gst-bus-watch",
+        swift_gst_bus_watch_thread_main,
+        registration,
+        &thread_error
+    );
+    if (thread_error != NULL) {
+        g_error_free(thread_error);
+    }
+    if (registration->thread == NULL) {
+        swift_gst_bus_watch_cleanup_start_failure(registration);
+        return NULL;
+    }
+
+    return registration;
+}
+
+void swift_gst_bus_watch_stop(SwiftGstBusWatchRegistration** registration_pointer) {
+    if (registration_pointer == NULL || *registration_pointer == NULL) {
+        return;
+    }
+
+    SwiftGstBusWatchRegistration* registration = *registration_pointer;
+    *registration_pointer = NULL;
+
+    GSource* source = NULL;
+    GMainContext* context = NULL;
+    GThread* thread = NULL;
+    GstBus* bus = NULL;
+    gboolean is_watch_thread = FALSE;
+
+    g_mutex_lock(&registration->mutex);
+    if (!registration->stopped) {
+        registration->stopped = TRUE;
+    }
+    source = registration->source;
+    context = registration->context;
+    thread = registration->thread;
+    bus = registration->bus;
+    is_watch_thread = thread != NULL && thread == g_thread_self();
+    if (is_watch_thread) {
+        registration->cleanup_on_thread_exit = TRUE;
+    }
+    g_mutex_unlock(&registration->mutex);
+
+    if (source != NULL) {
+        g_source_destroy(source);
+    }
+    if (context != NULL) {
+        g_main_context_wakeup(context);
+    }
+    if (is_watch_thread) {
+        if (thread != NULL) {
+            g_thread_unref(thread);
+        }
+        return;
+    }
+    if (thread != NULL) {
+        g_thread_join(thread);
+    }
+    if (source != NULL) {
+        g_source_unref(source);
+    }
+    if (context != NULL) {
+        g_main_context_unref(context);
+    }
+    if (bus != NULL) {
+        gst_object_unref(bus);
+    }
+
+    swift_gst_bus_watch_release_context(registration);
+    g_mutex_clear(&registration->mutex);
+    g_free(registration);
+}
+
 GstMessageType swift_gst_message_type(GstMessage* message) {
     return GST_MESSAGE_TYPE(message);
 }

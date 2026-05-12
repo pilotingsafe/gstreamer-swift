@@ -16,7 +16,7 @@ This PRD fixes the documentation, the helper's runtime behavior, the impacted te
 
 ## Status
 
-Last updated: 2026-05-09.
+Last updated: 2026-05-11.
 
 - Drafting: reviewed and revised.
 - Implementation: completed in the current QueueLeaky semantics fix changes.
@@ -24,18 +24,18 @@ Last updated: 2026-05-09.
 - DocC tooling: Swift DocC plugin dependency added in `Package.swift` and
   resolved in `Package.resolved`.
 - User stories: US-001 through US-006 are complete.
-- Verification: `swift test --filter QueueLeakyBehaviorTests`,
-  `swift test --filter ResultBuilderTests`,
-  `swift test --filter PipelineElementTests`, `swift build`, and full
-  `swift test` passed.
-  `swift package generate-documentation --target GStreamer --warnings-as-errors`
+- Verification: `swiftly run swift test --filter QueueLeakyBehaviorTests`,
+  `swiftly run swift test --filter ResultBuilderTests`,
+  `swiftly run swift test --filter PipelineElementTests`, `swiftly run swift build`, and full
+  `swiftly run swift test` passed.
+  `swiftly run swift package generate-documentation --target GStreamer --warnings-as-errors`
   also runs and generates the documentation archive. The remaining console
   warnings are SwiftPM/pkg-config `-Wl,-rpath` warnings from the local
   GStreamer install, not DocC content warnings.
 - Related work:
   - `Package.swift` / `Package.resolved` (Swift DocC plugin dependency).
   - `Sources/GStreamer/Pipelines/Elements/Queue.swift` (enum + static helper).
-  - `docs/RFCs/RFC-002-live-source-reliable-delivery.md` (Queue Policy Contract section).
+  - `docs/RFCs/RFC-002-live-source-reliable-delivery.md` (Queue Policy Contract section; later accepted and implemented separately).
   - `CHANGELOG.md` (already present with a `## Next` section).
 
 ## Goals
@@ -60,7 +60,7 @@ Last updated: 2026-05-09.
 - [x] No `rawValue` is changed.
 - [x] No public case is renamed or removed.
 - [x] DocC builds without new warnings.
-- [x] `swift build` passes.
+- [x] `swiftly run swift build` passes.
 
 ### US-002: Fix `Queue.leaky(maxBuffers:)` to match its docs
 
@@ -72,7 +72,7 @@ Last updated: 2026-05-09.
 - [x] Doc-comment of `Queue.leaky(maxBuffers:)` is rewritten to describe only the current behavior: "Create a leaky queue that drops the **oldest queued** buffers when full so the consumer always sees the most recent live data. Useful for live sources where latency must be preserved over completeness. Equivalent to GStreamer `leaky=2`."
 - [x] Historical behavior and migration impact are documented in `CHANGELOG.md`, not in the long-term DocC comment.
 - [x] No new public symbol is introduced; no existing public symbol is renamed or removed.
-- [x] `swift build` passes.
+- [x] `swiftly run swift build` passes.
 
 ### US-003: Update string-assertion tests for `Queue.leaky(...)`
 
@@ -83,7 +83,7 @@ Last updated: 2026-05-09.
 - [x] In `Tests/SwiftGStreamerTests/PipelineElementTests.swift`, the `@Test("Queue leaky")` block (around lines 127–132) asserts `queue.pipeline.contains("leaky=2")`.
 - [x] Test functions, names, and unrelated assertions are not otherwise modified.
 - [x] The two existing direct-enum smoketests that already assert `.upstream` → `leaky=1` and `.downstream` → `leaky=2` (`ResultBuilderTests.swift` ~line 70 `untypedQueue` and ~line 365 `complexUntypedPipeline`) remain **unchanged**, since they correctly verify the raw enum-to-string serialization and that mapping is unaffected by this PRD.
-- [x] `swift test --filter ResultBuilderTests` and `swift test --filter PipelineElementTests` pass.
+- [x] `swiftly run swift test --filter ResultBuilderTests` and `swiftly run swift test --filter PipelineElementTests` pass.
 
 ### US-004: Add a deterministic behavioral test that verifies real drop direction
 
@@ -102,7 +102,7 @@ Last updated: 2026-05-09.
   - `leaky=2` (`.downstream`) — expects the **latest** tags to survive and the earliest to be dropped.
 - [x] Survived-tags assertions match the surviving set structurally, such as requiring `.upstream` survivors to include the minimum pushed tag and exclude the maximum pushed tag, and `.downstream` survivors to include the maximum pushed tag and exclude the minimum pushed tag. Do not assert an exact dropped count.
 - [x] The test does **not** use a silent early-return skip. It should run like the existing AppSource/AppSink smoke tests when GStreamer is installed. If a CI runner lacks GStreamer system dependencies, the implementation PR reports that verification as blocked or failed rather than silently skipping the test.
-- [x] `swift test --filter QueueLeakyBehaviorTests` passes locally with GStreamer dependencies installed.
+- [x] `swiftly run swift test --filter QueueLeakyBehaviorTests` passes locally with GStreamer dependencies installed.
 
 ### US-005: Correct RFC-002 mapping (line 196)
 
@@ -112,7 +112,7 @@ Last updated: 2026-05-09.
 - [x] In `docs/RFCs/RFC-002-live-source-reliable-delivery.md`, line 196 is rewritten to map `.dropOldestPreservingLatency(maxBuffers:)` to `QueueLeaky.downstream` with bounded queue, with a sentence noting that this corresponds to GStreamer `leaky=2`, drops the oldest queued buffer, and keeps the consumer on the newest live frames.
 - [x] No other policy in that mapping list is silently changed; `.blockOnFull(...)` and `.unboundedQueue` rows remain as is.
 - [x] If RFC-002 has any inline example or prose elsewhere that says "leaky upstream drops old" or similar, those occurrences are corrected in the same edit.
-- [x] RFC status line is left as `Proposed` unless release planning explicitly promotes it; this PRD does not change RFC status.
+- [x] RFC status was not promoted by this mapping fix; RFC-002 was later accepted and implemented by the live reliable delivery work.
 - [x] Markdown-only change is reviewed with `rg "QueueLeaky\\.upstream" docs/RFCs/RFC-002-live-source-reliable-delivery.md` to confirm the drop-oldest mapping no longer points at `.upstream`.
 
 ### US-006: Add CHANGELOG entry as a behavior bugfix
@@ -142,14 +142,14 @@ Last updated: 2026-05-09.
 - **FR-9:** RFC-002 line 196 must map `.dropOldestPreservingLatency(maxBuffers:)` to `QueueLeaky.downstream`, with a one-liner referencing GStreamer `leaky=2`.
 - **FR-10:** `CHANGELOG.md` must contain a Bugfix entry describing the `Queue.leaky(maxBuffers:)` runtime change, suggested workaround for any caller that depended on the old reversed behavior, and a link to RFC-002.
 - **FR-11:** No public API surface is added or removed by this PRD (no aliases, no new helpers, no rename).
-- **FR-12:** This PRD does not require a lint command unless the implementation PR discovers and documents a repo-local lint command. Required verification is `swift build`, the focused tests listed below, full `swift test`, and optional DocC generation.
+- **FR-12:** This PRD does not require a lint command unless the implementation PR discovers and documents a repo-local lint command. Required verification is `swiftly run swift build`, the focused tests listed below, full `swiftly run swift test`, and optional DocC generation.
 
 ## Non-Goals (Out of Scope)
 
 - **NG-1:** Adding readability aliases such as `dropNewest`/`dropOldest` static properties on `Queue` or convenience cases on `QueueLeaky`. Considered and rejected to keep API surface stable; revisit only if RFC-002 implementation introduces a `LiveSourceDeliveryPolicy` enum that makes such aliases redundant anyway.
 - **NG-2:** Renaming or removing `QueueLeaky.upstream` / `QueueLeaky.downstream` cases. Their names mirror GStreamer's official enum and must stay aligned.
-- **NG-3:** Implementing `LiveSourceDeliveryPolicy`, `withReliableDelivery(policy:)`, or any other RFC-002 API surface. This PRD only fixes the mapping table inside the RFC document.
-- **NG-4:** Promoting RFC-002 from `Proposed` to `Accepted`.
+- **NG-3:** Implementing RFC-002 API surface. This PRD only fixed the mapping table inside the RFC document; RFC-002 later implemented direct `QueueLeaky` builder configuration rather than `LiveSourceDeliveryPolicy`.
+- **NG-4:** Promoting RFC-002 status was out of scope for this PRD; that happened separately in the live reliable delivery work.
 - **NG-5:** Changing AppSink configuration, `packets()` semantics, or any pipeline element other than `Queue.leaky(...)`.
 - **NG-6:** Restructuring `CHANGELOG.md` beyond adding a `### Bugfixes` subsection under `## Next` if needed.
 - **NG-7:** Adding `LocalizedError` conformance, error taxonomy changes, or anything overlapping with ADR-001 / RFC-001 / RFC-002 follow-up work.
@@ -161,7 +161,7 @@ Last updated: 2026-05-09.
 - **Case names track GStreamer's vocabulary.** `.upstream` and `.downstream` are deliberately named after GStreamer's `LEAK_UPSTREAM` / `LEAK_DOWNSTREAM`. This makes mental translation between Swift code and `gst-launch` strings trivial and cuts off a class of "renamed in Swift but reversed in `leaky=N`" bugs in the future.
 - **The helper expresses intent, not raw `leaky=N`.** `Queue.leaky(maxBuffers:)` exists precisely to spare callers from picking the right `LEAK_*` direction. Its documentation already commits to a specific intent ("drops old", "keep most recent data"), so its implementation must follow the documentation. The enum is the low-level truth; the helper is the high-level intent.
 - **Behavior reversal must be loud.** Even though no signature changes, the runtime behavior of `Queue.leaky(maxBuffers:)` flips. This must be released as a Bugfix entry, not as an internal cleanup, so callers who happened to depend on the prior (reversed) behavior have a clear migration note.
-- **RFC-002 stays Proposed.** This PRD does not implement RFC-002; it only fixes the mapping table inside it so the RFC, when later promoted, does not lock in the reversed mapping.
+- **RFC-002 promotion happened separately.** This PRD did not implement RFC-002; it fixed the mapping table before the later live reliable delivery work accepted and implemented RFC-002.
 
 ## Technical Considerations
 
@@ -175,12 +175,12 @@ Last updated: 2026-05-09.
 - CHANGELOG change: add a `### Bugfixes` subsection under `## Next` if needed, then add the queue behavior entry there. Do not restructure other sections.
 - No repo lint command is currently part of the required workflow. If the implementation PR discovers a valid lint command, it may run it and report the result as extra verification.
 - Verification commands:
-  - `swift build`
-  - `swift test --filter QueueLeakyBehaviorTests`
-  - `swift test --filter ResultBuilderTests`
-  - `swift test --filter PipelineElementTests`
-  - `swift test`
-  - `swift package generate-documentation` if the DocC plugin is available locally.
+  - `swiftly run swift build`
+  - `swiftly run swift test --filter QueueLeakyBehaviorTests`
+  - `swiftly run swift test --filter ResultBuilderTests`
+  - `swiftly run swift test --filter PipelineElementTests`
+  - `swiftly run swift test`
+  - `swiftly run swift package generate-documentation` if the DocC plugin is available locally.
 - If GStreamer system dependencies are unavailable, report the Swift build/test verification as blocked or failed with the exact reason. Do not silently skip the new behavior test.
 - If DocC tooling is unavailable, report the skipped DocC verification with the exact reason, mirroring the convention used by the ADR-001 PRD.
 
@@ -189,11 +189,10 @@ Last updated: 2026-05-09.
 - `rg "leaky:\s*\.upstream" Sources/GStreamer/Pipelines/Elements/Queue.swift` returns no matches inside `Queue.leaky(maxBuffers:)` after the change.
 - `rg "leaky=1" Tests/SwiftGStreamerTests/PipelineElementTests.swift Tests/SwiftGStreamerTests/ResultBuilderTests.swift` returns matches **only** in the direct-enum smoketests (`.upstream` cases), never in the `Queue.leaky(maxBuffers:)` tests.
 - `rg "QueueLeaky\.upstream" docs/RFCs/RFC-002-live-source-reliable-delivery.md` returns no matches in the `dropOldestPreservingLatency` mapping bullet after the edit (it appears, if at all, only inside Option-listing prose).
-- `swift test` passes locally with GStreamer dependencies present; the new behavioral test passes deterministically across at least three consecutive local runs.
+- `swiftly run swift test` passes locally with GStreamer dependencies present; the new behavioral test passes deterministically across at least three consecutive local runs.
 - The new behavioral test explicitly disables queue byte/time limits and records that overflow pressure occurred before asserting survivor tags.
 - DocC generation introduces zero new warnings when DocC tooling is available.
 
 ## Open Questions
 
-- **RFC-002 prose audit beyond line 196.** The mapping bullet at line 196 is the only known offender, but if the implementation PR finds other RFC-002 prose that says "leaky upstream drops old" or similar, those occurrences should be corrected in the same edit (already covered by US-005's third acceptance bullet); this PRD does not pre-enumerate them.
-- **Coordination with RFC-002 implementation PRD.** When a follow-up PRD lands `LiveSourceDeliveryPolicy` and `withReliableDelivery(policy:)`, that PRD should reference this fix so its mapping bullet matches the corrected RFC and the corrected `QueueLeaky` docs.
+- None. RFC-002 later accepted direct `QueueLeaky` builder configuration using the corrected mapping.

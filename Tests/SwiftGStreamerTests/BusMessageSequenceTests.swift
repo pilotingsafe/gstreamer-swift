@@ -9,7 +9,7 @@ struct BusMessageSequenceTests {
         try GStreamer.initialize()
     }
 
-    @Test("Pull sequence receives EOS from finite pipeline")
+    @Test("Watch-backed sequence receives EOS from finite pipeline")
     func messageSequenceReceivesEOSFromFinitePipeline() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
 
@@ -33,7 +33,7 @@ struct BusMessageSequenceTests {
         }
     }
 
-    @Test("Pull sequence receives injected bus errors")
+    @Test("Watch-backed sequence receives injected bus errors")
     func messageSequenceReceivesInjectedBusError() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
 
@@ -59,7 +59,34 @@ struct BusMessageSequenceTests {
         #expect(debug == "bus-sequence-test")
     }
 
-    @Test("Pull sequence receives state changes")
+    @Test("Watch-backed sequence yields element marker fields")
+    func messageSequenceYieldsElementMarkerFields() async throws {
+        let pipeline = try Pipeline("fakesrc num-buffers=0 ! fakesink")
+        let marker = "bus-sequence-element-marker"
+        let iterator = pipeline.bus.messageSequence(filter: .element).makeAsyncIterator()
+        let nextTask = Task {
+            await Self.nextMessage(from: iterator)
+        }
+        defer { nextTask.cancel() }
+
+        await Task.yield()
+        #expect(swift_gst_test_post_element_marker(pipeline._element, marker) != 0)
+
+        let message = try #require(
+            try await Self.withTimeout(.seconds(1)) {
+                await nextTask.value
+            }
+        )
+
+        guard case .element(_, let fields) = message else {
+            Issue.record("Expected element marker, got \(String(describing: message))")
+            return
+        }
+
+        #expect(fields["marker"] == marker)
+    }
+
+    @Test("Watch-backed sequence receives state changes")
     func messageSequenceReceivesStateChanges() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
         var iterator = pipeline.bus.messageSequence(filter: [.stateChanged, .eos, .error])
@@ -94,7 +121,7 @@ struct BusMessageSequenceTests {
         #expect(stateChangeCount > 0)
     }
 
-    @Test("Pull sequence cancellation before a matching message returns nil")
+    @Test("Watch-backed sequence pending next returns nil promptly when cancelled")
     func messageSequenceCancellationBeforeMatchingMessageReturnsNil() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
         let iterator = pipeline.bus.messageSequence(filter: .error).makeAsyncIterator()
@@ -102,16 +129,17 @@ struct BusMessageSequenceTests {
             await Self.nextMessage(from: iterator)
         }
 
+        await Task.yield()
         nextTask.cancel()
 
-        let message = try await Self.withTimeout(.milliseconds(500)) {
+        let message = try await Self.withTimeout(.milliseconds(200)) {
             await nextTask.value
         }
 
         #expect(Self.isNil(message))
     }
 
-    @Test("Pull sequence does not terminate after EOS")
+    @Test("Watch-backed sequence does not terminate after EOS")
     func messageSequenceDoesNotTerminateAfterEOS() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
         var iterator = pipeline.bus.messageSequence(filter: [.eos, .error]).makeAsyncIterator()
@@ -176,6 +204,43 @@ struct BusMessageSequenceTests {
         }
     }
 
+    @Test("Active watch consumes nonmatching messages before delivering matching error")
+    func activeWatchConsumesNonmatchingMessagesBeforeDeliveringMatchingError() async throws {
+        let pipeline = try Pipeline("fakesrc num-buffers=0 ! fakesink")
+        let marker = "bus-sequence-active-watch-filter-marker"
+        let iterator = pipeline.bus.messageSequence(filter: .error).makeAsyncIterator()
+        let nextTask = Task {
+            await Self.nextMessage(from: iterator)
+        }
+        defer { nextTask.cancel() }
+
+        await Task.yield()
+        #expect(swift_gst_test_post_element_marker(pipeline._element, marker) != 0)
+        #expect(swift_gst_test_post_bus_error(
+            pipeline._element,
+            "Active watch matching error",
+            "active-watch-filter"
+        ) != 0)
+
+        let message = try #require(
+            try await Self.withTimeout(.seconds(1)) {
+                await nextTask.value
+            }
+        )
+
+        guard case .error(let errorMessage, let debug) = message else {
+            Issue.record("Expected matching error, got \(String(describing: message))")
+            return
+        }
+
+        #expect(errorMessage == "Active watch matching error")
+        #expect(debug == "active-watch-filter")
+        #expect(
+            swift_gst_test_bus_pop_marker(pipeline.bus._bus, marker, 50_000_000) == 0,
+            "The active watch should consume and ignore nonmatching element messages"
+        )
+    }
+
     @Test("Existing AsyncStream messages still finishes after EOS")
     func messagesAsyncStreamStillFinishesAfterEOS() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
@@ -208,6 +273,75 @@ struct BusMessageSequenceTests {
 
         try pipeline.play()
         defer { pipeline.stop() }
+
+        try await Self.withTimeout(.seconds(2)) {
+            await pipeline.bus.waitForEOS()
+        }
+    }
+
+    @Test("waitForEOSOrError returns for finite EOS")
+    func waitForEOSOrErrorReturnsForFiniteEOS() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+
+        try pipeline.play()
+        defer { pipeline.stop() }
+
+        try await Self.withTimeout(.seconds(2)) {
+            try await pipeline.bus.waitForEOSOrError()
+        }
+    }
+
+    @Test("waitForEOSOrError throws exact injected bus error")
+    func waitForEOSOrErrorThrowsExactInjectedBusError() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+        let message = "ADR-002 waitForEOSOrError injected bus error"
+        let debug = "wait-for-eos-or-error"
+
+        #expect(swift_gst_test_post_bus_error(pipeline._element, message, debug) != 0)
+
+        let error = try #require(await Self.captureAsyncError {
+            try await Self.withTimeout(.seconds(2)) {
+                try await pipeline.bus.waitForEOSOrError()
+            }
+        })
+
+        Self.expectBusError(
+            error,
+            message: message,
+            source: nil,
+            debug: debug
+        )
+    }
+
+    @Test("waitForEOSOrError throws CancellationError when cancelled before EOS or ERROR")
+    func waitForEOSOrErrorThrowsCancellationErrorWhenCancelledBeforeEOSOrError() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+        let task = Task {
+            try await pipeline.bus.waitForEOSOrError()
+        }
+        defer { task.cancel() }
+
+        await Task.yield()
+        task.cancel()
+
+        let error = try #require(await Self.captureAsyncError {
+            try await Self.withTimeout(.milliseconds(500)) {
+                try await task.value
+            }
+        })
+
+        #expect(error is CancellationError)
+    }
+
+    @Test("Deprecated waitForEOS returns on ERROR before EOS")
+    func deprecatedWaitForEOSReturnsOnErrorBeforeEOS() async throws {
+        let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")
+
+        #expect(swift_gst_test_post_bus_error(
+            pipeline._element,
+            "ADR-002 deprecated waitForEOS injected bus error",
+            "deprecated-wait-for-eos"
+        ) != 0)
 
         try await Self.withTimeout(.seconds(2)) {
             await pipeline.bus.waitForEOS()
@@ -266,6 +400,31 @@ struct BusMessageSequenceTests {
             }
             return result
         }
+    }
+
+    private static func captureAsyncError(_ body: () async throws -> Void) async -> Error? {
+        do {
+            try await body()
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    private static func expectBusError(
+        _ error: Error,
+        message expectedMessage: String,
+        source expectedSource: String?,
+        debug expectedDebug: String?
+    ) {
+        guard case GStreamerError.busError(let message, let source, let debug) = error else {
+            Issue.record("Expected busError(\(expectedMessage)), got \(error)")
+            return
+        }
+
+        #expect(message == expectedMessage)
+        #expect(source == expectedSource)
+        #expect(debug == expectedDebug)
     }
 
     private static func isNil(_ message: BusMessage?) -> Bool {

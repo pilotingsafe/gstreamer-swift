@@ -4,28 +4,30 @@
 
 This PRD covers **Phase 1** of `RFC-001: Realtime vs Reliable Archival Encoded Packet Delivery`. The goal is to introduce a no-drop, pull-based, throwing AsyncSequence primitive — `ReliablePackets<Element>` — and expose it through a single audio file/decode-style entry point, without disturbing the existing realtime `packets()` API.
 
-Per the accepted RFC-001 Migration Plan #2, Phase 1 is intentionally scoped to **file/decode-style sources only**. Live-source exposure (microphone, webcam) is deferred to RFC-002.
+Per the accepted RFC-001 Migration Plan #2, Phase 1 is intentionally scoped to **file/decode-style sources only**. Live-source exposure (microphone, webcam) is implemented by the RFC-002 follow-up.
 
 The rationale, semantics, options analysis, and reliability boundary discussion live in `docs/RFCs/RFC-001-realtime-vs-archival-packet-delivery.md`. This PRD does not re-litigate those decisions; it specifies the implementation work.
 
 ## Status
 
-Last updated: 2026-05-09.
+Last updated: 2026-05-11.
 
 - PRD: accepted for Phase 1 implementation.
 - Implementation: complete in local uncommitted changes; review-ready.
 - Story status: US-001 through US-013 implemented for Phase 1.
+- Follow-up hardening: complete for callback context lifetime, startup-timeout atomicity, and shared duration conversion.
+- Checklist: all Phase 1 acceptance criteria and follow-up hardening checks completed.
 - Verification:
-  - `swift test --filter Reliable` passed.
-  - `swift build --target gst-reliable-audio` passed.
-  - `swift test` passed on rerun; an initial full-suite run showed a transient failure in the pre-existing `QueueLeakyBehaviorTests` suite.
+  - `swiftly run swift test --filter Reliable` passed.
+  - `swiftly run swift build --target gst-reliable-audio` passed.
+  - `swiftly run swift test` passed on rerun; an initial full-suite run showed a transient failure in the pre-existing `QueueLeakyBehaviorTests` suite.
   - `git diff --check` passed.
 - Resolved implementation decisions:
   - Source typing uses a distinct `AudioFileSource` returned by `AudioSource.file(path:)`, so microphone-built `AudioSource` values do not expose `reliablePackets()`.
   - Public API name is `reliablePackets()`.
   - Reliable iteration surfaces bus failures as `GStreamerError.busError(...)`.
   - Deterministic test assets are generated at runtime in per-test temporary directories; `Tests/SwiftGStreamerTests/Resources/ReliablePackets/README.md` reserves the resource location for future binary fixtures.
-- Related work: RFC-001 (Accepted); RFC-002 remains the follow-up for live-source extension.
+- Related work: RFC-001 (Accepted); RFC-002 implements the live-source extension; `tasks/prd-live-caps-bus-watch-concurrency-fixes.md` records shared reliable-packet hardening.
 
 ## Goals
 
@@ -36,6 +38,7 @@ Last updated: 2026-05-09.
 - Keep existing realtime `packets()` API and tests **unchanged**.
 - Land an audio file/decode-style entry point (`AudioSource.file(path:)` -> `AudioFileSource.reliablePackets()`) as the first concrete adopter.
 - Lay generic groundwork so future video file/decode sources can adopt the same primitive without API churn.
+- Record follow-up hardening for `AudioFileSource` callback registration lifetime, startup-timeout races, and timeout duration conversion.
 
 ## User Stories
 
@@ -156,7 +159,7 @@ Last updated: 2026-05-09.
 - [x] New DocC article (working title: `EncodedPacketDelivery.md`) under `Sources/GStreamer/Documentation.docc/` covering realtime vs reliable, with a decision flowchart matching RFC-001 §Reliability Boundary.
 - [x] Topic group references both `packets()` and `reliablePackets()`.
 - [x] Cross-link from `AudioSource` symbol-level DocC to the new article.
-- [x] `swift package generate-documentation` succeeds; the repo still emits its existing executable-target top-level-content warnings, including the new example executable target.
+- [x] `swiftly run swift package generate-documentation` succeeds; the repo still emits its existing executable-target top-level-content warnings, including the new example executable target.
 - [x] Swift build/test and DocC generation pass; no separate project lint command is defined in this PRD.
 
 ### US-012: README example
@@ -178,6 +181,19 @@ Last updated: 2026-05-09.
 - [x] Migration note clarifies that no existing API changes; `packets()` is unchanged.
 - [x] Swift build/test pass; no separate project lint command is defined in this PRD.
 
+### US-014: File Reliable Follow-Up Hardening
+
+**Description:** As a maintainer, I need the Phase 1 file reliable bridge to
+incorporate review hardening for callback lifetime, startup timeout races, and
+duration conversion overflow handling.
+
+**Acceptance Criteria:**
+- [x] `AudioFileSource.ActiveCandidate.init` keeps the local Swift callback context alive with `withExtendedLifetime(context)` through all C registration calls.
+- [x] Startup timeout reporting checks active candidate identity, shutdown state, and first-packet delivery under one state lock before writing `terminalError`.
+- [x] The first delivered packet is marked before `next()` returns it to the caller.
+- [x] `Duration.nanosecondsForReliablePackets` delegates to `ReliableDurationConversion.nanosecondsClampingNegativeToZero`.
+- [x] Static API safety tests cover callback lifetime, startup-timeout atomicity, and duration conversion.
+
 ## Functional Requirements
 
 - **FR-1:** Add `public struct ReliablePackets<Element: Sendable>: AsyncSequence, Sendable` with nested `AsyncIterator: AsyncIteratorProtocol` whose `next()` is `async throws -> Element?`.
@@ -192,6 +208,9 @@ Last updated: 2026-05-09.
 - **FR-10:** No public API surface is added on `VideoSource` in this PRD.
 - **FR-11:** No public API surface is added that exposes `reliablePackets()` on microphone-built `AudioSource` in this PRD.
 - **FR-12:** All new public types and methods pass Swift 6 strict-concurrency checks.
+- **FR-13:** File reliable callback registration must protect local `passUnretained` contexts through the complete C registration call.
+- **FR-14:** File reliable startup timeout must not write a terminal timeout error after the first packet has been delivered.
+- **FR-15:** Reliable startup timeout duration conversion must use the shared overflow-safe reliable duration conversion helper.
 
 ## Non-Goals (Out of Scope)
 
@@ -218,15 +237,18 @@ Last updated: 2026-05-09.
 - **Cancellation timing.** `withTaskCancellationHandler` runs its handler synchronously on cancel. The handler must not block on GStreamer state changes; it should only detach signal connections and resume any pending continuation with a sentinel.
 - **Bus error correlation.** The iterator and the pipeline's `Bus` consumer can race on receiving the same error. The bridge subscribes to bus error messages internally for the duration of iteration, and the existing `Bus` API must remain functional after iteration ends or is cancelled.
 - **Test fixtures.** Tests generate short deterministic WAV/container fixtures at runtime, avoiding binary fixture churn while keeping a resource directory placeholder for future committed assets.
+- **Callback registration lifetime.** Registration sites that pass a local Swift context through `passUnretained` must use `withExtendedLifetime(context)` around the C registration calls.
+- **Startup timeout race.** Startup timeout reporting must perform its candidate, shutdown, and first-packet checks in the same state-lock transition that writes the terminal error.
 
 ## Success Metrics
 
 - All new tests in US-006 through US-010 pass on CI on every supported platform.
-- `swift test --filter Reliable` runs to completion in under 30 s on the local runner.
-- No regression in existing `packets()` test suite (`swift test --filter AppSink`, `swift test --filter Audio`, etc.).
+- `swiftly run swift test --filter Reliable` runs to completion in under 30 s on the local runner.
+- No regression in existing `packets()` test suite (`swiftly run swift test --filter AppSink`, `swiftly run swift test --filter Audio`, etc.).
 - Memory high-water mark in US-007 stays within an order of magnitude of single-packet size.
 - Cancellation in US-008 completes in under 100 ms wall-clock.
 - DocC generation succeeds; executable-target top-level-content warnings remain a known repo-wide documentation issue.
+- Static safety tests pin file reliable callback lifetime, startup-timeout atomicity, and shared duration conversion.
 
 ## Resolved Questions
 
@@ -235,3 +257,4 @@ Last updated: 2026-05-09.
 - **Misuse error model:** microphone-built `AudioSource` misuse does not compile because no `reliablePackets()` member is exposed there.
 - **Test asset format:** deterministic runtime-generated fixtures, with raw and Opus coverage plus conditional AAC coverage.
 - **Bus error type taxonomy:** existing `GStreamerError.busError(...)`.
+- **Follow-up hardening:** `AudioFileSource.ActiveCandidate` callback lifetime, startup-timeout race handling, and duration conversion reuse are complete.

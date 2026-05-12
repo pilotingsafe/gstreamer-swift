@@ -27,14 +27,14 @@ Last updated: 2026-05-11.
 - Functional requirements: all achieved (FR-1 through FR-14).
 - Review: ready for maintainer review.
 - Verification completed on 2026-05-11:
-  - `swift build`
-  - `swift test --filter ElementTests`
-  - `swift test --filter DeviceMonitorTests`
-  - `swift test`
+  - `swiftly run swift build`
+  - `swiftly run swift test --filter ElementTests`
+  - `swiftly run swift test --filter DeviceMonitorTests`
+  - `swiftly run swift test`
 - Verification notes:
   - Ownership tests use local `G_DEBUG=fatal-criticals` windows and passed without parent-disposal aborts.
   - The observed verification output contained no `still has a parent` critical lines.
-  - During status verification, one full-suite run failed in unrelated `QueueLeakyBehaviorTests` downstream-leaky behavior; `swift test --filter QueueLeakyBehaviorTests` passed immediately after and the full suite passed on rerun.
+  - During status verification, one full-suite run failed in unrelated `QueueLeakyBehaviorTests` downstream-leaky behavior; `swiftly run swift test --filter QueueLeakyBehaviorTests` passed immediately after and the full suite passed on rerun.
 - Related work:
   - `Sources/GStreamer/Element.swift` (`Element.TransferOwnership`, `Element.make`).
   - `Sources/GStreamer/Pipeline.swift` (`Pipeline.element(named:)`, `Pipeline.add(_:)` docs).
@@ -93,7 +93,7 @@ Last updated: 2026-05-11.
 - [x] `Element.make(factory:name:)` documentation states the wrapper keeps its own strong reference and can be dropped after add.
 - [x] `Pipeline.add(_:)` documentation states the wrapper keeps its own strong reference and can be dropped after successful add.
 - [x] Existing examples remain valid.
-- [x] `swift build`, focused ownership tests, `DeviceMonitorTests`, and full `swift test` pass.
+- [x] `swiftly run swift build`, focused ownership tests, `DeviceMonitorTests`, and full `swiftly run swift test` pass.
 
 ## Functional Requirements
 
@@ -138,16 +138,16 @@ Last updated: 2026-05-11.
 - Add ownership-focused tests in `Tests/SwiftGStreamerTests/ElementTests.swift`.
 - Use local `G_DEBUG=fatal-criticals` only inside the ownership tests and restore any prior value afterward.
 - Required verification commands:
-  - `swift test --filter ElementTests`
-  - `swift test --filter DeviceMonitorTests`
-  - `swift test`
+  - `swiftly run swift test --filter ElementTests`
+  - `swiftly run swift test --filter DeviceMonitorTests`
+  - `swiftly run swift test`
 - During full-suite verification, check normal stderr for `still has a parent`; expected count is zero.
 
 ## Success Metrics
 
-- `swift test --filter ElementTests` exits 0.
-- `swift test --filter DeviceMonitorTests` exits 0.
-- Full `swift test` exits 0.
+- `swiftly run swift test --filter ElementTests` exits 0.
+- `swiftly run swift test --filter DeviceMonitorTests` exits 0.
+- Full `swiftly run swift test` exits 0.
 - Ownership tests fail automatically on the old parent-disposal critical when `G_DEBUG=fatal-criticals` is active.
 - Normal full-suite stderr contains zero `still has a parent` critical lines.
 

@@ -16,17 +16,19 @@ Last updated: 2026-05-11.
 - RFC update: complete.
 - Implementation: complete.
 - Functional requirements: all achieved (FR-1 through FR-15).
-- Review: ready for maintainer review.
+- Follow-up hardening: complete in `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`.
+- Checklist: all original acceptance criteria and follow-up hardening checks completed.
+- Review: implementation and follow-up hardening are ready for maintainer review.
 - Verification completed on 2026-05-11:
-  - `swift build`
-  - `swift test --filter Reliable`
-  - `swift test --filter Audio`
-  - `swift test --filter APISafetyStaticTests`
-  - `swift test`
-  - `swift package generate-documentation --target GStreamer`
+  - `swiftly run swift build`
+  - `swiftly run swift test --filter Reliable`
+  - `swiftly run swift test --filter Audio`
+  - `swiftly run swift test --filter APISafetyStaticTests`
+  - `swiftly run swift test`
+  - `swiftly run swift package generate-documentation --target GStreamer`
 - Verification notes:
-  - During status verification, one `Audio` filter run timed out in `appsinkEOSStateCompletesWhenEOSCallbacksAreSuppressed`; the same case passed in the full suite and a later `swift test --filter Audio` rerun.
-  - During status verification, one full-suite run failed in `QueueLeakyBehaviorTests` downstream-leaky behavior; `swift test --filter QueueLeakyBehaviorTests` passed immediately after and the full suite passed on rerun.
+  - During status verification, one `Audio` filter run timed out in `appsinkEOSStateCompletesWhenEOSCallbacksAreSuppressed`; the same case passed in the full suite and a later `swiftly run swift test --filter Audio` rerun.
+  - During status verification, one full-suite run failed in `QueueLeakyBehaviorTests` downstream-leaky behavior; `swiftly run swift test --filter QueueLeakyBehaviorTests` passed immediately after and the full suite passed on rerun.
   - These are recorded as flake watch items, not open FR gaps.
 
 ## Goals
@@ -37,6 +39,7 @@ Last updated: 2026-05-11.
 - Surface discontinuities with structured metadata instead of a simple gap count.
 - Provide deterministic live finalization through EOS send, Bus EOS/ERROR wait, and timeout handling.
 - Keep realtime `AudioSource.packets()`, raw `AudioSource.buffers()`, `AudioFileSource.reliablePackets()`, and all VideoSource public APIs source-compatible.
+- Record follow-up hardening for callback context lifetime, caps lock boundaries, startup rollback cleanup, and shared callback-registration lifecycle.
 
 ## User Stories
 
@@ -196,7 +199,7 @@ public func withReliableDelivery(
 - [x] Tests verify nominal no-discontinuity flow under synthetic live input.
 - [x] Tests verify slow-consumer behavior for `.downstream` and `.none` without relying on exact dropped counts.
 - [x] Tests verify cancellation cleanup through observable handler/continuation probes.
-- [x] Focused test suite passes under `swift test --filter Reliable` and `swift test --filter Audio`.
+- [x] Focused test suite passes under `swiftly run swift test --filter Reliable` and `swiftly run swift test --filter Audio`.
 
 ### US-011: Preserve existing public behavior
 
@@ -209,7 +212,20 @@ public func withReliableDelivery(
 - [x] No public `VideoSourceBuilder.withReliableDelivery(...)` is added in this phase.
 - [x] No public `VideoSource.reliablePackets()` is added in this phase.
 - [x] Static API tests verify the constraints above.
-- [x] Full `swift test` passes when GStreamer system dependencies are available.
+- [x] Full `swiftly run swift test` passes when GStreamer system dependencies are available.
+
+### US-012: Complete Follow-Up Reliability Hardening
+
+**Description:** As a maintainer, I need the accepted live reliable delivery
+implementation to incorporate review hardening before it is treated as complete.
+
+**Acceptance Criteria:**
+- [x] Live reliable callback registration keeps the local Swift context alive with `withExtendedLifetime(context)` until C-side retain callbacks have run.
+- [x] Live reliable discontinuity detection keeps caps refcount and equality work outside `packetState.withLock`.
+- [x] Startup rollback marks an unstored new-sample registration as disconnected so cleanup does not decrement handler state twice.
+- [x] Shared callback registration destruction is single-shot when disconnect races with an in-flight callback.
+- [x] Static API safety tests cover the live reliable lifetime, caps-lock, and rollback invariants.
+- [x] Focused callback lifecycle tests cover disconnect while a callback is in flight.
 
 ## Functional Requirements
 
@@ -228,6 +244,10 @@ public func withReliableDelivery(
 - [x] **FR-13:** The reliable live bridge must reuse the Phase 1 continuation/cancellation approach and must never perform blocking sample pulls from async context.
 - [x] **FR-14:** No public VideoSource reliable API is added in this phase.
 - [x] **FR-15:** Existing realtime audio APIs and `AudioFileSource.reliablePackets()` remain source-compatible.
+- [x] **FR-16:** Live reliable callback registration must protect local `passUnretained` contexts through the complete C registration call.
+- [x] **FR-17:** Live reliable caps comparison, retain, and release operations must not execute while `packetState.withLock` is held.
+- [x] **FR-18:** Failed live startup callback registration rollback must not let later cleanup double-decrement new-sample handler state.
+- [x] **FR-19:** Shared callback registration destruction must be claimed once under the C registration mutex before final release work runs.
 
 ## Non-Goals (Out of Scope)
 
@@ -258,18 +278,21 @@ public func withReliableDelivery(
 - `Bus.waitForEOS(timeout:)` may be public if generally useful, or internal if the implementation wants to minimize API surface; implement it by consuming `Bus.messages(filter: [.eos, .error])` with timeout cancellation rather than blocking a Swift executor thread.
 - Reliable live test hooks may be internal-only, following the existing `AudioFileSource` testing hook pattern.
 - Negative `Duration` handling must happen before nanosecond conversion to avoid accidental unsigned overflow; prefer reusing or lifting the existing `Duration.nanosecondsForReliablePackets` conversion pattern rather than duplicating unchecked conversions.
+- Callback registration must follow the same explicit lifetime pattern as `Pad.addProbe`: keep the Swift context alive around the C registration call, then rely on the C retain/release callbacks for the long-lived registration.
+- Any C callback registration finalizer must be single-shot even when callback completion and disconnect observe `in_flight == 0` concurrently.
 - Encoder availability tests should follow existing conditional plugin conventions: if `opusenc` or AAC encoders are unavailable, skip only codec-specific tests with an explicit recorded reason and keep codec-independent reliable tests active.
 - If DocC tooling or GStreamer system dependencies are unavailable locally, the implementation report must state the exact blocked verification instead of silently skipping required tests.
 
 ## Success Metrics
 
-- `swift test --filter Reliable` passes.
-- `swift test --filter Audio` passes.
+- `swiftly run swift test --filter Reliable` passes.
+- `swiftly run swift test --filter Audio` passes.
 - Static API tests pass and verify no `LiveSourceDeliveryPolicy` public API and no public VideoSource reliable API.
 - Deterministic synthetic live tests cover nominal flow, GAP, DISCONT, format change, inferred drop, finalize success, finalize timeout, sendEOS failure, Bus ERROR, and cancellation cleanup.
+- Static and focused lifecycle tests cover callback context lifetime, caps work outside locks, rollback cleanup, and single-shot registration destruction.
 - No required test depends on physical microphone or webcam hardware.
 - DocC generation has no new content warnings when documentation tooling is available.
-- Full `swift test` passes with GStreamer system dependencies installed.
+- Full `swiftly run swift test` passes with GStreamer system dependencies installed.
 
 ## Resolved Questions
 
@@ -286,6 +309,7 @@ public func withReliableDelivery(
 - **Stop relationship:** `stop()` stays immediate; `finalize()` is the reliable graceful shutdown path; both are idempotent.
 - **Unbounded config:** Public builder rejects effectively unbounded reliable queue configuration.
 - **Appsink bound:** Reliable live appsink uses `max-buffers=1`.
+- **Follow-up hardening:** Callback context lifetime, caps lock boundaries, startup rollback cleanup, and shared callback registration destruction are complete and tracked in `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`.
 
 ## Open Questions
 

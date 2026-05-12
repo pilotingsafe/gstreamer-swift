@@ -113,12 +113,41 @@ struct APISafetyStaticTests {
         #expect(bus.contains("public func errors() -> AsyncStream<(message: String, debug: String?)>"))
         #expect(bus.contains("public func warnings() -> AsyncStream<(message: String, debug: String?)>"))
         #expect(bus.contains("public func stateChanges() -> AsyncStream<(old: Pipeline.State, new: Pipeline.State)>"))
+        #expect(bus.contains("public func waitForEOSOrError() async throws"))
         #expect(bus.contains("public func waitForEOS() async"))
         #expect(
             bus.range(of: #"public\s+func\s+parseMessage\b"#, options: .regularExpression) == nil,
             "Bus message parsing must not become a public API"
         )
         #expect(appSink.contains("public func frames() -> Frames"))
+    }
+
+    @Test("Bus EOS wait convenience APIs preserve compatibility and error handling")
+    func busEOSWaitConvenienceAPIsPreserveCompatibilityAndErrorHandling() throws {
+        let root = try Self.packageRoot()
+        let bus = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let busType = try Self.bracedDeclaration(beginningWith: "public final class Bus", in: bus)
+        let waitForEOSOrError = try Self.bracedDeclaration(
+            beginningWith: "public func waitForEOSOrError()",
+            in: busType
+        )
+        let waitForEOS = try Self.bracedDeclaration(
+            beginningWith: "public func waitForEOS()",
+            in: busType
+        )
+        let waitForEOSOrErrorSignature = Self.normalizedWhitespace(Self.declarationSignature(waitForEOSOrError))
+        let waitForEOSSignature = Self.normalizedWhitespace(Self.declarationSignature(waitForEOS))
+
+        #expect(waitForEOSOrErrorSignature.contains("public func waitForEOSOrError() async throws"))
+        #expect(waitForEOSSignature.contains("public func waitForEOS() async"))
+        #expect(
+            Self.containsWaitForEOSDeprecationMarker(in: busType),
+            "waitForEOS() must be deprecated with a message mentioning waitForEOSOrError()"
+        )
+        #expect(
+            Self.waitForEOSDelegatesToThrowingHelperAndSwallowsErrors(waitForEOS),
+            "Deprecated waitForEOS() must delegate to waitForEOSOrError() and swallow the error"
+        )
     }
 
     @Test("Bus message pull sequence public API is additive and Sendable")
@@ -221,36 +250,408 @@ struct APISafetyStaticTests {
         )
     }
 
-    @Test("Bus message pull sequence stays pull-based and cancellation-aware")
-    func busMessagePullSequenceStaysPullBasedAndCancellationAware() throws {
+    @Test("Bus message sequence uses watch-backed queueing without blocking timed pops")
+    func busMessageSequenceUsesWatchBackedQueueingWithoutBlockingTimedPops() throws {
         let root = try Self.packageRoot()
         let bus = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let shimHeader = try Self.contents(
+            of: root.appendingPathComponent("Sources/CGStreamerShim/include/GStreamerShim.h")
+        )
+        let shimSource = try Self.contents(
+            of: root.appendingPathComponent("Sources/CGStreamerShim/GStreamerShim.c")
+        )
+        let messageSequenceDocs = try [
+            "README.md",
+            "CHANGELOG.md",
+            "docs/ADRs/ADR-002-bus-message-delivery-model.md",
+            "tasks/prd-bus-message-delivery-model.md",
+        ].map { path in
+            try Self.contents(of: root.appendingPathComponent(path))
+        }.joined(separator: "\n")
         let messages = try Self.bracedDeclaration(beginningWith: "public struct Messages", in: bus)
-        let path = messages
+        let messagePump = (try? Self.bracedDeclaration(beginningWith: "fileprivate final class MessagePump", in: bus))
+            ?? (try? Self.bracedDeclaration(beginningWith: "private final class MessagePump", in: bus))
+            ?? ""
+        let sequencePath = [messages, messagePump].joined(separator: "\n")
         let disallowedSnippets = [
-            "AsyncStream",
+            "swift_gst_bus_timed_pop_filtered",
+            "100_000_000",
+            "swift_gst_message_unref",
             "Task.detached",
-            "continuation",
             ".bufferingNewest",
             ".bufferingOldest",
         ]
-        let requiredSnippets = [
-            "swift_gst_bus_timed_pop_filtered",
-            "100_000_000",
-            "filter.gstMessageType",
-            "Task.isCancelled",
-            "swift_gst_message_unref",
-        ]
-        let violations = disallowedSnippets.filter { path.contains($0) }
-        let missing = requiredSnippets.filter { !path.contains($0) }
+        let violations = disallowedSnippets.filter { sequencePath.contains($0) }
 
         #expect(
             violations.isEmpty,
-            "Bus.Messages pull path must not use Swift-side stream buffering or detached producers:\n\(violations.joined(separator: "\n"))"
+            "Bus.Messages must use a watch-backed queue, not blocking timed pops or detached polling:\n\(violations.joined(separator: "\n"))"
         )
         #expect(
-            missing.isEmpty,
-            "Bus.Messages pull path is missing required polling/cancellation/ownership snippets:\n\(missing.joined(separator: "\n"))"
+            bus.contains("swift_gst_bus_watch"),
+            "Bus.Messages must call the private C bus watch shim path"
+        )
+        #expect(
+            Self.containsWatchBackedContinuationQueue(in: bus),
+            "Bus message watch pump must use continuations, waiters, and FIFO queueing"
+        )
+        #expect(
+            !Self.containsRawGstMessagePointerStorage(in: sequencePath),
+            "Bus.Messages and its watch pump must not store or queue raw GstMessage pointers"
+        )
+        #expect(
+            shimHeader.contains("SwiftGstBusWatchRegistration")
+                && shimSource.contains("SwiftGstBusWatchRegistration"),
+            "C shim must expose the internal SwiftGstBusWatchRegistration type"
+        )
+        #expect(
+            shimSource.contains("gst_bus_create_watch")
+                && shimSource.contains("GMainContext")
+                && (shimSource.contains("GThread") || shimSource.contains("g_thread_new")),
+            "C shim must create a GstBus watch on a private GMainContext and native thread"
+        )
+        #expect(
+            shimHeader.contains("swift_gst_bus_watch_start")
+                && shimHeader.contains("swift_gst_bus_watch_stop")
+                && shimSource.contains("swift_gst_bus_watch_start")
+                && shimSource.contains("swift_gst_bus_watch_stop"),
+            "C shim must provide start/stop functions for the internal bus watch registration"
+        )
+        #expect(
+            shimSource.contains("g_thread_self")
+                && shimSource.contains("cleanup_on_thread_exit")
+                && shimSource.contains("g_thread_unref"),
+            "C shim stop must avoid joining the watch thread from its own callback path"
+        )
+        #expect(
+            Self.messageSequenceDocsDescribeWatchBackedSemantics(messageSequenceDocs),
+            "Docs must describe messageSequence(filter:) as watch-backed and remove old demand-time polling claims"
+        )
+    }
+
+    @Test("Reliable callback registrations keep contexts alive through C retain callbacks")
+    func reliableCallbackRegistrationsKeepContextsAliveThroughCRetainCallbacks() throws {
+        let root = try Self.packageRoot()
+        let liveSource = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioSourceReliableDelivery.swift")
+        )
+        let fileSource = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioFileSource.swift")
+        )
+        let busSource = try Self.contents(of: root.appendingPathComponent("Sources/GStreamer/Bus.swift"))
+        let liveBridge = try Self.bracedDeclaration(
+            beginningWith: "private final class LiveAudioReliablePacketBridge",
+            in: liveSource
+        )
+        let liveStartCallbacks = try Self.bracedDeclaration(beginningWith: "func startCallbacks()", in: liveBridge)
+        let activeCandidate = try Self.bracedDeclaration(
+            beginningWith: "private final class ActiveCandidate",
+            in: fileSource
+        )
+        let activeCandidateInit = try Self.bracedDeclaration(beginningWith: "init(", in: activeCandidate)
+        let messagePump = (try? Self.bracedDeclaration(beginningWith: "fileprivate final class MessagePump", in: busSource))
+            ?? (try? Self.bracedDeclaration(beginningWith: "private final class MessagePump", in: busSource))
+            ?? ""
+        let startWatch = try Self.bracedDeclaration(beginningWith: "private func startWatch()", in: messagePump)
+        let reliableRegistrationCalls = [
+            "swift_gst_app_sink_connect_new_sample",
+            "swift_gst_app_sink_connect_eos",
+            "swift_gst_bus_connect_sync_message_observer",
+        ]
+
+        #expect(
+            Self.callsAreCoveredByWithExtendedLifetimeContext(
+                source: liveStartCallbacks,
+                calls: reliableRegistrationCalls
+            ),
+            "LiveAudioReliablePacketBridge.startCallbacks must wrap all callback registrations in withExtendedLifetime(context)"
+        )
+        #expect(
+            Self.callsAreCoveredByWithExtendedLifetimeContext(
+                source: activeCandidateInit,
+                calls: reliableRegistrationCalls
+            ),
+            "ActiveCandidate.init must wrap all callback registrations in withExtendedLifetime(context)"
+        )
+        #expect(
+            Self.callsAreCoveredByWithExtendedLifetimeContext(
+                source: startWatch,
+                calls: ["swift_gst_bus_watch_start"]
+            ),
+            "Bus.MessagePump.startWatch must keep its BusWatchCallbackContext alive through swift_gst_bus_watch_start"
+        )
+        #expect(
+            Self.busWatchRegistrationAssignmentFollowsSuccessfulStart(startWatch),
+            "Bus.MessagePump.startWatch must assign registration only after swift_gst_bus_watch_start succeeds"
+        )
+    }
+
+    @Test("Callback registration destruction is claimed under its mutex")
+    func callbackRegistrationDestructionIsClaimedUnderMutex() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.contents(
+            of: root.appendingPathComponent("Sources/CGStreamerShim/GStreamerAppShim.c")
+        )
+        let registration = try Self.bracedDeclaration(
+            beginningWith: "struct SwiftGstCallbackRegistration",
+            in: source
+        )
+        let claimFunctionName = (try? Self.callbackRegistrationDestroyClaimFunctionName(in: source))
+            ?? "__missing_callback_registration_destroy_claim__"
+        let claimFunction = (try? Self.cFunctionDeclaration(
+            containing: "registration->destroying = TRUE",
+            in: source
+        )) ?? ""
+        let finalizerFunctionName = (try? Self.callbackRegistrationFinalizerFunctionName(in: source))
+            ?? "__missing_callback_registration_finalizer__"
+        let finalizerFunction = (try? Self.cFunctionDeclaration(
+            containing: "g_free(registration)",
+            in: source
+        )) ?? ""
+        let beginFunction = try Self.bracedDeclaration(
+            beginningWith: "static gboolean swift_gst_callback_registration_begin",
+            in: source
+        )
+        let endFunction = try Self.bracedDeclaration(
+            beginningWith: "static void swift_gst_callback_registration_end",
+            in: source
+        )
+        let signalDestroyFunction = try Self.bracedDeclaration(
+            beginningWith: "static void swift_gst_callback_registration_signal_destroy",
+            in: source
+        )
+        let disconnectFunction = try Self.bracedDeclaration(
+            beginningWith: "void swift_gst_callback_registration_disconnect",
+            in: source
+        )
+        let connectFunctions: [(name: String, source: String)] = [
+            (
+                "new-sample",
+                try Self.bracedDeclaration(
+                    beginningWith: "SwiftGstCallbackRegistration* swift_gst_app_sink_connect_new_sample",
+                    in: source
+                )
+            ),
+            (
+                "eos",
+                try Self.bracedDeclaration(
+                    beginningWith: "SwiftGstCallbackRegistration* swift_gst_app_sink_connect_eos",
+                    in: source
+                )
+            ),
+            (
+                "sync-message",
+                try Self.bracedDeclaration(
+                    beginningWith: "SwiftGstCallbackRegistration* swift_gst_bus_connect_sync_message_observer",
+                    in: source
+                )
+            ),
+        ]
+        let missingLockedClaims = connectFunctions
+            .filter { !Self.connectFailureRollbackClaimsDestroy($0.source, claimFunctionName: claimFunctionName) }
+            .map(\.name)
+        let missingRollbackStateBeforeClaim = connectFunctions
+            .filter {
+                !Self.connectFailureRollbackSetsStateBeforeClaimingDestroy(
+                    $0.source,
+                    claimFunctionName: claimFunctionName
+                )
+            }
+            .map(\.name)
+        var finalizerCallContexts: [(name: String, source: String)] = [
+            ("end", endFunction),
+            ("signal-destroy", signalDestroyFunction),
+            ("disconnect", disconnectFunction),
+        ]
+        finalizerCallContexts += connectFunctions.map {
+            ("\($0.name) connect failure", Self.connectFailureRollbackBranch(in: $0.source) ?? "")
+        }
+        let missingFinalizerCallsAfterUnlock = finalizerCallContexts
+            .filter {
+                !Self.callbackRegistrationFinalizerCallsHappenAfterUnlock(
+                    in: $0.source,
+                    finalizerFunctionName: finalizerFunctionName
+                )
+            }
+            .map(\.name)
+
+        #expect(
+            registration.contains("gboolean destroying"),
+            "SwiftGstCallbackRegistration must track an in-progress destroy claim"
+        )
+        #expect(
+            !Self.containsOldCallbackRegistrationUnlockThenDestroyPattern(in: source),
+            "Remove old unlock-then-destroy try_destroy/should_destroy pattern"
+        )
+        #expect(
+            Self.destroyClaimChecksStateAndMarksDestroying(in: claimFunction),
+            "Destroy claim helper must check signal_destroyed, in_flight == 0, and !destroying before setting destroying = TRUE"
+        )
+        #expect(
+            Self.callbackRegistrationFinalizerBodyHasRequiredOperations(finalizerFunction),
+            "Callback registration finalizer must contain only the required release, bus-disable, unref, mutex-clear, and free operations"
+        )
+        #expect(
+            Self.beginRetainsContextAfterUnlock(beginFunction),
+            "callback_registration_begin must retain the in-flight context after unlocking registration->mutex"
+        )
+        #expect(
+            Self.registrationMutexLockedSections(in: endFunction)
+                .contains { Self.containsCallbackRegistrationDestroyClaim($0, claimFunctionName: claimFunctionName) },
+            "callback_registration_end must attempt the destroy claim while registration->mutex is locked"
+        )
+        #expect(
+            Self.endReleasesContextBeforeDecrementingInFlight(endFunction),
+            "callback_registration_end must release the in-flight context retain before locking and decrementing in_flight"
+        )
+        #expect(
+            Self.registrationMutexLockedSections(in: signalDestroyFunction)
+                .contains { Self.containsCallbackRegistrationDestroyClaim($0, claimFunctionName: claimFunctionName) },
+            "signal destroy notify must attempt the destroy claim while registration->mutex is locked"
+        )
+        #expect(
+            Self.signalDestroySetsStateBeforeClaimingUnderLock(
+                signalDestroyFunction,
+                claimFunctionName: claimFunctionName
+            ),
+            "signal destroy notify must set disconnected, signal_destroyed, and handler_id before claiming under lock"
+        )
+        #expect(
+            Self.disconnectAlreadyDisconnectedBranchClaimsDestroy(disconnectFunction, claimFunctionName: claimFunctionName),
+            "disconnect() must claim destroy under lock when registration is already disconnected"
+        )
+        #expect(
+            Self.disconnectNoHandlerBranchClaimsDestroy(disconnectFunction, claimFunctionName: claimFunctionName),
+            "disconnect() must claim destroy under lock when there is no signal handler to disconnect"
+        )
+        #expect(
+            missingLockedClaims.isEmpty,
+            "Connect failure rollback branches must claim destroy under lock: \(missingLockedClaims.joined(separator: ", "))"
+        )
+        #expect(
+            missingRollbackStateBeforeClaim.isEmpty,
+            "Connect failure rollback branches must set disconnected/signal_destroyed before claiming: \(missingRollbackStateBeforeClaim.joined(separator: ", "))"
+        )
+        #expect(
+            missingFinalizerCallsAfterUnlock.isEmpty,
+            "Finalizer calls must happen after g_mutex_unlock(&registration->mutex): \(missingFinalizerCallsAfterUnlock.joined(separator: ", "))"
+        )
+    }
+
+    @Test("Live reliable startup rollback marks unstored new-sample callback disconnected")
+    func liveReliableStartupRollbackMarksUnstoredNewSampleCallbackDisconnected() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioSourceReliableDelivery.swift")
+        )
+        let liveBridge = try Self.bracedDeclaration(
+            beginningWith: "private final class LiveAudioReliablePacketBridge",
+            in: source
+        )
+        let startCallbacks = try Self.bracedDeclaration(beginningWith: "func startCallbacks()", in: liveBridge)
+        let cleanupCallbacks = try Self.bracedDeclaration(
+            beginningWith: "private func cleanupCallbacks()",
+            in: liveBridge
+        )
+
+        #expect(
+            Self.rollbackBranchesDisconnectingUnstoredNewSampleMarkCallbackState(in: startCallbacks),
+            "Rollback branches that disconnect an unstored newSampleRegistration must mark callbackState.newSampleDisconnected"
+        )
+        #expect(
+            cleanupCallbacks.contains("newSample: !state.newSampleDisconnected")
+                && cleanupCallbacks.contains("state.newSampleDisconnected = true")
+                && cleanupCallbacks.contains("probeState.decrementNewSampleHandlerCount()"),
+            "cleanupCallbacks must gate new-sample handler decrementing on callbackState.newSampleDisconnected"
+        )
+    }
+
+    @Test("Audio file reliable packet duration delegates shared clamping conversion")
+    func audioFileReliablePacketDurationDelegatesSharedClampingConversion() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioFileSource.swift")
+        )
+        let durationExtension = try Self.bracedDeclaration(beginningWith: "private extension Duration", in: source)
+        let conversion = try Self.bracedDeclaration(
+            beginningWith: "var nanosecondsForReliablePackets",
+            in: durationExtension
+        )
+
+        #expect(
+            conversion.contains("ReliableDurationConversion.nanosecondsClampingNegativeToZero(self)"),
+            "Duration.nanosecondsForReliablePackets must delegate to the shared reliable duration conversion helper"
+        )
+        #expect(
+            conversion.range(
+                of: #"UInt64\s*\(\s*seconds\s*\)\s*\*\s*1_000_000_000"#,
+                options: .regularExpression
+            ) == nil,
+            "Duration.nanosecondsForReliablePackets must not perform raw UInt64(seconds) * 1_000_000_000 arithmetic"
+        )
+        #expect(
+            !conversion.contains("self.components"),
+            "Duration.nanosecondsForReliablePackets should not duplicate Duration component conversion logic"
+        )
+    }
+
+    @Test("Audio file startup timeout transition is atomic under state lock")
+    func audioFileStartupTimeoutTransitionIsAtomicUnderStateLock() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioFileSource.swift")
+        )
+        let reliableSource = try Self.bracedDeclaration(
+            beginningWith: "private final class AudioFileReliablePacketSource",
+            in: source
+        )
+
+        #expect(
+            Self.containsAtomicStartupTimeoutTransition(in: reliableSource),
+            "Startup timeout handling must atomically check active candidate, shutdown, and delivered-first-packet before setting terminalError and resuming pending outside the lock"
+        )
+    }
+
+    @Test("Live reliable discontinuity detection keeps caps C API outside packet lock")
+    func liveReliableDiscontinuityDetectionKeepsCapsCAPIOutsidePacketLock() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioSourceReliableDelivery.swift")
+        )
+        let packetState = try Self.bracedDeclaration(beginningWith: "private struct PacketState", in: source)
+        let detectDiscontinuity = try Self.bracedDeclaration(
+            beginningWith: "private func detectDiscontinuity",
+            in: source
+        )
+        let lockBodies = try Self.bracedBlocks(after: "packetState.withLock", in: detectDiscontinuity)
+        let disallowedCapsCalls = [
+            "swift_gst_caps_is_equal",
+            "swift_gst_caps_ref",
+            "swift_gst_caps_unref",
+        ]
+        var lockViolations: [String] = []
+
+        for (index, body) in lockBodies.enumerated() {
+            for call in disallowedCapsCalls where body.contains(call) {
+                lockViolations.append("withLock #\(index + 1): \(call)")
+            }
+        }
+
+        #expect(!lockBodies.isEmpty, "detectDiscontinuity should still synchronize packet state updates")
+        #expect(
+            lockViolations.isEmpty,
+            "detectDiscontinuity must not call caps equality/ref/unref APIs while packetState is locked:\n\(lockViolations.joined(separator: "\n"))"
+        )
+        #expect(
+            !Self.containsPreviousCapsDestructionInsidePacketLock(in: lockBodies),
+            "detectDiscontinuity must move old retained caps out of packetState.withLock before destruction"
+        )
+        #expect(
+            Self.containsDiscontinuityRetryVersionPattern(
+                packetState: packetState,
+                detectDiscontinuity: detectDiscontinuity
+            ),
+            "detectDiscontinuity must use a retry loop with a packet-state version token before committing caps/discontinuity updates"
         )
     }
 
@@ -764,6 +1165,468 @@ struct APISafetyStaticTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func callbackRegistrationDestroyClaimFunctionName(in source: String) throws -> String {
+        let declaration = try cFunctionDeclaration(
+            containing: "registration->destroying = TRUE",
+            in: source
+        )
+        let signature = declarationSignature(declaration)
+
+        if let claimName = firstCapture(
+            #"\b(swift_gst_callback_registration_[A-Za-z0-9_]*claim[A-Za-z0-9_]*)\s*\("#,
+            in: signature
+        ) {
+            return claimName
+        }
+
+        if let destroyName = firstCapture(
+            #"\b(swift_gst_callback_registration_[A-Za-z0-9_]*destroy[A-Za-z0-9_]*)\s*\("#,
+            in: signature
+        ) {
+            return destroyName
+        }
+
+        throw StaticAPISafetyError.declarationNotFound("callback registration destroy claim helper")
+    }
+
+    private static func containsOldCallbackRegistrationUnlockThenDestroyPattern(in source: String) -> Bool {
+        let oldUnlockThenDestroyPattern = #"(?s)should_destroy\s*=\s*registration->signal_destroyed\s*&&\s*registration->in_flight\s*==\s*0\s*;\s*g_mutex_unlock\s*\(\s*&registration->mutex\s*\)\s*;\s*if\s*\(\s*!\s*should_destroy\s*\)"#
+        return source.range(of: oldUnlockThenDestroyPattern, options: .regularExpression) != nil
+            || source.range(
+                of: #"\bswift_gst_callback_registration_try_destroy\s*\("#,
+                options: .regularExpression
+            ) != nil
+    }
+
+    private static func destroyClaimChecksStateAndMarksDestroying(in source: String) -> Bool {
+        let checksSignalDestroyed = source.contains("registration->signal_destroyed")
+        let checksInFlightZero = source.range(
+            of: #"registration->in_flight\s*==\s*0|0\s*==\s*registration->in_flight"#,
+            options: .regularExpression
+        ) != nil
+        let checksNotDestroying = source.range(
+            of: #"!\s*registration->destroying|registration->destroying\s*==\s*FALSE|FALSE\s*==\s*registration->destroying"#,
+            options: .regularExpression
+        ) != nil
+        let setsDestroying = source.range(
+            of: #"registration->destroying\s*=\s*TRUE"#,
+            options: .regularExpression
+        ) != nil
+
+        return checksSignalDestroyed && checksInFlightZero && checksNotDestroying && setsDestroying
+    }
+
+    private static func callbackRegistrationFinalizerFunctionName(in source: String) throws -> String {
+        let declaration = try cFunctionDeclaration(
+            containing: "g_free(registration)",
+            in: source
+        )
+        let signature = declarationSignature(declaration)
+
+        if let finalizerName = firstCapture(
+            #"\b(swift_gst_callback_registration_[A-Za-z0-9_]*)\s*\("#,
+            in: signature
+        ) {
+            return finalizerName
+        }
+
+        throw StaticAPISafetyError.declarationNotFound("callback registration finalizer")
+    }
+
+    private static func callbackRegistrationFinalizerBodyHasRequiredOperations(_ source: String) -> Bool {
+        let requiredSingleCalls = [
+            #"swift_gst_callback_registration_release_context\s*\(\s*registration\s*\)"#,
+            #"gst_bus_disable_sync_message_emission\s*\(\s*GST_BUS\s*\(\s*registration->instance\s*\)\s*\)"#,
+            #"g_object_unref\s*\(\s*registration->instance\s*\)"#,
+            #"g_mutex_clear\s*\(\s*&registration->mutex\s*\)"#,
+            #"g_free\s*\(\s*registration\s*\)"#,
+        ]
+        let hasRequiredCallsExactlyOnce = requiredSingleCalls.allSatisfy {
+            regexMatchCount($0, in: source) == 1
+        }
+        let hasBusDisableBranch = source.range(
+            of: #"if\s*\(\s*registration->kind\s*==\s*SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE\s*\)\s*\{[^}]*gst_bus_disable_sync_message_emission\s*\(\s*GST_BUS\s*\(\s*registration->instance\s*\)\s*\)\s*;"#,
+            options: .regularExpression
+        ) != nil
+        let requiredOperationsAppearInOrder = regexPatternsAppearInOrder(
+            [
+                #"swift_gst_callback_registration_release_context\s*\(\s*registration\s*\)"#,
+                #"SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE"#,
+                #"gst_bus_disable_sync_message_emission\s*\(\s*GST_BUS\s*\(\s*registration->instance\s*\)\s*\)"#,
+                #"g_object_unref\s*\(\s*registration->instance\s*\)"#,
+                #"g_mutex_clear\s*\(\s*&registration->mutex\s*\)"#,
+                #"g_free\s*\(\s*registration\s*\)"#,
+            ],
+            in: source
+        )
+        let disallowedSnippets = [
+            "g_mutex_lock(&registration->mutex)",
+            "g_mutex_unlock(&registration->mutex)",
+            "g_signal_",
+            "g_object_ref",
+            "gst_bus_enable_sync_message_emission",
+            "swift_gst_callback_registration_retain_context",
+            "swift_gst_callback_registration_claim_destroy_locked",
+            "registration->disconnected",
+            "registration->handler_id",
+            "registration->signal_destroyed",
+            "registration->in_flight",
+            "registration->destroying",
+        ]
+
+        return hasRequiredCallsExactlyOnce
+            && hasBusDisableBranch
+            && requiredOperationsAppearInOrder
+            && disallowedSnippets.allSatisfy { !source.contains($0) }
+    }
+
+    private static func containsCallbackRegistrationDestroyClaim(
+        _ source: String,
+        claimFunctionName: String
+    ) -> Bool {
+        if source.range(
+            of: #"registration->destroying\s*=\s*TRUE"#,
+            options: .regularExpression
+        ) != nil {
+            return true
+        }
+
+        let escapedName = NSRegularExpression.escapedPattern(for: claimFunctionName)
+        return source.range(
+            of: #"\b\#(escapedName)\s*\(\s*registration\s*\)"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func callbackRegistrationDestroyClaimRange(
+        in source: String,
+        claimFunctionName: String
+    ) -> Range<String.Index>? {
+        if let directClaimRange = source.range(
+            of: #"registration->destroying\s*=\s*TRUE"#,
+            options: .regularExpression
+        ) {
+            return directClaimRange
+        }
+
+        return callbackRegistrationFunctionCallRanges(
+            named: claimFunctionName,
+            in: source
+        ).first
+    }
+
+    private static func callbackRegistrationFinalizerCallsHappenAfterUnlock(
+        in source: String,
+        finalizerFunctionName: String
+    ) -> Bool {
+        let finalizerCalls = callbackRegistrationFunctionCallRanges(
+            named: finalizerFunctionName,
+            in: source
+        )
+
+        guard !finalizerCalls.isEmpty else {
+            return false
+        }
+
+        return finalizerCalls.allSatisfy { finalizerCall in
+            let prefix = source[..<finalizerCall.lowerBound]
+            guard let unlockRange = prefix.range(
+                of: "g_mutex_unlock(&registration->mutex);",
+                options: .backwards
+            ) else {
+                return false
+            }
+
+            if let lockRange = prefix.range(
+                of: "g_mutex_lock(&registration->mutex);",
+                options: .backwards
+            ) {
+                return lockRange.lowerBound < unlockRange.lowerBound
+            }
+
+            return true
+        }
+    }
+
+    private static func signalDestroySetsStateBeforeClaimingUnderLock(
+        _ source: String,
+        claimFunctionName: String
+    ) -> Bool {
+        registrationMutexLockedSections(in: source).contains {
+            stateAssignmentsAppearBeforeClaim(
+                in: $0,
+                claimFunctionName: claimFunctionName,
+                assignmentPatterns: [
+                    #"registration->disconnected\s*=\s*TRUE"#,
+                    #"registration->signal_destroyed\s*=\s*TRUE"#,
+                    #"registration->handler_id\s*=\s*0"#,
+                ]
+            )
+        }
+    }
+
+    private static func beginRetainsContextAfterUnlock(_ source: String) -> Bool {
+        let retainFunctionName = "swift_gst_callback_registration_retain_context"
+        let retainRanges = callbackRegistrationFunctionCallRanges(
+            named: retainFunctionName,
+            in: source
+        )
+
+        guard retainRanges.count == 1,
+              let unlockRange = source.range(of: "g_mutex_unlock(&registration->mutex);")
+        else {
+            return false
+        }
+
+        let retainAfterUnlock = unlockRange.upperBound <= retainRanges[0].lowerBound
+        let lockedSectionsDoNotRetain = registrationMutexLockedSections(in: source).allSatisfy {
+            callbackRegistrationFunctionCallRanges(named: retainFunctionName, in: $0).isEmpty
+        }
+
+        return retainAfterUnlock && lockedSectionsDoNotRetain
+    }
+
+    private static func registrationMutexLockedSections(in source: String) -> [String] {
+        let lock = "g_mutex_lock(&registration->mutex);"
+        let unlock = "g_mutex_unlock(&registration->mutex);"
+        var sections: [String] = []
+        var searchStart = source.startIndex
+
+        while let lockRange = source.range(of: lock, range: searchStart..<source.endIndex),
+              let unlockRange = source.range(of: unlock, range: lockRange.upperBound..<source.endIndex)
+        {
+            sections.append(String(source[lockRange.lowerBound..<unlockRange.upperBound]))
+            searchStart = unlockRange.upperBound
+        }
+
+        return sections
+    }
+
+    private static func endReleasesContextBeforeDecrementingInFlight(_ source: String) -> Bool {
+        guard let releaseRange = source.range(
+            of: "swift_gst_callback_registration_release_context(registration)"
+        ) else {
+            return false
+        }
+        guard let firstLockRange = source.range(of: "g_mutex_lock(&registration->mutex);") else {
+            return false
+        }
+
+        let decrementPattern = #"registration->in_flight\s*(?:--|-=)\s*1?"#
+        guard let decrementRange = source.range(of: decrementPattern, options: .regularExpression) else {
+            return false
+        }
+
+        return releaseRange.lowerBound < firstLockRange.lowerBound
+            && releaseRange.lowerBound < decrementRange.lowerBound
+    }
+
+    private static func disconnectAlreadyDisconnectedBranchClaimsDestroy(
+        _ source: String,
+        claimFunctionName: String
+    ) -> Bool {
+        registrationMutexLockedSections(in: source).contains { section in
+            let elseBlocks = (try? bracedBlocks(after: "else", in: section)) ?? []
+            return elseBlocks.contains {
+                containsCallbackRegistrationDestroyClaim($0, claimFunctionName: claimFunctionName)
+            }
+        }
+    }
+
+    private static func disconnectNoHandlerBranchClaimsDestroy(
+        _ source: String,
+        claimFunctionName: String
+    ) -> Bool {
+        registrationMutexLockedSections(in: source).contains { section in
+            let mentionsNoHandler = section.range(
+                of: #"(?:registration->)?handler_id\s*(?:==|!=)\s*0"#,
+                options: .regularExpression
+            ) != nil
+            return mentionsNoHandler
+                && containsCallbackRegistrationDestroyClaim(section, claimFunctionName: claimFunctionName)
+        }
+    }
+
+    private static func connectFailureRollbackClaimsDestroy(
+        _ source: String,
+        claimFunctionName: String
+    ) -> Bool {
+        guard let failureBranch = connectFailureRollbackBranch(in: source) else {
+            return false
+        }
+
+        return registrationMutexLockedSections(in: failureBranch).contains {
+            containsCallbackRegistrationDestroyClaim($0, claimFunctionName: claimFunctionName)
+        }
+    }
+
+    private static func connectFailureRollbackSetsStateBeforeClaimingDestroy(
+        _ source: String,
+        claimFunctionName: String
+    ) -> Bool {
+        guard let failureBranch = connectFailureRollbackBranch(in: source) else {
+            return false
+        }
+
+        return registrationMutexLockedSections(in: failureBranch).contains {
+            stateAssignmentsAppearBeforeClaim(
+                in: $0,
+                claimFunctionName: claimFunctionName,
+                assignmentPatterns: [
+                    #"registration->disconnected\s*=\s*TRUE"#,
+                    #"registration->signal_destroyed\s*=\s*TRUE"#,
+                ]
+            )
+        }
+    }
+
+    private static func connectFailureRollbackBranch(in source: String) -> String? {
+        try? bracedDeclaration(
+            beginningWith: "if (registration->handler_id == 0)",
+            in: source
+        )
+    }
+
+    private static func stateAssignmentsAppearBeforeClaim(
+        in source: String,
+        claimFunctionName: String,
+        assignmentPatterns: [String]
+    ) -> Bool {
+        guard let claimRange = callbackRegistrationDestroyClaimRange(
+            in: source,
+            claimFunctionName: claimFunctionName
+        ) else {
+            return false
+        }
+
+        let prefix = String(source[..<claimRange.lowerBound])
+        return assignmentPatterns.allSatisfy {
+            prefix.range(of: $0, options: .regularExpression) != nil
+        }
+    }
+
+    private static func callbackRegistrationFunctionCallRanges(
+        named functionName: String,
+        in source: String
+    ) -> [Range<String.Index>] {
+        let escapedName = NSRegularExpression.escapedPattern(for: functionName)
+        return regexRanges(
+            #"\b\#(escapedName)\s*\(\s*registration\s*\)"#,
+            in: source
+        )
+    }
+
+    private static func regexMatchCount(_ pattern: String, in source: String) -> Int {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return 0
+        }
+
+        return regex.numberOfMatches(
+            in: source,
+            range: NSRange(source.startIndex..<source.endIndex, in: source)
+        )
+    }
+
+    private static func regexRanges(_ pattern: String, in source: String) -> [Range<String.Index>] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return []
+        }
+
+        return regex.matches(
+            in: source,
+            range: NSRange(source.startIndex..<source.endIndex, in: source)
+        ).compactMap { Range($0.range, in: source) }
+    }
+
+    private static func regexPatternsAppearInOrder(_ patterns: [String], in source: String) -> Bool {
+        var searchStart = source.startIndex
+
+        for pattern in patterns {
+            guard let range = regexRanges(pattern, in: source).first(where: { $0.lowerBound >= searchStart }) else {
+                return false
+            }
+            searchStart = range.upperBound
+        }
+
+        return true
+    }
+
+    private static func cFunctionDeclaration(containing marker: String, in source: String) throws -> String {
+        guard let markerRange = source.range(of: marker) else {
+            throw StaticAPISafetyError.declarationNotFound(marker)
+        }
+
+        var index = source.startIndex
+        var depth = 0
+        var topLevelOpenBrace: String.Index?
+
+        while index < markerRange.lowerBound {
+            switch source[index] {
+            case "{":
+                if depth == 0 {
+                    topLevelOpenBrace = index
+                }
+                depth += 1
+            case "}":
+                depth -= 1
+            default:
+                break
+            }
+            index = source.index(after: index)
+        }
+
+        guard let openBrace = topLevelOpenBrace else {
+            throw StaticAPISafetyError.declarationNotFound(marker)
+        }
+
+        let prefix = source[..<openBrace]
+        let start = prefix.range(of: "\n\n", options: .backwards)?.upperBound ?? source.startIndex
+        let closeBrace = try closingBrace(for: openBrace, in: source, declaration: marker)
+        return String(source[start...closeBrace])
+    }
+
+    private static func closingBrace(
+        for openBrace: String.Index,
+        in source: String,
+        declaration: String
+    ) throws -> String.Index {
+        var index = openBrace
+        var depth = 0
+
+        while index < source.endIndex {
+            switch source[index] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return index
+                }
+            default:
+                break
+            }
+            index = source.index(after: index)
+        }
+
+        throw StaticAPISafetyError.unbalancedDeclaration(declaration)
+    }
+
+    private static func firstCapture(_ pattern: String, in source: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        guard let match = regex.firstMatch(in: source, range: range),
+              match.numberOfRanges > 1,
+              let captureRange = Range(match.range(at: 1), in: source)
+        else {
+            return nil
+        }
+
+        return String(source[captureRange])
+    }
+
     private static func bracedDeclaration(beginningWith declaration: String, in source: String) throws -> String {
         guard let declarationRange = source.range(of: declaration) else {
             throw StaticAPISafetyError.declarationNotFound(declaration)
@@ -793,6 +1656,321 @@ struct APISafetyStaticTests {
         throw StaticAPISafetyError.unbalancedDeclaration(declaration)
     }
 
+    private static func bracedBlocks(after marker: String, in source: String) throws -> [String] {
+        var blocks: [String] = []
+        var searchStart = source.startIndex
+
+        while let markerRange = source.range(of: marker, range: searchStart..<source.endIndex) {
+            guard let openBrace = source[markerRange.upperBound...].firstIndex(of: "{") else {
+                throw StaticAPISafetyError.declarationNotFound(marker)
+            }
+
+            var index = openBrace
+            var depth = 0
+            var foundEnd = false
+
+            while index < source.endIndex {
+                switch source[index] {
+                case "{":
+                    depth += 1
+                case "}":
+                    depth -= 1
+                    if depth == 0 {
+                        blocks.append(String(source[openBrace...index]))
+                        searchStart = source.index(after: index)
+                        foundEnd = true
+                        break
+                    }
+                default:
+                    break
+                }
+                if foundEnd {
+                    break
+                }
+                index = source.index(after: index)
+            }
+
+            if !foundEnd {
+                throw StaticAPISafetyError.unbalancedDeclaration(marker)
+            }
+        }
+
+        return blocks
+    }
+
+    private static func bracedBlocksWithTrailing(
+        after marker: String,
+        in source: String,
+        trailingLimit: Int
+    ) throws -> [(block: String, trailing: String)] {
+        var blocks: [(block: String, trailing: String)] = []
+        var searchStart = source.startIndex
+
+        while let markerRange = source.range(of: marker, range: searchStart..<source.endIndex) {
+            guard let openBrace = source[markerRange.upperBound...].firstIndex(of: "{") else {
+                throw StaticAPISafetyError.declarationNotFound(marker)
+            }
+
+            var index = openBrace
+            var depth = 0
+            var foundEnd = false
+
+            while index < source.endIndex {
+                switch source[index] {
+                case "{":
+                    depth += 1
+                case "}":
+                    depth -= 1
+                    if depth == 0 {
+                        let trailingStart = source.index(after: index)
+                        let trailingEnd = source.index(
+                            trailingStart,
+                            offsetBy: trailingLimit,
+                            limitedBy: source.endIndex
+                        ) ?? source.endIndex
+                        blocks.append((
+                            block: String(source[openBrace...index]),
+                            trailing: String(source[trailingStart..<trailingEnd])
+                        ))
+                        searchStart = source.index(after: index)
+                        foundEnd = true
+                        break
+                    }
+                default:
+                    break
+                }
+                if foundEnd {
+                    break
+                }
+                index = source.index(after: index)
+            }
+
+            if !foundEnd {
+                throw StaticAPISafetyError.unbalancedDeclaration(marker)
+            }
+        }
+
+        return blocks
+    }
+
+    private static func callsAreCoveredByWithExtendedLifetimeContext(
+        source: String,
+        calls: [String]
+    ) -> Bool {
+        guard let lifetimeBlocks = try? bracedBlocks(after: "withExtendedLifetime(context)", in: source),
+              !lifetimeBlocks.isEmpty
+        else {
+            return false
+        }
+
+        return calls.allSatisfy { call in
+            source.contains(call) && lifetimeBlocks.contains { $0.contains(call) }
+        }
+    }
+
+    private static func busWatchRegistrationAssignmentFollowsSuccessfulStart(_ startWatch: String) -> Bool {
+        let normalized = normalizedWhitespace(startWatch)
+        guard
+            normalized.range(of: #"guard\s+let\s+watch\s*="#, options: .regularExpression) != nil,
+            let startRange = normalized.range(of: "swift_gst_bus_watch_start"),
+            let assignmentRange = normalized.range(
+                of: #"\bregistration\s*=\s*watch\b"#,
+                options: .regularExpression
+            )
+        else {
+            return false
+        }
+
+        let startsBeforeAssignment = startRange.upperBound <= assignmentRange.lowerBound
+        let failurePathBeforeAssignment = normalized[..<assignmentRange.lowerBound]
+            .contains("close(startupFailed: true)")
+
+        return startsBeforeAssignment && failurePathBeforeAssignment
+    }
+
+    private static func rollbackBranchesDisconnectingUnstoredNewSampleMarkCallbackState(
+        in startCallbacks: String
+    ) -> Bool {
+        guard let storageRange = startCallbacks.range(of: "self.newSampleRegistration = newSampleRegistration") else {
+            return false
+        }
+
+        let registrationPrefix = String(startCallbacks[..<storageRange.lowerBound])
+        let rollbackBodies = ((try? bracedBlocks(after: "else", in: registrationPrefix)) ?? [])
+            .filter { $0.contains("swift_gst_callback_registration_disconnect(newSampleRegistration)") }
+
+        guard !rollbackBodies.isEmpty else {
+            return false
+        }
+
+        return rollbackBodies.allSatisfy { body in
+            let directlyMarksState = body.contains("callbackState.withLock")
+                && body.contains("newSampleDisconnected = true")
+            let delegatesToMarker = body.range(
+                of: #"\bmark\w*NewSample\w*Disconnected\s*\("#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+
+            return directlyMarksState || delegatesToMarker
+        }
+    }
+
+    private static func containsAtomicStartupTimeoutTransition(in source: String) -> Bool {
+        guard source.contains("reportStartupTimeout") else {
+            return false
+        }
+
+        let lockBlocks = (try? bracedBlocksWithTrailing(
+            after: "state.withLock",
+            in: source,
+            trailingLimit: 1_000
+        )) ?? []
+
+        return lockBlocks.contains { block, trailing in
+            let normalizedBlock = normalizedWhitespace(block)
+            let normalizedTrailing = normalizedWhitespace(trailing)
+            let checksActiveCandidate = normalizedBlock.contains("state.active?.id == candidateID")
+                || (normalizedBlock.contains("state.active") && normalizedBlock.contains("candidateID"))
+            let checksShutdown = normalizedBlock.contains("state.shuttingDown")
+            let checksDeliveredFirstPacket = normalizedBlock.contains("state.deliveredFirstPacket")
+            let setsTerminalError = normalizedBlock.contains("state.terminalError =")
+            let capturesPending = normalizedBlock.contains("let pending = state.pending")
+                || normalizedBlock.contains("pending = state.pending")
+            let clearsPending = normalizedBlock.contains("state.pending = nil")
+            let updatesPendingProbeCount = normalizedBlock.contains("setPendingContinuationCount(0)")
+            let doesNotResumeInsideLock = !normalizedBlock.contains(".resume(")
+                && !normalizedBlock.contains("resume(")
+            let resumesPendingOutsideLock = normalizedTrailing.contains("pending?.resume(throwing:")
+                || normalizedTrailing.contains(".resume(throwing:")
+            let tiedToStartupTimeout = normalizedBlock.range(
+                of: #"startup|Reliable packet startup timed out"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil || normalizedTrailing.range(
+                of: #"startup|Reliable packet startup timed out"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+
+            return checksActiveCandidate
+                && checksShutdown
+                && checksDeliveredFirstPacket
+                && setsTerminalError
+                && capturesPending
+                && clearsPending
+                && updatesPendingProbeCount
+                && doesNotResumeInsideLock
+                && resumesPendingOutsideLock
+                && tiedToStartupTimeout
+        }
+    }
+
+    private static func containsWatchBackedContinuationQueue(in source: String) -> Bool {
+        let normalized = normalizedWhitespace(source)
+        let lowercased = normalized.lowercased()
+        let hasContinuation = normalized.contains("CheckedContinuation<BusMessage?")
+            || normalized.contains("UnsafeContinuation<BusMessage?")
+            || lowercased.contains("continuation")
+        let hasWaiters = lowercased.contains("waiter")
+            || lowercased.contains("waiting")
+        let hasFIFOQueue = lowercased.contains("queue")
+            && normalized.contains(".append(")
+            && (
+                normalized.contains(".removeFirst()")
+                    || normalized.contains(".removeFirst(")
+                    || normalized.contains(".popFirst()")
+                    || normalized.contains("Deque<")
+            )
+
+        return hasContinuation && hasWaiters && hasFIFOQueue
+    }
+
+    private static func containsRawGstMessagePointerStorage(in source: String) -> Bool {
+        let storagePatterns = [
+            #"(?m)\b(?:private|fileprivate|internal|public)?\s*(?:var|let)\s+\w+\s*:\s*\[\s*UnsafeMutablePointer\s*<\s*GstMessage\s*>\s*\]"#,
+            #"(?m)\b(?:private|fileprivate|internal|public)?\s*(?:var|let)\s+\w+\s*:\s*Array\s*<\s*UnsafeMutablePointer\s*<\s*GstMessage\s*>\s*>"#,
+            #"(?m)\b(?:private|fileprivate|internal|public)?\s*(?:var|let)\s+\w+\s*:\s*UnsafeMutablePointer\s*<\s*GstMessage\s*>\s*\?"#,
+            #"(?i)\b(?:message|gstMessage)\w*Queue\b[^\n]*GstMessage"#,
+        ]
+
+        return storagePatterns.contains { pattern in
+            source.range(of: pattern, options: .regularExpression) != nil
+        }
+    }
+
+    private static func messageSequenceDocsDescribeWatchBackedSemantics(_ source: String) -> Bool {
+        let normalized = normalizedWhitespace(source).lowercased()
+        let staleClaims = [
+            "demand-driven bus polling",
+            "bus is polled only when",
+            "polls the gstreamer bus when the consumer requests next()",
+            "each next() call must poll",
+            "100 ms timed pop. current",
+            "no continuation or detached producer exists on the messagesequence path",
+            "continues to back the `errors()`, `warnings()`, `statechanges()`, and `waitforeos()`",
+        ]
+        let hasWatchSemantics = normalized.contains("private gstreamer bus watch")
+            || normalized.contains("private bus watch")
+            || normalized.contains("watch-backed")
+        let allowsBufferedBeforeNext = normalized.contains("before the consumer awaits next()")
+            || normalized.contains("before next() is awaited")
+            || normalized.contains("before `next()` is awaited")
+
+        return hasWatchSemantics
+            && allowsBufferedBeforeNext
+            && staleClaims.allSatisfy { !normalized.contains($0) }
+    }
+
+    private static func containsPreviousCapsDestructionInsidePacketLock(in lockBodies: [String]) -> Bool {
+        let destructivePatterns = [
+            #"swift_gst_caps_unref\s*\("#,
+            #"state\.previousCaps\s*=\s*swift_gst_caps_ref\s*\("#,
+            #"state\.previousCaps\s*=\s*RetainedCaps\s*\("#,
+            #"defer\s*\{[^}]*previousCaps[^}]*\}"#,
+        ]
+
+        return lockBodies.contains { body in
+            destructivePatterns.contains { pattern in
+                body.range(of: pattern, options: .regularExpression) != nil
+            }
+        }
+    }
+
+    private static func containsDiscontinuityRetryVersionPattern(
+        packetState: String,
+        detectDiscontinuity: String
+    ) -> Bool {
+        let tokenPattern = #"\b\w*(?:version|token|generation)\w*\b"#
+        let stateHasToken = packetState.range(of: tokenPattern, options: [.regularExpression, .caseInsensitive]) != nil
+        let functionUsesStateToken = detectDiscontinuity.range(
+            of: #"state\.\w*(?:version|token|generation)\w*"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        let hasRetryLoop = detectDiscontinuity.range(
+            of: #"\bwhile\s+true\b|\brepeat\s*\{"#,
+            options: .regularExpression
+        ) != nil
+        let canRetry = detectDiscontinuity.range(of: #"\bcontinue\b"#, options: .regularExpression) != nil
+        let snapshotsRequiredState = [
+            "previousCaps",
+            "priorPTS",
+            "priorDuration",
+            "pendingDiscontinuity",
+        ].allSatisfy { detectDiscontinuity.contains($0) }
+        let comparesTokenBeforeCommit = detectDiscontinuity.split(separator: "\n").contains { line in
+            let lowercasedLine = line.lowercased()
+            let mentionsToken = lowercasedLine.contains("version")
+                || lowercasedLine.contains("token")
+                || lowercasedLine.contains("generation")
+            return mentionsToken && (lowercasedLine.contains("==") || lowercasedLine.contains("!="))
+        }
+
+        return stateHasToken
+            && functionUsesStateToken
+            && hasRetryLoop
+            && canRetry
+            && snapshotsRequiredState
+            && comparesTokenBeforeCommit
+    }
+
     private static func containsBusMessagesNextSignature(in iterator: String) -> Bool {
         let normalized = normalizedWhitespace(iterator)
         let hasNonThrowingSignature = normalized.range(
@@ -807,6 +1985,26 @@ struct APISafetyStaticTests {
             || normalized.contains("nonisolated")
 
         return hasNonThrowingSignature && !hasThrowingSignature && hasNonisolatedExecutorMarker
+    }
+
+    private static func containsWaitForEOSDeprecationMarker(in source: String) -> Bool {
+        source.range(
+            of: #"@available\s*\(\s*\*\s*,\s*deprecated\s*,\s*message:\s*"[^"]*waitForEOSOrError\(\)[^"]*"\s*\)\s*public\s+func\s+waitForEOS\(\)\s+async\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func waitForEOSDelegatesToThrowingHelperAndSwallowsErrors(_ implementation: String) -> Bool {
+        let delegates = implementation.range(
+            of: #"try\??\s+await\s+(?:self\.)?waitForEOSOrError\(\)"#,
+            options: .regularExpression
+        ) != nil
+        let swallowsError = implementation.contains("try?") || implementation.range(
+            of: #"\bcatch\b"#,
+            options: .regularExpression
+        ) != nil
+
+        return delegates && swallowsError
     }
 
     private static func publicStaticMemberNames(in source: String) -> Set<String> {
