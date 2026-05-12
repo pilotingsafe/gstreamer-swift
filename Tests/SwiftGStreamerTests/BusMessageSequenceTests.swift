@@ -241,6 +241,60 @@ struct BusMessageSequenceTests {
         )
     }
 
+    @Test("Watch-backed sequence bounds backlog overflow and keeps later errors observable")
+    func messageSequenceBoundsBacklogOverflowAndKeepsLaterErrorsObservable() async throws {
+        let pipeline = try Pipeline("fakesrc num-buffers=0 ! fakesink")
+        let maximumBufferedMessages = Int(Bus.messageSequenceMaximumBufferedMessages)
+        var iterator = pipeline.bus.messageSequence(filter: [.element, .error]).makeAsyncIterator()
+
+        #expect(maximumBufferedMessages > 0)
+
+        for index in 0..<(maximumBufferedMessages + 8) {
+            #expect(
+                swift_gst_test_post_element_marker(
+                    pipeline._element,
+                    "bus-sequence-overflow-marker-\(index)"
+                ) != 0
+            )
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(swift_gst_test_post_bus_error(
+            pipeline._element,
+            "Bounded backlog preserved later error",
+            "bus-sequence-overflow"
+        ) != 0)
+        try await Task.sleep(for: .milliseconds(50))
+
+        var sawError = false
+        var observedMarkers = 0
+        for _ in 0..<maximumBufferedMessages {
+            let step = try await Self.nextWithTimeout(iterator, timeout: .milliseconds(500))
+            iterator = step.iterator
+            let message = try #require(step.message)
+
+            switch message {
+            case .element:
+                observedMarkers += 1
+            case .error(let errorMessage, let debug):
+                #expect(errorMessage == "Bounded backlog preserved later error")
+                #expect(debug == "bus-sequence-overflow")
+                sawError = true
+            default:
+                Issue.record("Expected element marker or error, got \(String(describing: message))")
+            }
+
+            if sawError {
+                break
+            }
+        }
+
+        #expect(
+            sawError,
+            "Bounded overflow should keep the later error observable within \(maximumBufferedMessages) dequeues; observed \(observedMarkers) markers first"
+        )
+    }
+
     @Test("Existing AsyncStream messages still finishes after EOS")
     func messagesAsyncStreamStillFinishesAfterEOS() async throws {
         let pipeline = try Pipeline("videotestsrc num-buffers=1 ! fakesink")

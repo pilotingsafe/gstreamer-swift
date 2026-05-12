@@ -408,6 +408,12 @@ private struct AudioFilePipelineCandidate: Sendable {
 }
 
 private final class AudioFileReliablePacketSource: @unchecked Sendable {
+  private enum PullPacketResult {
+    case packet(Buffer)
+    case skippedEmptySample
+    case noSample
+  }
+
   private struct State {
     var nextCandidateIndex = 0
     var active: ActiveCandidate?
@@ -571,15 +577,28 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
 
     while true {
       try Task.checkCancellation()
-      let generation = sampleGeneration()
-
-      if let packet = try pullPacket(from: active) {
-        try markFirstPacketDelivered(from: active)
-        return packet
+      if try terminalStateAllowsPull(for: active) == false {
+        return nil
       }
 
-      if try await waitForEvent(after: generation) == false {
-        return nil
+      let generation = sampleGeneration()
+
+      switch try pullPacket(from: active) {
+      case .packet(let packet):
+        try markFirstPacketDelivered(from: active)
+        return packet
+
+      case .skippedEmptySample:
+        await Task.yield()
+        if try terminalStateAllowsPull(for: active) == false {
+          return nil
+        }
+        continue
+
+      case .noSample:
+        if try await waitForEvent(after: generation) == false {
+          return nil
+        }
       }
     }
   }
@@ -603,36 +622,34 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
     }
   }
 
-  private func pullPacket(from active: ActiveCandidate) throws -> Buffer? {
-    while true {
-      guard isCurrent(active) else {
-        throw CancellationError()
-      }
-
-      guard let sample = swift_gst_app_sink_try_pull_sample(active.appSink, 0) else {
-        return nil
-      }
-      defer { swift_gst_sample_unref(UnsafeMutableRawPointer(sample)) }
-
-      if shouldReportFirstSampleCaps(),
-        let caps = swift_gst_sample_get_caps(UnsafeMutableRawPointer(sample)),
-        let capsString = GLibString.takeOwnership(swift_gst_caps_to_string(caps))
-      {
-        configuration.probeState.recordFirstSampleCaps(capsString)
-        configuration.firstSampleCapsProbe?(capsString)
-      }
-
-      guard let gstBuffer = swift_gst_sample_get_buffer(UnsafeMutableRawPointer(sample)) else {
-        throw GStreamerError.bufferMapFailed
-      }
-
-      guard swift_gst_buffer_get_size(gstBuffer) > 0 else {
-        continue
-      }
-
-      _ = swift_gst_buffer_ref(gstBuffer)
-      return Buffer(buffer: gstBuffer, ownsReference: true)
+  private func pullPacket(from active: ActiveCandidate) throws -> PullPacketResult {
+    guard isCurrent(active) else {
+      throw CancellationError()
     }
+
+    guard let sample = swift_gst_app_sink_try_pull_sample(active.appSink, 0) else {
+      return .noSample
+    }
+    defer { swift_gst_sample_unref(UnsafeMutableRawPointer(sample)) }
+
+    if shouldReportFirstSampleCaps(),
+      let caps = swift_gst_sample_get_caps(UnsafeMutableRawPointer(sample)),
+      let capsString = GLibString.takeOwnership(swift_gst_caps_to_string(caps))
+    {
+      configuration.probeState.recordFirstSampleCaps(capsString)
+      configuration.firstSampleCapsProbe?(capsString)
+    }
+
+    guard let gstBuffer = swift_gst_sample_get_buffer(UnsafeMutableRawPointer(sample)) else {
+      throw GStreamerError.bufferMapFailed
+    }
+
+    guard swift_gst_buffer_get_size(gstBuffer) > 0 else {
+      return .skippedEmptySample
+    }
+
+    _ = swift_gst_buffer_ref(gstBuffer)
+    return .packet(Buffer(buffer: gstBuffer, ownsReference: true))
   }
 
   private func waitForEvent(after generation: UInt64) async throws -> Bool {
@@ -677,6 +694,26 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
     state.withLock { state in
       state.active === active && !state.shuttingDown
     }
+  }
+
+  private func terminalStateAllowsPull(for active: ActiveCandidate) throws -> Bool {
+    let result = state.withLock { state -> Result<Bool, Error> in
+      guard state.active === active, !state.shuttingDown else {
+        return .failure(CancellationError())
+      }
+      if let terminalError = state.terminalError {
+        return .failure(terminalError)
+      }
+      if state.eos {
+        // EOS can arrive while appsink still has queued samples. Observe it
+        // here, but let the next nonblocking pull drain any queued packet; the
+        // no-sample path below terminates via waitForEvent(after:).
+        return .success(true)
+      }
+      return .success(true)
+    }
+
+    return try result.get()
   }
 
   private func markFirstPacketDelivered(from active: ActiveCandidate) throws {

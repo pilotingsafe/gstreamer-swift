@@ -218,6 +218,27 @@ struct AudioSourceReliableLiveBehaviorTests {
         try await Self.expectCleanEOSCleanup(for: harness)
     }
 
+    @Test("Zero-size live marker before queued packet drains packet before EOS")
+    func zeroSizeLiveMarkerBeforeQueuedPacketDrainsPacketBeforeEOS() async throws {
+        let harness = try Self.makeHarness(appSinkMaxBuffers: 4)
+        let sequence = try harness.source.reliablePackets()
+
+        try await harness.emit(.packet(Self.liveMarker(pts: 80, duration: 20)))
+        try await harness.emit(.packet(Self.buffer(pts: 100, duration: 20)))
+        try await harness.emit(.eos)
+
+        let packets = try await Self.withTimeout(.seconds(1)) {
+            try await Self.collect(sequence)
+        }
+
+        #expect(packets.count == 1)
+        let packet = try #require(packets.first)
+        #expect(packet.pts == 100)
+        #expect(packet.duration == 20)
+        #expect(packet.payload.size == 4)
+        try await Self.expectCleanEOSCleanup(for: harness)
+    }
+
     @Test("EOS before reliable subscription completes empty")
     func eosBeforeReliableSubscriptionCompletesEmpty() async throws {
         let harness = try Self.makeHarness()
@@ -627,7 +648,8 @@ struct AudioSourceReliableLiveBehaviorTests {
         maxBytes: UInt? = nil,
         maxTime: Duration? = .seconds(2),
         finalizeBehavior: ReliableLiveFinalizeBehaviorForTesting = .emitEOSOnSendEOS,
-        suppressEOSCallbacksForTesting: Bool = false
+        suppressEOSCallbacksForTesting: Bool = false,
+        appSinkMaxBuffers: UInt = 1
     ) throws -> ReliableLiveAudioSourceHarnessForTesting {
         try ReliableLiveAudioSourceHarnessForTesting(
             encoding: .opus(bitrate: 64_000),
@@ -638,7 +660,8 @@ struct AudioSourceReliableLiveBehaviorTests {
                 maxTime: maxTime
             ),
             finalizeBehavior: finalizeBehavior,
-            suppressEOSCallbacksForTesting: suppressEOSCallbacksForTesting
+            suppressEOSCallbacksForTesting: suppressEOSCallbacksForTesting,
+            appSinkMaxBuffers: appSinkMaxBuffers
         )
     }
 
@@ -682,6 +705,10 @@ struct AudioSourceReliableLiveBehaviorTests {
 
     private static func buffer(pts: UInt64, duration: UInt64) throws -> Buffer {
         try Buffer(data: [0, 1, 2, 3], pts: pts, duration: duration)
+    }
+
+    private static func liveMarker(pts: UInt64, duration: UInt64) throws -> Buffer {
+        try Buffer(data: [], pts: pts, duration: duration)
     }
 
     private static func captureError(_ body: () throws -> Void) -> Error? {

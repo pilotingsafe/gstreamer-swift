@@ -8,7 +8,9 @@
   callers that want one active bus drainer without blocking Swift concurrency
   threads. The sequence now uses a private GStreamer bus watch; creating an
   iterator can drain and buffer matching `BusMessage` values before `next()` is
-  awaited. Existing
+  awaited. The parsed-message buffer currently holds at most 256 parsed
+  messages with best-effort overflow that prefers retaining ERROR and EOS over
+  older noncritical messages. Existing
   `Bus.messages(filter:)`, `errors()`, `warnings()`, `stateChanges()`, and
   `waitForEOS()` behavior is unchanged. `messageSequence(filter:)` defaults to
   `.all`, which can expose more Swift-modeled message kinds than the

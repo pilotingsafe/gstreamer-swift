@@ -95,6 +95,8 @@ This keeps the Swift API thin over GStreamer primitives and avoids a parallel po
 - [x] Follow-up hardening keeps caps equality/refcount work outside `packetState.withLock`.
 - [x] Follow-up hardening protects callback context lifetime with `withExtendedLifetime(context)`.
 - [x] Follow-up hardening fixes callback cleanup rollback, startup-timeout races, and duration conversion overflow handling.
+- [x] Follow-up hardening skips zero-size live marker samples while continuing
+  to drain already queued real packets before EOS.
 
 ## Public API Contract
 
@@ -329,6 +331,8 @@ If multiple signals are observed for one packet, v1 surfaces one `priorDiscontin
 - [x] `finalize(timeout:)` tests cover clean EOS, Bus ERROR, timeout, and sendEOS failure.
 - [x] `finalize(timeout:)` tests cover duplicate finalize calls, `stop()` before `finalize()`, `finalize()` before `stop()`, and iterator tail-drain coordination.
 - [x] Cancellation tests verify callback detachment and no leaked continuations.
+- [x] Zero-size live marker tests verify a queued real packet is still delivered
+  before EOS.
 - [x] Static safety tests verify caps operations stay outside `packetState.withLock`.
 - [x] Static safety tests verify callback registration context lifetime guards.
 - [x] Realtime `packets()` and file/decode `AudioFileSource.reliablePackets()` behavior remain unchanged.
@@ -367,6 +371,8 @@ If multiple signals are observed for one packet, v1 surfaces one `priorDiscontin
 - Caps comparison and caps refcount work are kept outside packet-state locks.
 - Callback registration context lifetime is explicitly protected across C retain callbacks.
 - Startup-timeout and duration-conversion edge cases are handled by follow-up hardening.
+- Zero-size live marker samples are marker-only and must not stall delivery of
+  an already queued real packet.
 
 ## Deferred Questions
 

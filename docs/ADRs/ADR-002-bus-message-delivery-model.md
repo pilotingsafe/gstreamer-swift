@@ -4,7 +4,7 @@
 **Date:** 2026-05-08
 **Accepted:** 2026-05-11
 **Implemented:** 2026-05-11
-**Updated:** 2026-05-11
+**Updated:** 2026-05-12
 **Related work:** `tasks/prd-bus-message-delivery-model.md`, `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`
 **Decision owner:** TBD
 **Scope:** `Bus.messages`, bus control-plane events, AsyncSequence design
@@ -17,11 +17,15 @@ Should bus messages gain a pull-based sequence API to make delivery and backpres
 
 `Bus.messages(filter:)` returns `AsyncStream<BusMessage>` and internally uses a detached task to poll GStreamer bus messages. The current implementation polls with `swift_gst_bus_timed_pop_filtered`, delivers parsed messages through the stream continuation, and finishes the stream after EOS or cancellation.
 
-The safety branch intentionally does **not** introduce a dropping bounded policy for bus messages, because bus messages are control-plane events. Errors, EOS, state changes, warnings, clock, and latency notifications may matter when callers choose to observe them, and should not be silently dropped by a realtime media buffering policy.
+`Bus.messageSequence(filter:)` is the newer single-drainer path. It uses a
+private GStreamer bus watch on a private GLib context and native thread. The
+watch parses matching messages synchronously and stores only parsed
+`BusMessage` values in a bounded buffer currently capped at 256 messages.
 
 ## Problem
 
-The current `AsyncStream { ... }` initializer uses Swift's default unbounded buffering policy. That means the Swift stream buffering policy does **not** silently drop yielded bus messages by default.
+The legacy `AsyncStream { ... }` initializer does not provide an explicit
+package-level buffer cap.
 
 The real risks are different:
 
@@ -29,13 +33,16 @@ The real risks are different:
 - The detached producer keeps draining the underlying `GstBus` even when no caller is currently awaiting `next()`, which can steal messages from other potential bus consumers.
 - Cancellation is only observed between polling iterations, so worst-case cancellation latency is bounded by the active pop timeout plus scheduling delay.
 
-Keeping the current `AsyncStream` avoids source-breaking return type changes, but it leaves backpressure and ownership semantics less precise than a pull-based sequence.
+Keeping the current `AsyncStream` avoids source-breaking return type changes,
+but it leaves ownership semantics less precise than the watch-backed
+`messageSequence(filter:)` path.
 
 There is a separate filter semantics issue. `GstBus` itself can be drained without a C-side filter via `gst_bus_pop` / `gst_bus_timed_pop`. However, an implementation that chooses `gst_bus_timed_pop_filtered` trades simplicity for a sharper behavior: GStreamer discards messages that do not match the mask while searching for a matching message. A pull-based Swift sequence can remove the Swift-side producer buffer, but it does not by itself change that filtered-pop behavior.
 
 ## Goals
 
-- Avoid introducing a Swift-side dropping policy for bus control-plane messages.
+- Keep any overflow policy explicit and scoped to the watch-backed
+  `messageSequence(filter:)` parsed-message buffer.
 - Preserve source compatibility in the current release.
 - Provide a future pull-based API (`Bus.messageSequence(filter:)`) with clearer backpressure and ownership semantics than the default `AsyncStream` path alone.
 - Document filter and single-consumer semantics accurately.
@@ -44,7 +51,7 @@ There is a separate filter semantics issue. `GstBus` itself can be drained witho
 ## Non-Goals
 
 - Do not change the current safety branch.
-- Do not add a dropping bounded policy to `Bus.messages`.
+- Do not change the legacy `Bus.messages` buffering contract in this ADR.
 - Do not replace `Bus.messages()` immediately.
 - Do not require a GLib main loop as part of this decision.
 - Do not fix existing multi-consumer bus competition in this ADR.
@@ -167,6 +174,14 @@ Locked-in behavior for `Bus.messageSequence(filter:)` / `Bus.Messages`:
   watch on a private GLib main context and native thread. Creating an iterator
   can drain the bus and buffer matching `BusMessage` values before the consumer
   awaits `next()`.
+- **Bounded parsed buffer.** Messages received before a consumer awaits
+  `next()` are buffered as parsed `BusMessage` values, not raw `GstMessage`
+  pointers. The maximum buffered count is currently 256 messages.
+- **Best-effort overflow.** ERROR and EOS are critical. Overflow drops older
+  noncritical queued messages first. If the buffer is full of critical
+  messages, an incoming noncritical message is discarded; an incoming critical
+  message evicts the oldest critical message so the newest critical event stays
+  observable.
 - **Errors remain values.** Bus ERROR posts continue to surface as `BusMessage.error(message:debug:)` rather than throwing from `AsyncIteratorProtocol.next()`.
 - **No automatic termination on `.eos`.** Unlike `Bus.messages(filter:)`, which finishes the `AsyncStream` after delivering EOS, the pull-based iterator should keep polling until the consuming task is cancelled or the caller breaks out of iteration.
 - **Element message fields are modeled.** `GST_MESSAGE_ELEMENT` messages keep
@@ -233,6 +248,9 @@ The new pull-based sequence should document:
 - It does not use a Swift `AsyncStream` producer buffer.
 - It starts a private bus watch when an iterator is created and may buffer
   matching values before `next()` is awaited.
+- The buffer is currently capped at 256 parsed messages and uses best-effort
+  overflow handling that prefers critical ERROR/EOS messages over older
+  noncritical messages.
 - It stops a cancelled pending `next()` by removing that waiter and returning
   `nil`; cancelling one waiter does not stop the shared pump for copied
   iterators.
@@ -269,6 +287,8 @@ Known existing behavior:
 - [x] Element messages preserve available structure fields.
 - [x] No Swift `AsyncStream` buffering is used in the pull-based path.
 - [x] The pull-based path uses the private watch-backed implementation rather than blocking timed pop.
+- [x] The watch-backed path bounds parsed-message buffering and keeps later
+  ERROR/EOS messages observable on a best-effort basis during overflow.
 - [x] Bus watch callback context lifetime is protected through registration.
 - [x] Existing `Bus.messages()` tests continue to pass.
 - [x] Convenience APIs remain source-compatible.

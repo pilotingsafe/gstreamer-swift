@@ -557,7 +557,7 @@ struct ReliablePacketStartupTimeoutTests {
         let sinkName = "reliable_sink"
         let source = try AudioSource.file(path: fixture.path)
             .withOpusEncoding(bitrate: 64_000)
-            ._withReliablePacketStartupTimeoutNanoseconds(25_000_000)
+            ._withReliablePacketStartupTimeoutNanoseconds(1_000_000_000)
             .withReliablePacketCandidateDescriptionsForTesting(
                 [
                     Self.neverProducesCandidateDescription(sinkName: sinkName),
@@ -716,6 +716,40 @@ struct ReliablePacketZeroLengthMarkerTests {
         #expect(trace.reachedCleanEOS)
         #expect(candidateStarts.value == 1, "Expected the custom appsrc candidate to satisfy iteration without fallback")
         try await Self.expectDriverCompletedWithoutError(driver)
+    }
+
+    @Test("Repeated pre-first zero-length samples time out instead of spinning")
+    func repeatedPreFirstZeroLengthSamplesTimeOutInsteadOfSpinning() async throws {
+        let fixture = try Self.makePlaceholderFile()
+        let driver = ReliablePacketZeroLengthFloodDriverProbe(
+            sourceName: Self.sourceName,
+            sinkName: Self.sinkName
+        )
+        let source = try AudioSource.file(path: fixture.path)
+            .withEncoding(.raw)
+            ._withReliablePacketStartupTimeoutNanoseconds(20_000_000)
+            .withReliablePacketCandidateDescriptionsForTesting(
+                [Self.appsrcCandidateDescription()],
+                sinkName: Self.sinkName
+            )
+            .withReliablePacketAfterCandidatePlayForTesting { pipeline, sinkName in
+                driver.start(pipeline: pipeline, sinkName: sinkName)
+            }
+            .withReliablePacketOnCleanupForTesting {
+                driver.requestCancel()
+            }
+            .build()
+        defer {
+            driver.requestCancel()
+        }
+
+        let error = try #require(await ReliablePacketsTests.captureAsyncError {
+            try await ReliablePacketsTests.withTimeout(.seconds(1)) {
+                _ = try await ReliablePacketsTests.collectTrace(source.reliablePackets(), limit: 1)
+            }
+        })
+
+        ReliablePacketsTests.expectStartupTimeoutError(error)
     }
 
     private static func makeSource(
@@ -1176,6 +1210,34 @@ extension ReliablePacketsTests {
         return await condition()
     }
 
+    static func withTimeout<T: Sendable>(
+        _ timeout: Duration,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let resultBox = ReliablePacketAsyncResultBox<T>()
+        let task = Task {
+            do {
+                let value = try await operation()
+                await resultBox.complete(.success(value))
+            } catch {
+                await resultBox.complete(.failure(error))
+            }
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+
+        while clock.now < deadline {
+            if let result = await resultBox.result {
+                task.cancel()
+                return try result.get()
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        task.cancel()
+        throw ReliablePacketTimeoutError(timeout: timeout)
+    }
+
     #if canImport(Darwin)
     static func measurePeakResidentSet<T: Sendable>(
         _ body: @escaping @Sendable () async throws -> T
@@ -1403,6 +1465,29 @@ struct PacketPoint: Equatable, Sendable {
     }
 }
 
+private struct ReliablePacketTimeoutError: Error, Sendable, CustomStringConvertible {
+    let timeout: Duration
+
+    var description: String {
+        "Timed out after \(timeout)"
+    }
+}
+
+private actor ReliablePacketAsyncResultBox<T: Sendable> {
+    private var storage: Result<T, Error>?
+
+    var result: Result<T, Error>? {
+        storage
+    }
+
+    func complete(_ result: Result<T, Error>) {
+        guard storage == nil else {
+            return
+        }
+        storage = result
+    }
+}
+
 private struct ReliablePacketAppSourcePush: Sendable {
     var payload: [UInt8]
     var pts: UInt64
@@ -1464,6 +1549,81 @@ private actor ReliablePacketAppSourceDriverProbe {
     }
 
     private func complete(_ result: Result<Void, ReliablePacketAppSourceDriverError>) {
+        guard storage == nil else {
+            return
+        }
+        storage = result
+    }
+}
+
+private actor ReliablePacketZeroLengthFloodDriverProbe {
+    private let sourceName: String
+    private let sinkName: String
+    private var task: Task<Void, Never>?
+    private var storage: Result<Int, ReliablePacketAppSourceDriverError>?
+
+    var result: Result<Int, ReliablePacketAppSourceDriverError>? {
+        storage
+    }
+
+    init(sourceName: String, sinkName: String) {
+        self.sourceName = sourceName
+        self.sinkName = sinkName
+    }
+
+    nonisolated func start(pipeline: Pipeline, sinkName actualSinkName: String) {
+        Task {
+            await self.startIsolated(pipeline: pipeline, sinkName: actualSinkName)
+        }
+    }
+
+    nonisolated func requestCancel() {
+        Task {
+            await self.cancelPushes()
+        }
+    }
+
+    private func startIsolated(pipeline: Pipeline, sinkName actualSinkName: String) {
+        guard task == nil else {
+            return
+        }
+
+        let expectedSourceName = sourceName
+        let expectedSinkName = sinkName
+        task = Task.detached { [expectedSourceName, expectedSinkName] in
+            var pushedSamples = 0
+            do {
+                guard actualSinkName == expectedSinkName else {
+                    throw ReliablePacketAppSourceDriverError(
+                        "Expected sink \(expectedSinkName), got \(actualSinkName)"
+                    )
+                }
+
+                let source = try pipeline.appSource(named: expectedSourceName)
+                while !Task.isCancelled {
+                    for _ in 0..<512 {
+                        try Task.checkCancellation()
+                        try source.push(data: [], pts: UInt64(pushedSamples))
+                        pushedSamples += 1
+                    }
+                    await Task.yield()
+                }
+                await self.complete(.success(pushedSamples))
+            } catch is CancellationError {
+                await self.complete(.success(pushedSamples))
+            } catch let error as ReliablePacketAppSourceDriverError {
+                await self.complete(.failure(error))
+            } catch {
+                await self.complete(.failure(ReliablePacketAppSourceDriverError(error)))
+            }
+        }
+    }
+
+    private func cancelPushes() {
+        task?.cancel()
+    }
+
+    private func complete(_ result: Result<Int, ReliablePacketAppSourceDriverError>) {
         guard storage == nil else {
             return
         }
