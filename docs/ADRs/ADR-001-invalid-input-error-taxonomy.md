@@ -1,11 +1,9 @@
 # ADR-001: Invalid Input Error Taxonomy for AppSource and Future APIs
 
-**Status:** Accepted, Implemented, Updated
+**Status:** Accepted and implemented
 **Date:** 2026-05-08
 **Accepted:** 2026-05-08
-**Implemented:** 2026-05-08
-**Updated:** 2026-05-11
-**Related work:** `tasks/prd-invalid-argument-error-taxonomy.md`, `tasks/prd-gstreamer-bridge-safety-fixes.md`
+**Related work:** `GStreamerBridgeSafetyandReliabilityFixes`
 **Decision owner:** TBD
 **Scope:** Public error taxonomy, `GStreamerError`, invalid user input handling
 
@@ -280,12 +278,12 @@ If Option B is chosen instead, collapse the `parameter:reason:` pair into a sing
 
 ## Tests Required
 
-- [x] Zero-length `[UInt8]`, `Span<UInt8>`, and `RawSpan` pushes remain valid.
-- [x] `Buffer(data: [])` remains valid.
-- [x] `push(bytes:count:)` with `count < 0` throws the new invalid argument error.
-- [x] Positive-length push paths with a nil or missing payload pointer throw the new invalid argument error.
-- [x] Positive-length pushes preserve existing timestamp and push behavior.
-- [x] Existing `bufferMapFailed` tests still cover true map/allocation failures where applicable.
+- Zero-length `[UInt8]`, `Span<UInt8>`, and `RawSpan` pushes remain valid.
+- `Buffer(data: [])` remains valid.
+- `push(bytes:count:)` with `count < 0` throws the new invalid argument error.
+- Positive-length push paths with a nil or missing payload pointer throw the new invalid argument error.
+- Positive-length pushes preserve existing timestamp and push behavior.
+- Existing `bufferMapFailed` tests still cover true map/allocation failures where applicable.
 
 ## Resolved Questions
 

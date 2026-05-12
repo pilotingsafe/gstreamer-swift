@@ -4,11 +4,9 @@
 
 ### Features
 
-- Added `Bus.messageSequence(filter:)`, a source-compatible async sequence for
-  callers that want one active bus drainer without blocking Swift concurrency
-  threads. The sequence now uses a private GStreamer bus watch; creating an
-  iterator can drain and buffer matching `BusMessage` values before `next()` is
-  awaited. Existing
+- Added `Bus.messageSequence(filter:)`, a pull-based async sequence for callers
+  that want demand-driven bus polling without the detached producer and
+  `AsyncStream` buffer used by `Bus.messages(filter:)`. Existing
   `Bus.messages(filter:)`, `errors()`, `warnings()`, `stateChanges()`, and
   `waitForEOS()` behavior is unchanged. `messageSequence(filter:)` defaults to
   `.all`, which can expose more Swift-modeled message kinds than the

@@ -1,11 +1,9 @@
 # RFC-002: Live-Source Reliable Packet Delivery Contract
 
-**Status:** Accepted, Implemented, Updated
+**Status:** Accepted
 **Date:** 2026-05-08
 **Accepted:** 2026-05-10
-**Implemented:** 2026-05-11
-**Updated:** 2026-05-11
-**Related work:** `RFC-001-realtime-vs-archival-packet-delivery`, `tasks/prd-live-source-reliable-delivery.md`, `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`
+**Related work:** `RFC-001-realtime-vs-archival-packet-delivery`, `tasks/prd-live-source-reliable-delivery.md`
 **Decision owner:** TBD
 **Scope:** Encoded live audio reliable delivery, upstream queue policy, discontinuity reporting, EOS finalization
 
@@ -82,19 +80,6 @@ The accepted design is:
 - `VideoSource` reliable delivery, raw reliable buffers, branch/fan-out policies, and recording convenience APIs are deferred.
 
 This keeps the Swift API thin over GStreamer primitives and avoids a parallel policy vocabulary.
-
-## Implementation Status
-
-- [x] RFC accepted for encoded live `AudioSource` reliable delivery.
-- [x] `AudioSourceBuilder.withReliableDelivery(leaky:maxBuffers:maxBytes:maxTime:)` implemented with `QueueLeaky` and explicit bounds.
-- [x] `AudioSource.reliablePackets()` implemented for encoded live audio and guarded by builder opt-in.
-- [x] `ReliablePacket<Buffer>` and `Discontinuity` implemented with the accepted timestamp and discontinuity semantics.
-- [x] `AudioSource.finalize(timeout:)` implemented as the graceful EOS-drain path.
-- [x] Reliable live appsink remains bounded to `max-buffers=1`.
-- [x] Realtime `packets()` and raw `buffers()` behavior remains unchanged.
-- [x] Follow-up hardening keeps caps equality/refcount work outside `packetState.withLock`.
-- [x] Follow-up hardening protects callback context lifetime with `withExtendedLifetime(context)`.
-- [x] Follow-up hardening fixes callback cleanup rollback, startup-timeout races, and duration conversion overflow handling.
 
 ## Public API Contract
 
@@ -310,44 +295,40 @@ If multiple signals are observed for one packet, v1 surfaces one `priorDiscontin
 - Add shim support for `gst_buffer_get_flags` and Swift helpers for GAP/DISCONT checks.
 - Add a Bus EOS/ERROR timeout helper, public or internal, for `finalize(timeout:)`; implement it by consuming `Bus.messages(filter: [.eos, .error])` with timeout cancellation rather than blocking a Swift executor thread.
 - Negative `Duration` validation must happen before nanosecond conversion. Prefer reusing or lifting the existing reliable-packet duration conversion pattern rather than duplicating unchecked conversions.
-- Callback registration sites that pass a local Swift context through `passUnretained` must keep that context alive through the C registration call.
-- Caps refcount and equality operations for discontinuity detection must not run while holding `packetState.withLock`.
 - Deterministic tests should use synthetic live pipelines or test hooks; required CI tests must not depend on physical microphone or webcam hardware.
 - Codec-specific tests should skip only when the required encoder plugin is unavailable and should report the skipped plugin explicitly.
 
 ## Tests Required
 
-- [x] Static API tests verify no parallel public queue-policy enum is added.
-- [x] Builder validation rejects raw reliable mode, negative `maxTime`, and effectively unbounded reliable bounds.
-- [x] Pipeline string tests verify queue `leaky` and `max-size-*` mapping plus reliable appsink `max-buffers=1`.
-- [x] Synthetic live nominal flow yields packets with `priorDiscontinuity == nil`.
-- [x] Synthetic GAP, DISCONT, caps-change, and PTS-delta cases produce the expected `Discontinuity.Kind`.
-- [x] Caps-change tests use structured caps equality semantics, not string equality.
-- [x] Discontinuity duration tests verify gap duration, not prior-packet-plus-gap duration.
-- [x] `droppedCount` tests verify v1 returns `nil`.
-- [x] Slow-consumer tests cover `.downstream` and `.none` policies without asserting exact drop counts.
-- [x] `finalize(timeout:)` tests cover clean EOS, Bus ERROR, timeout, and sendEOS failure.
-- [x] `finalize(timeout:)` tests cover duplicate finalize calls, `stop()` before `finalize()`, `finalize()` before `stop()`, and iterator tail-drain coordination.
-- [x] Cancellation tests verify callback detachment and no leaked continuations.
-- [x] Static safety tests verify caps operations stay outside `packetState.withLock`.
-- [x] Static safety tests verify callback registration context lifetime guards.
-- [x] Realtime `packets()` and file/decode `AudioFileSource.reliablePackets()` behavior remain unchanged.
+- Static API tests verify no parallel public queue-policy enum is added.
+- Builder validation rejects raw reliable mode, negative `maxTime`, and effectively unbounded reliable bounds.
+- Pipeline string tests verify queue `leaky` and `max-size-*` mapping plus reliable appsink `max-buffers=1`.
+- Synthetic live nominal flow yields packets with `priorDiscontinuity == nil`.
+- Synthetic GAP, DISCONT, caps-change, and PTS-delta cases produce the expected `Discontinuity.Kind`.
+- Caps-change tests use structured caps equality semantics, not string equality.
+- Discontinuity duration tests verify gap duration, not prior-packet-plus-gap duration.
+- `droppedCount` tests verify v1 returns `nil`.
+- Slow-consumer tests cover `.downstream` and `.none` policies without asserting exact drop counts.
+- `finalize(timeout:)` tests cover clean EOS, Bus ERROR, timeout, and sendEOS failure.
+- `finalize(timeout:)` tests cover duplicate finalize calls, `stop()` before `finalize()`, `finalize()` before `stop()`, and iterator tail-drain coordination.
+- Cancellation tests verify callback detachment and no leaked continuations.
+- Realtime `packets()` and file/decode `AudioFileSource.reliablePackets()` behavior remain unchanged.
 
 ## Documentation Required
 
-- [x] `withReliableDelivery(...)` docs describe wall-clock consequences of each `QueueLeaky` policy.
-- [x] `withReliableDelivery(...)` docs explain why `.none` is the default and warn that slow consumers can cause xruns or device-level loss outside GStreamer queue observability.
-- [x] `reliablePackets()` docs for live sources state the encoded-audio-only scope and the builder opt-in requirement.
-- [x] `finalize(timeout:)` docs explain why archival live callers should prefer it over immediate `stop()`, and define how `stop()` and `finalize()` interact.
-- [x] Documentation states that raw reliable live buffers, VideoSource reliable delivery, fan-out, and recording convenience APIs are future work.
-- [x] Realtime monitoring examples continue to prefer `packets()`.
+- `withReliableDelivery(...)` docs must describe wall-clock consequences of each `QueueLeaky` policy.
+- `withReliableDelivery(...)` docs must explain why `.none` is the default and warn that slow consumers can cause xruns or device-level loss outside GStreamer queue observability.
+- `reliablePackets()` docs for live sources must state the encoded-audio-only scope and the builder opt-in requirement.
+- `finalize(timeout:)` docs must explain why archival live callers should prefer it over immediate `stop()`, and must define how `stop()` and `finalize()` interact.
+- Documentation must state that raw reliable live buffers, VideoSource reliable delivery, fan-out, and recording convenience APIs are future work.
+- Realtime monitoring examples must continue to prefer `packets()`.
 
 ## Migration Plan
 
-1. [x] Update this RFC to accepted GStreamer-aligned terminology and contracts.
-2. [x] Implement the encoded AudioSource reliable delivery PRD.
-3. [x] Keep realtime `packets()` and raw `buffers()` unchanged.
-4. [ ] Add higher-level recording, VideoSource reliable delivery, raw reliable buffers, and tee/fan-out policies in later RFCs/PRDs.
+1. Update this RFC to accepted GStreamer-aligned terminology and contracts.
+2. Implement the encoded AudioSource reliable delivery PRD.
+3. Keep realtime `packets()` and raw `buffers()` unchanged.
+4. Add higher-level recording, VideoSource reliable delivery, raw reliable buffers, and tee/fan-out policies in later RFCs/PRDs.
 
 ## Resolved Decisions
 
@@ -364,9 +345,6 @@ If multiple signals are observed for one packet, v1 surfaces one `priorDiscontin
 - `stop()` remains immediate; `finalize(timeout:)` is the reliable graceful shutdown path.
 - Realtime `packets()` and raw `buffers()` defaults remain unchanged.
 - No public VideoSource reliable API is added in this phase.
-- Caps comparison and caps refcount work are kept outside packet-state locks.
-- Callback registration context lifetime is explicitly protected across C retain callbacks.
-- Startup-timeout and duration-conversion edge cases are handled by follow-up hardening.
 
 ## Deferred Questions
 

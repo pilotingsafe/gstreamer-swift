@@ -2,11 +2,11 @@
 
 ## Introduction/Overview
 
-This PRD implemented `ADR-002: Bus Message Delivery Model`. The feature added a source-compatible bus message API so callers can consume GStreamer bus messages without the Swift-side detached producer and unbounded `AsyncStream` buffer used by `Bus.messages(filter:)`.
+This PRD implements `ADR-002: Bus Message Delivery Model`. The feature adds a source-compatible, pull-based bus message API so callers can consume GStreamer bus messages without the Swift-side detached producer and unbounded `AsyncStream` buffer used by `Bus.messages(filter:)`.
 
-The original v1 implementation was intentionally close to the existing GStreamer C API behavior and used C-side filtered pop semantics. Follow-up P3 work in `tasks/prd-live-caps-bus-watch-concurrency-fixes.md` replaced that blocking timed-pop path with a private GStreamer bus watch. `Bus.messageSequence(filter:)` remains a destructive single-owner bus consumer and still does not introduce fan-out, message replay, a dispatcher, or multi-observer ownership.
+The v1 implementation is intentionally close to the existing GStreamer C API behavior: `Bus.messageSequence(filter:)` destructively drains the underlying `GstBus` with C-side filtered pop semantics. It does not introduce fan-out, message replay, a dispatcher, or multi-observer ownership.
 
-ADR-002 is accepted and implemented. This PRD records the original ADR-002 decisions and the later watch-backed correction: default filter is existing `Bus.Filter.all`, parsing remains non-public, element message structure fields are populated, and the current `Bus.Messages` iterator no longer calls blocking timed-pop APIs from async code.
+ADR-002 is accepted and implemented. This PRD records ADR-002's v1 implementation decisions: default filter is existing `Bus.Filter.all`, polling uses `swift_gst_bus_timed_pop_filtered`, the poll timeout is 100 ms, and parsing remains non-public.
 
 ## Status
 
@@ -14,34 +14,33 @@ Last updated: 2026-05-11.
 
 - PRD: complete for ADR-002 v1 implementation.
 - ADR: accepted and implemented.
-- Implementation: completed with `Bus.messageSequence(filter:)`, `Bus.Messages`, runtime tests, static API checks, README guidance, and CHANGELOG notes. Updated by `tasks/prd-live-caps-bus-watch-concurrency-fixes.md` to use a private bus watch instead of blocking timed pop, protect bus watch callback context lifetime, and populate `BusMessage.element` fields from `GstStructure`.
-- Related work: `docs/ADRs/ADR-002-bus-message-delivery-model.md`, `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`.
+- Implementation: completed with `Bus.messageSequence(filter:)`, `Bus.Messages`, runtime tests, static API checks, README guidance, and CHANGELOG notes.
+- Related work: `docs/ADRs/ADR-002-bus-message-delivery-model.md`.
 
 ## Goals
 
-- Add `Bus.messageSequence(filter:)` as an `AsyncSequence` API alongside existing `Bus.messages(filter:)`.
-- Remove Swift-side producer buffering from the new path: no `AsyncStream` and no detached Swift producer. The current implementation uses a private bus watch that may drain and buffer matching values while an iterator is active.
+- Add `Bus.messageSequence(filter:)` as a pull-based `AsyncSequence` API alongside existing `Bus.messages(filter:)`.
+- Remove Swift-side producer buffering from the new path: no `AsyncStream` and no detached producer draining ahead of consumer demand.
 - Preserve source compatibility for `Bus.messages(filter:)`, `Bus.errors()`, `Bus.warnings()`, `Bus.stateChanges()`, and `Bus.waitForEOS()`.
 - Keep bus ERROR messages as `BusMessage.error(message:debug:)` values rather than thrown errors.
 - Deliver EOS as `BusMessage.eos` without automatically terminating the pull-based iterator.
-- Document the destructive queue behavior and the current watch-backed filtering semantics.
-- Preserve available `GST_MESSAGE_ELEMENT` structure fields in `BusMessage.element(name:fields:)`.
+- Align v1 filtering with C-side `gst_bus_timed_pop_filtered` semantics and document the destructive queue behavior.
 - Cover the API with runtime tests, static surface checks, DocC, README examples, and CHANGELOG notes.
 
 ## Resolved ADR-002 v1 Decisions
 
 - **Default filter:** `Bus.messageSequence(filter:)` defaults to existing `Bus.Filter.all`.
 - **Meaning of `.all`:** `.all` is the broadest existing Swift `Bus.Filter` set for representable `BusMessage` cases. It is not `GST_MESSAGE_ANY`, and it is not equivalent to unfiltered `gst_bus_timed_pop`.
-- **Filtering implementation:** original v1 used `swift_gst_bus_timed_pop_filtered`; current implementation uses a private GStreamer bus watch and filters parsed `BusMessage` values in Swift.
-- **Polling interval:** original v1 polling used a 100 ms interval. Current `Bus.Messages` no longer uses timed-pop polling in async `next()`.
-- **Parsing:** reuse the existing message parsing logic without adding public parser API. `GST_MESSAGE_ELEMENT` parsing now includes available structure fields in the existing `[String: String]` payload.
+- **Filtering implementation:** v1 uses `swift_gst_bus_timed_pop_filtered` with the requested filter.
+- **Polling interval:** v1 uses a 100 ms timed pop, matching the current `Bus.messages(filter:)` poll interval and ADR sketch.
+- **Parsing:** reuse the existing message parsing logic without adding public parser API. If access control must change, use the narrowest non-public access level that works.
 - **Fan-out:** bus fan-out, unfiltered retention, observer registries, and unified bus owners remain future work.
 
 ## User Stories
 
 ### US-001: Add Pull-Based Bus Message Sequence
 
-**Description:** As a library user, I want `Bus.messageSequence(filter:)` so that I can consume bus messages with one active bus owner without a Swift-side detached producer or blocking async `next()` call.
+**Description:** As a library user, I want `Bus.messageSequence(filter:)` so that I can consume bus messages on demand without a Swift-side producer draining ahead of me.
 
 **Acceptance Criteria:**
 - [x] Add `public struct Bus.Messages: AsyncSequence, Sendable`.
@@ -51,14 +50,15 @@ Last updated: 2026-05-11.
 - [x] `Bus.messages(filter:)` remains public and still returns `AsyncStream<BusMessage>`.
 - [x] Typecheck passes.
 
-### US-002: Implement Iterator Without Swift-Side Stream Producer
+### US-002: Implement Pull Iterator With C-Side Filtered Pop
 
-**Description:** As an implementer, I need the iterator to behave like a low-level destructive bus consumer without using `AsyncStream` or a detached Swift producer.
+**Description:** As an implementer, I need the new iterator to align with GStreamer filtered-pop behavior so that it behaves like a low-level destructive bus consumer.
 
 **Acceptance Criteria:**
-- [x] `AsyncIterator.next()` does not call `swift_gst_bus_timed_pop_filtered`.
-- [x] The implementation uses a private GStreamer bus watch and filters against the caller-provided `Filter`.
-- [x] Borrowed watch `GstMessage` values are parsed synchronously and are not stored or unreferenced by Swift.
+- [x] `AsyncIterator.next()` polls with `swift_gst_bus_timed_pop_filtered`.
+- [x] The poll timeout is exactly `100_000_000` nanoseconds (100 ms).
+- [x] The iterator uses the caller-provided `filter.gstMessageType`.
+- [x] Each returned `GstMessage` is unreferenced exactly once after parsing.
 - [x] If parsing returns `nil`, iteration continues rather than terminating.
 - [x] The `messageSequence` implementation path does not construct `AsyncStream`.
 - [x] Typecheck passes.
@@ -77,14 +77,14 @@ Last updated: 2026-05-11.
 
 ### US-004: Handle Cancellation Predictably
 
-**Description:** As an implementer, I need cancelled iteration to remove its pending waiter promptly so that tasks can shut down cleanly.
+**Description:** As an implementer, I need cancelled iteration to stop polling within a bounded time so that tasks can shut down cleanly.
 
 **Acceptance Criteria:**
-- [x] `next()` checks `Task.isCancelled` before registering a waiter and handles cancellation while suspended.
+- [x] `next()` checks `Task.isCancelled` between timed pop attempts.
 - [x] After cancellation, `next()` returns `nil`.
-- [x] Cancellation latency is not bounded by a timed-pop interval in the current watch-backed implementation.
+- [x] Cancellation latency is bounded by one 100 ms poll interval plus scheduling delay.
 - [x] Tests use a concrete upper bound of 500 ms unless the existing test harness requires a different bound.
-- [x] No `AsyncStream` or detached Swift producer exists on the `messageSequence` path.
+- [x] No continuation or detached producer exists on the `messageSequence` path.
 - [x] Typecheck passes.
 
 ### US-005: Reuse Message Parsing Without Public Parser API
@@ -96,8 +96,6 @@ Last updated: 2026-05-11.
 - [x] No public `parseMessage` API is added.
 - [x] If `parseMessage(_:)` access changes, it remains non-public.
 - [x] Existing parsed cases such as `.error`, `.warning`, `.stateChanged`, `.latency`, and `.clockLost` keep their current meanings.
-- [x] `.element(name:fields:)` fills available `GstStructure` fields instead of always returning `[:]`.
-- [x] String structure fields are preserved without serialized quote artifacts.
 - [x] Existing `BusMessageTests` continue to pass.
 - [x] Typecheck passes.
 
@@ -119,7 +117,7 @@ Last updated: 2026-05-11.
 **Description:** As a library user, I need docs to explain that `messageSequence(filter:)` is a destructive bus consumer and that `.all` is not raw unfiltered `GstBus` access.
 
 **Acceptance Criteria:**
-- [x] DocC for `messageSequence(filter:)` states that the active watch consumes delivered bus messages and ignores messages outside the Swift filter or not modeled as `BusMessage`.
+- [x] DocC for `messageSequence(filter:)` states that C-side filtered pop can discard messages outside the requested filter while searching.
 - [x] DocC states that `.all` means the broadest Swift-modeled `Bus.Filter` set, not `GST_MESSAGE_ANY`.
 - [x] DocC states that multiple bus consumers on the same `Bus` can compete for messages.
 - [x] DocC explains EOS non-termination and ERROR-as-value semantics.
@@ -148,7 +146,6 @@ Last updated: 2026-05-11.
 - [x] A state-change test receives at least one `.stateChanged` message.
 - [x] An EOS non-termination test receives `.eos`, requests another `next()` in a cancellable task, cancels it, and observes `nil` within the timeout.
 - [x] A cancellation-before-message test cancels an active iterator and observes `nil` within the timeout.
-- [x] An element-message test posts a marker structure and observes the marker field through `messageSequence(filter: [.element])`.
 - [x] Tests run under the suite's existing time limits.
 
 ### US-010: Add Static API Safety Tests
@@ -162,7 +159,6 @@ Last updated: 2026-05-11.
 - [x] Static tests verify the `messageSequence` implementation path does not construct `AsyncStream`.
 - [x] Static tests verify no new public parser API is added.
 - [x] Static tests verify `Bus.messages(filter:)` default and return type remain unchanged.
-- [x] Static tests verify the watch-backed path keeps callback context alive with `withExtendedLifetime(context)`.
 
 ## Functional Requirements
 
@@ -170,17 +166,16 @@ Last updated: 2026-05-11.
 - **FR-2:** The system must expose `Bus.messageSequence(filter: Filter = .all) -> Bus.Messages`.
 - **FR-3:** `Bus.Messages.AsyncIterator.next()` must be `async -> BusMessage?`, not throwing.
 - **FR-4:** `messageSequence(filter:)` must not use `AsyncStream` or a detached Swift producer.
-- **FR-5:** Creating an iterator may start a private bus watch that drains the underlying `GstBus` and buffers matching `BusMessage` values before `next()` is awaited.
-- **FR-6:** Current `Bus.Messages.AsyncIterator.next()` must not call blocking timed-pop APIs.
-- **FR-7:** Borrowed C `GstMessage` objects from the watch callback must not be stored or unreferenced by Swift.
+- **FR-5:** Each `next()` call must poll the underlying `GstBus` only on consumer demand.
+- **FR-6:** v1 must use `swift_gst_bus_timed_pop_filtered` with a 100 ms timeout.
+- **FR-7:** Returned C `GstMessage` objects must be unreferenced exactly once.
 - **FR-8:** `.error` bus messages must remain values.
 - **FR-9:** `.eos` must be delivered as a value and must not automatically terminate the sequence.
-- **FR-10:** Cancellation must remove only the cancelled pending waiter and cause that `next()` to return `nil` promptly without stopping the shared pump solely because one copied iterator call was cancelled.
+- **FR-10:** Cancellation must cause `next()` to return `nil` after at most one poll interval plus scheduling delay.
 - **FR-11:** The default `.all` filter must be documented as Swift-modeled `Bus.Filter.all`, not raw unfiltered `GstBus` access.
 - **FR-12:** `Bus.messages(filter:)`, `Bus.errors()`, `Bus.warnings()`, `Bus.stateChanges()`, and `Bus.waitForEOS()` must remain source compatible and behavior compatible.
 - **FR-13:** The implementation must not add `.controlPlaneCritical`, `.controlPlane`, or any other new public filter convenience in this PRD.
 - **FR-14:** The implementation must not add fan-out, replay, dispatcher, or observer-registry semantics.
-- **FR-15:** `BusMessage.element(name:fields:)` must include available `GstStructure` fields using the existing `[String: String]` representation.
 
 ## Non-Goals (Out of Scope)
 
@@ -191,7 +186,7 @@ Last updated: 2026-05-11.
 - **NG-5:** No GLib main-loop requirement.
 - **NG-6:** No public parser API.
 - **NG-7:** No new named control-plane filter constant.
-- **NG-8:** No promise to preserve messages outside the requested filter or outside the modeled `BusMessage` cases consumed by the active watch.
+- **NG-8:** No promise to preserve messages outside the requested filter when C-side filtered pop is used.
 - **NG-9:** No claim that `.all` is equivalent to `GST_MESSAGE_ANY` or unfiltered `gst_bus_timed_pop`.
 
 ## Design Considerations
@@ -209,24 +204,22 @@ Last updated: 2026-05-11.
 - Runtime tests are expected in a new or existing bus-focused test file under `Tests/SwiftGStreamerTests/`.
 - The iterator should be reviewed under Swift 6 concurrency rules. If `@concurrent` is needed to match existing sequence patterns, use the same style as other pull-based iterators in the package.
 - `parseMessage(_:)` currently lives inside `Bus`. Reuse it without making it public.
-- The watch-backed implementation consumes delivered bus messages and ignores nonmatching or unmodeled values after parsing; this is the current destructive-consumer behavior.
+- C-side filtered pop may discard non-matching messages while searching. This must be treated as intended v1 behavior, not a test failure.
 - Verification commands:
-  - `swiftly run swift build`
-  - `swiftly run swift test --filter BusMessage`
-  - `swiftly run swift test --filter APISafetyStaticTests`
-  - `swiftly run swift test`
-  - `swiftly run swift package generate-documentation --target GStreamer` if DocC tooling is available
+  - `swift build`
+  - `swift test --filter BusMessage`
+  - `swift test`
+  - `swift package generate-documentation --target GStreamer` if DocC tooling is available
 - If local GStreamer system dependencies or DocC tooling are unavailable, report skipped verification with the exact reason.
 
 ## Success Metrics
 
 - Public API checks confirm `Bus.messageSequence(filter: .all)` and `Bus.Messages` are present.
 - Runtime tests prove EOS, ERROR-as-value, state changes, EOS non-termination, and cancellation behavior.
-- Runtime tests prove element message structure fields are surfaced.
 - Static tests prove the new pull path does not use `AsyncStream`.
 - Existing `Bus.messages()` tests continue to pass without source changes.
 - Documentation clearly distinguishes `messageSequence(filter:)` from `messages(filter:)`.
-- `swiftly run swift build` and relevant bus tests pass in an environment with required GStreamer dependencies.
+- `swift build` and relevant bus tests pass in an environment with required GStreamer dependencies.
 
 ## Open Questions
 

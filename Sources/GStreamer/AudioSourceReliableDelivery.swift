@@ -496,16 +496,8 @@ internal final class LiveAudioReliablePacketCoordinator: @unchecked Sendable {
 }
 
 private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
-  private final class RetainedCaps: @unchecked Sendable {
+  private struct RetainedCaps: @unchecked Sendable {
     let pointer: UnsafeMutablePointer<GstCaps>
-
-    init(pointer: UnsafeMutablePointer<GstCaps>) {
-      self.pointer = pointer
-    }
-
-    deinit {
-      swift_gst_caps_unref(pointer)
-    }
   }
 
   private struct PacketState {
@@ -523,55 +515,6 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
     var priorDuration: UInt64?
     var previousCaps: RetainedCaps?
     var pendingDiscontinuity: Discontinuity?
-    var discontinuityVersion: UInt64 = 0
-
-    mutating func replacePreviousCaps(with caps: RetainedCaps?) -> RetainedCaps? {
-      let oldCaps = previousCaps
-      previousCaps = caps
-      discontinuityVersion &+= 1
-      return oldCaps
-    }
-
-    mutating func clearPreviousCaps() -> RetainedCaps? {
-      guard previousCaps != nil else {
-        return nil
-      }
-      return replacePreviousCaps(with: nil)
-    }
-
-    mutating func storePendingDiscontinuity(_ discontinuity: Discontinuity?) {
-      pendingDiscontinuity = discontinuity
-      discontinuityVersion &+= 1
-    }
-
-    mutating func clearPendingDiscontinuityAndSetPrior(
-      pts: UInt64?,
-      duration: UInt64?
-    ) {
-      pendingDiscontinuity = nil
-      priorPTS = pts
-      priorDuration = duration
-      discontinuityVersion &+= 1
-    }
-  }
-
-  private struct DiscontinuitySnapshot {
-    let previousCaps: RetainedCaps?
-    let priorPTS: UInt64?
-    let priorDuration: UInt64?
-    let pendingDiscontinuity: Discontinuity?
-    let discontinuityVersion: UInt64
-  }
-
-  private enum DiscontinuitySnapshotDecision {
-    case closed
-    case snapshot(DiscontinuitySnapshot)
-  }
-
-  private enum DiscontinuityApplyDecision {
-    case closed
-    case retry
-    case applied(Discontinuity?, oldPreviousCaps: RetainedCaps?)
   }
 
   private struct CallbackState {
@@ -579,19 +522,6 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
     var newSampleDisconnected = false
     var eosDisconnected = false
     var busDisconnected = false
-
-    mutating func markStartupRollbackNewSampleDisconnected(
-      eos: Bool = false,
-      bus: Bool = false
-    ) {
-      newSampleDisconnected = true
-      if eos {
-        eosDisconnected = true
-      }
-      if bus {
-        busDisconnected = true
-      }
-    }
   }
 
   private let pipeline: Pipeline
@@ -630,71 +560,63 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
     let contextPointer = Unmanaged.passUnretained(context).toOpaque()
     let appSink = UnsafeMutableRawPointer(sinkElement.element).assumingMemoryBound(to: GstAppSink.self)
 
-    try withExtendedLifetime(context) {
-      guard
-        let newSampleRegistration = swift_gst_app_sink_connect_new_sample(
-          appSink,
-          liveAudioReliableNewSampleCallback,
-          contextPointer,
-          liveAudioReliableRetainContext,
-          liveAudioReliableReleaseContext
-        )
-      else {
-        throw GStreamerError.busError(
-          "Failed to connect appsink new-sample callback",
-          source: "AudioSource.reliablePackets",
-          debug: nil
-        )
-      }
-      probeState.incrementNewSampleHandlerCount()
-
-      guard
-        let eosRegistration = swift_gst_app_sink_connect_eos(
-          appSink,
-          liveAudioReliableEOSCallback,
-          contextPointer,
-          liveAudioReliableRetainContext,
-          liveAudioReliableReleaseContext
-        )
-      else {
-        swift_gst_callback_registration_disconnect(newSampleRegistration)
-        probeState.decrementNewSampleHandlerCount()
-        callbackState.withLock {
-          $0.markStartupRollbackNewSampleDisconnected()
-        }
-        throw GStreamerError.busError(
-          "Failed to connect appsink eos callback",
-          source: "AudioSource.reliablePackets",
-          debug: nil
-        )
-      }
-
-      guard
-        let busRegistration = swift_gst_bus_connect_sync_message_observer(
-          bus._bus,
-          liveAudioReliableBusSyncMessageCallback,
-          contextPointer,
-          liveAudioReliableRetainContext,
-          liveAudioReliableReleaseContext
-        )
-      else {
-        swift_gst_callback_registration_disconnect(newSampleRegistration)
-        probeState.decrementNewSampleHandlerCount()
-        swift_gst_callback_registration_disconnect(eosRegistration)
-        callbackState.withLock {
-          $0.markStartupRollbackNewSampleDisconnected(eos: true)
-        }
-        throw GStreamerError.busError(
-          "Failed to connect bus sync-message observer",
-          source: "AudioSource.reliablePackets",
-          debug: nil
-        )
-      }
-
-      self.newSampleRegistration = newSampleRegistration
-      self.eosRegistration = eosRegistration
-      self.busRegistration = busRegistration
+    guard
+      let newSampleRegistration = swift_gst_app_sink_connect_new_sample(
+        appSink,
+        liveAudioReliableNewSampleCallback,
+        contextPointer,
+        liveAudioReliableRetainContext,
+        liveAudioReliableReleaseContext
+      )
+    else {
+      throw GStreamerError.busError(
+        "Failed to connect appsink new-sample callback",
+        source: "AudioSource.reliablePackets",
+        debug: nil
+      )
     }
+    probeState.incrementNewSampleHandlerCount()
+
+    guard
+      let eosRegistration = swift_gst_app_sink_connect_eos(
+        appSink,
+        liveAudioReliableEOSCallback,
+        contextPointer,
+        liveAudioReliableRetainContext,
+        liveAudioReliableReleaseContext
+      )
+    else {
+      swift_gst_callback_registration_disconnect(newSampleRegistration)
+      probeState.decrementNewSampleHandlerCount()
+      throw GStreamerError.busError(
+        "Failed to connect appsink eos callback",
+        source: "AudioSource.reliablePackets",
+        debug: nil
+      )
+    }
+
+    guard
+      let busRegistration = swift_gst_bus_connect_sync_message_observer(
+        bus._bus,
+        liveAudioReliableBusSyncMessageCallback,
+        contextPointer,
+        liveAudioReliableRetainContext,
+        liveAudioReliableReleaseContext
+      )
+    else {
+      swift_gst_callback_registration_disconnect(newSampleRegistration)
+      probeState.decrementNewSampleHandlerCount()
+      swift_gst_callback_registration_disconnect(eosRegistration)
+      throw GStreamerError.busError(
+        "Failed to connect bus sync-message observer",
+        source: "AudioSource.reliablePackets",
+        debug: nil
+      )
+    }
+
+    self.newSampleRegistration = newSampleRegistration
+    self.eosRegistration = eosRegistration
+    self.busRegistration = busRegistration
   }
 
   deinit {
@@ -846,10 +768,10 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
         duration: nil,
         droppedCount: nil
       )
-      state.storePendingDiscontinuity(Self.preferredDiscontinuity(
+      state.pendingDiscontinuity = Self.preferredDiscontinuity(
         state.pendingDiscontinuity,
         discontinuity
-      ))
+      )
     }
   }
 
@@ -1004,57 +926,27 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
     let hasDiscont = swift_gst_buffer_has_discont_flag(buffer) != 0
     let hasGap = swift_gst_buffer_has_gap_flag(buffer) != 0
 
-    while true {
-      let snapshotDecision = packetState.withLock { state -> DiscontinuitySnapshotDecision in
-        guard !state.cancelled, !state.stopped, !state.completed else {
-          return .closed
-        }
-        return .snapshot(
-          DiscontinuitySnapshot(
-            previousCaps: state.previousCaps,
-            priorPTS: state.priorPTS,
-            priorDuration: state.priorDuration,
-            pendingDiscontinuity: state.pendingDiscontinuity,
-            discontinuityVersion: state.discontinuityVersion
-          )
-        )
-      }
-
-      let snapshot: DiscontinuitySnapshot
-      switch snapshotDecision {
-      case .closed:
-        return nil
-      case .snapshot(let value):
-        snapshot = value
-      }
-
-      let priorPTS = snapshot.priorPTS
-      let priorDuration = snapshot.priorDuration
+    let result = packetState.withLock { state in
+      let priorPTS = state.priorPTS
+      let priorDuration = state.priorDuration
       let formatChanged: Bool
-      let nextPreviousCaps: RetainedCaps?
       if let caps {
-        if let previousCaps = snapshot.previousCaps {
-          if swift_gst_caps_is_equal(previousCaps.pointer, caps) == 0,
+        if let previousCaps = state.previousCaps {
+          if swift_gst_caps_is_equal(previousCaps.pointer, caps) == 0 {
             let retainedCaps = swift_gst_caps_ref(caps)
-          {
-            nextPreviousCaps = RetainedCaps(pointer: retainedCaps)
+            swift_gst_caps_unref(previousCaps.pointer)
+            state.previousCaps = RetainedCaps(pointer: retainedCaps!)
             formatChanged = true
           } else {
-            nextPreviousCaps = nil
             formatChanged = false
           }
-        } else if let retainedCaps = swift_gst_caps_ref(caps) {
-          nextPreviousCaps = RetainedCaps(pointer: retainedCaps)
-          formatChanged = false
         } else {
-          nextPreviousCaps = nil
+          state.previousCaps = swift_gst_caps_ref(caps).map { RetainedCaps(pointer: $0) }
           formatChanged = false
         }
       } else {
-        nextPreviousCaps = nil
         formatChanged = false
       }
-
       let gapDuration = Self.gapDuration(
         priorPTS: priorPTS,
         priorDuration: priorDuration,
@@ -1076,7 +968,6 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
         kind = nil
       }
 
-      let selectedDiscontinuity: Discontinuity?
       if isMarker {
         if let kind {
           let marker = Discontinuity(
@@ -1087,89 +978,82 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
             duration: nil,
             droppedCount: nil
           )
-          selectedDiscontinuity = Self.preferredDiscontinuity(
-            snapshot.pendingDiscontinuity,
+          state.pendingDiscontinuity = Self.preferredDiscontinuity(
+            state.pendingDiscontinuity,
             marker
           )
-        } else {
-          selectedDiscontinuity = snapshot.pendingDiscontinuity
         }
-      } else {
-        let currentDiscontinuity = kind.map {
-          Discontinuity(
-            kind: $0,
-            priorPTS: priorPTS,
-            priorDuration: priorDuration,
-            nextPTS: pts,
-            duration: gapDuration,
-            droppedCount: nil
-          )
-        }
-        selectedDiscontinuity = Self.preferredDiscontinuity(
-          snapshot.pendingDiscontinuity,
-          currentDiscontinuity
-        ).map { selected in
-          Discontinuity(
-            kind: selected.kind,
+        return (
+          kind: Optional<Discontinuity.Kind>.none,
+          priorPTS: priorPTS,
+          priorDuration: priorDuration,
+          nextPTS: pts,
+          gapDuration: gapDuration
+        )
+      }
+
+      let currentDiscontinuity = kind.map {
+        Discontinuity(
+          kind: $0,
+          priorPTS: priorPTS,
+          priorDuration: priorDuration,
+          nextPTS: pts,
+          duration: gapDuration,
+          droppedCount: nil
+        )
+      }
+      let selectedDiscontinuity = Self.preferredDiscontinuity(
+        state.pendingDiscontinuity,
+        currentDiscontinuity
+      ).map { selected in
+        Discontinuity(
+          kind: selected.kind,
+          priorPTS: selected.priorPTS,
+          priorDuration: selected.priorDuration,
+          nextPTS: pts,
+          duration: Self.gapDuration(
             priorPTS: selected.priorPTS,
             priorDuration: selected.priorDuration,
-            nextPTS: pts,
-            duration: Self.gapDuration(
-              priorPTS: selected.priorPTS,
-              priorDuration: selected.priorDuration,
-              nextPTS: pts
-            ),
-            droppedCount: nil
-          )
-        }
+            nextPTS: pts
+          ),
+          droppedCount: nil
+        )
       }
+      state.pendingDiscontinuity = nil
+      state.priorPTS = pts
+      state.priorDuration = duration
 
-      let applyDecision = packetState.withLock { state -> DiscontinuityApplyDecision in
-        guard !state.cancelled, !state.stopped, !state.completed else {
-          return .closed
-        }
-        let stateversion = state.discontinuityVersion
-        let snapshotversion = snapshot.discontinuityVersion
-        guard stateversion == snapshotversion else {
-          return .retry
-        }
-
-        let oldPreviousCaps: RetainedCaps?
-        if let nextPreviousCaps {
-          oldPreviousCaps = state.replacePreviousCaps(with: nextPreviousCaps)
-        } else {
-          oldPreviousCaps = nil
-        }
-
-        if isMarker {
-          state.storePendingDiscontinuity(selectedDiscontinuity)
-          return .applied(nil, oldPreviousCaps: oldPreviousCaps)
-        }
-
-        state.clearPendingDiscontinuityAndSetPrior(pts: pts, duration: duration)
-        return .applied(selectedDiscontinuity, oldPreviousCaps: oldPreviousCaps)
-      }
-
-      switch applyDecision {
-      case .closed:
-        return nil
-      case .retry:
-        continue
-      case .applied(let discontinuity, let oldPreviousCaps):
-        if let oldPreviousCaps {
-          withExtendedLifetime(oldPreviousCaps) {}
-        }
-        return discontinuity
-      }
+      return (
+        kind: selectedDiscontinuity?.kind,
+        priorPTS: selectedDiscontinuity?.priorPTS,
+        priorDuration: selectedDiscontinuity?.priorDuration,
+        nextPTS: selectedDiscontinuity?.nextPTS,
+        gapDuration: selectedDiscontinuity?.duration
+      )
     }
+
+    guard let kind = result.kind else {
+      return nil
+    }
+
+    return Discontinuity(
+      kind: kind,
+      priorPTS: result.priorPTS,
+      priorDuration: result.priorDuration,
+      nextPTS: result.nextPTS,
+      duration: result.gapDuration,
+      droppedCount: nil
+    )
   }
 
   private func releasePreviousCaps() {
     let caps = packetState.withLock { state -> RetainedCaps? in
-      state.clearPreviousCaps()
+      let caps = state.previousCaps
+      state.previousCaps = nil
+      return caps
     }
     if let caps {
-      withExtendedLifetime(caps) {}
+      swift_gst_caps_unref(caps.pointer)
     }
   }
 

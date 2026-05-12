@@ -8,12 +8,12 @@ ADR-001 is `Accepted and implemented`. This PRD tracks the API cleanup release w
 
 ## Status
 
-Last updated: 2026-05-11.
+Last updated: 2026-05-09.
 
 - Drafting: reviewed and revised.
 - Implementation: completed in the current API cleanup changes.
 - Release notes: added in `CHANGELOG.md`.
-- Verification: `swiftly run swift build`, `swiftly run swift test --filter AppSourceTests`, and `swiftly run swift test` passed; no repo lint tooling/config was found. After adding the Swift DocC plugin dependency, `swiftly run swift package generate-documentation --target GStreamer --warnings-as-errors` also runs and generates the documentation archive. The remaining console warnings are SwiftPM/pkg-config `-Wl,-rpath` warnings from the local GStreamer install, not DocC content warnings.
+- Verification: `swift build`, `swift test --filter AppSourceTests`, and `swift test` passed; no repo lint tooling/config was found. After adding the Swift DocC plugin dependency, `swift package generate-documentation --target GStreamer --warnings-as-errors` also runs and generates the documentation archive. The remaining console warnings are SwiftPM/pkg-config `-Wl,-rpath` warnings from the local GStreamer install, not DocC content warnings.
 - Related work: `docs/ADRs/ADR-001-invalid-input-error-taxonomy.md`.
 
 ## Goals
@@ -175,10 +175,10 @@ Last updated: 2026-05-11.
 - Primary runtime test changes are expected in `Tests/SwiftGStreamerTests/AppSourceTests.swift`.
 - Add static API safety coverage only if it is useful to enforce the new public API or DocC expectations.
 - Verification commands:
-  - `swiftly run swift build`
-  - `swiftly run swift test --filter AppSourceTests`
-  - `swiftly run swift test`
-  - `swiftly run swift package generate-documentation` if the DocC plugin/tooling is available
+  - `swift build`
+  - `swift test --filter AppSourceTests`
+  - `swift test`
+  - `swift package generate-documentation` if the DocC plugin/tooling is available
 - If GStreamer system dependencies or DocC tooling are unavailable, report skipped verification with the exact reason.
 
 ## Success Metrics
@@ -186,10 +186,10 @@ Last updated: 2026-05-11.
 - `rg "GStreamerError.bufferMapFailed" Sources/GStreamer/AppSource.swift` returns only nil unsafe-buffer `baseAddress` paths and nil `swift_gst_buffer_new_wrapped_full`.
 - Every AppSource validation test that previously expected `bufferMapFailed` now expects `invalidArgument` structurally.
 - `bufferMapFailed` documentation accurately covers retained public meanings across `AppSource`, `Buffer`, and `VideoFrame`.
-- `swiftly run swift build` and `swiftly run swift test` pass in an environment with required GStreamer system dependencies.
+- `swift build` and `swift test` pass in an environment with required GStreamer system dependencies.
 - DocC generation introduces zero new warnings when DocC tooling is available.
 
 ## Open Questions
 
-- **Release coordination with RFC-001:** Completed in the shared release notes for the reliability/API cleanup work.
+- **Release coordination with RFC-001:** If RFC-001 work lands in the same release, coordinate the `CHANGELOG.md` entries so downstream migration notes are not duplicated or contradictory.
 - **Coverage of low-level buffer failures:** Category 3 and Category 4 `bufferMapFailed` paths may be difficult to trigger deterministically; document any remaining coverage gap in the PR description rather than adding brittle tests.

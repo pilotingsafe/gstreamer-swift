@@ -1,11 +1,9 @@
 # RFC-001: Realtime vs Reliable Archival Encoded Packet Delivery
 
-**Status:** Accepted, Implemented, Updated
+**Status:** Accepted
 **Date:** 2026-05-08
 **Accepted:** 2026-05-08
-**Implemented:** 2026-05-11
-**Updated:** 2026-05-11
-**Related work:** `tasks/prd-reliable-packets-phase1.md`, `tasks/prd-live-source-reliable-delivery.md`, `docs/RFCs/RFC-002-live-source-reliable-delivery.md`
+**Related work:** `GStreamerBridgeSafetyandReliabilityFixes`
 **Decision owner:** TBD
 **Scope:** Encoded packet delivery, audio/video packet stream semantics, backpressure
 
@@ -219,14 +217,13 @@ For live sources such as `AudioSource.microphone()`, the producer is driven by h
 
 None of these are acceptable archival behavior for an indefinitely-running microphone. Therefore:
 
-- Phase 1 exposed `reliablePackets()` only on file/decode sources that can be backpressured end-to-end.
-- RFC-002 extends `reliablePackets()` to encoded live audio sources only when callers explicitly configure upstream queue policy on the builder.
+- For the initial implementation, `reliablePackets()` is **only exposed on sources that can be backpressured end-to-end**. On `AudioSource.microphone()` and other live sources, the method either is not offered or is offered with documentation that explicitly names the upstream queue policy the caller is responsible for configuring.
 - The doc comment on `reliablePackets()` MUST say, in plain language: *"Reliable delivery requires a source that can be backpressured. For live capture sources, configure upstream queue policy explicitly; otherwise prefer a finite-duration recording API."*
-- The Migration Plan landed `reliablePackets()` first on file/decode sources; RFC-002 then implemented encoded live audio reliable delivery with explicit upstream queue policy.
+- The Migration Plan calls for `reliablePackets()` to land first on file/decode sources, with live-source semantics deferred to `RFC-002`.
 
 ### Naming consequence
 
-Because the term "reliable" can over-promise on live sources, the implemented `reliablePackets()` docs must lead with the boundary above.
+Because the term "reliable" can over-promise on live sources, both `reliablePackets()` and `archivalPackets()` remain acceptable. The implementation chooses one; whichever is chosen, the doc comment must lead with the boundary above.
 
 ## Implementation Notes
 
@@ -277,44 +274,42 @@ Concrete implementation guidance lives in *Implementation Notes* above.
 
 ## Tests Required
 
-- [x] Finite encoded source produces the expected number of packets with `reliablePackets()`.
-- [x] Slow consumer does not lose packets for finite test input.
-- [x] Packet order is preserved.
-- [x] EOS ends the sequence cleanly without a thrown error.
-- [x] Cancellation mid-iteration stops polling, releases the `appsink` signal handler, and does not leak GStreamer mini-objects or Swift continuations.
-- [x] Pipeline `GST_MESSAGE_ERROR` during iteration causes `next()` to throw rather than silently terminating; the thrown error is the same taxonomy used elsewhere in the bridge.
-- [x] Concurrent iteration from two tasks is rejected with a structured invalid-argument error.
-- [x] Realtime `packets()` remains bounded and documented as best-effort.
-- [x] Tests verify `packets()` and `reliablePackets()` have distinct semantics, including a side-by-side test where a slow consumer loses packets on `packets()` but not on `reliablePackets()` for the same finite input.
-- [x] Live-source reliable delivery tests are covered by RFC-002 follow-up work.
+- Finite encoded source produces the expected number of packets with `reliablePackets()`.
+- Slow consumer does not lose packets for finite test input.
+- Packet order is preserved.
+- EOS ends the sequence cleanly (no thrown error).
+- Cancellation mid-iteration stops polling, releases the `appsink` signal handler, and does not leak GStreamer mini-objects or Swift continuations.
+- Pipeline `GST_MESSAGE_ERROR` during iteration causes `next()` to throw rather than silently terminating; the thrown error is the same taxonomy used elsewhere in the bridge.
+- Concurrent iteration from two tasks is either rejected at runtime or documented as undefined; whichever is chosen, a test pins the behavior.
+- Realtime `packets()` remains bounded and documented as best-effort.
+- Tests verify `packets()` and `reliablePackets()` have distinct semantics, including a side-by-side test where a slow consumer loses packets on `packets()` but not on `reliablePackets()` for the same finite input.
 
 ## Documentation Required
 
-- [x] `packets()` docs state it is best-effort realtime.
-- [x] `reliablePackets()` docs state it is for no-drop delivery and may backpressure.
-- [x] Examples do not use `packets()` for recording without an explicit caveat.
-- [x] Recording examples use `reliablePackets()` or a file-oriented API.
+- `packets()` docs must state it is best-effort realtime.
+- `reliablePackets()` docs must state it is for no-drop delivery and may backpressure.
+- Examples should not use `packets()` for recording without an explicit caveat.
+- Recording examples should use `reliablePackets()` or a file-oriented API.
 
 ## Migration Plan
 
-1. [x] Keep current `packets()` unchanged.
-2. [x] Land the generic `ReliablePackets<Element>` type and expose `reliablePackets()` on file/decode-style sources first.
-3. [x] Resolve the live-source reliability boundary in RFC-002 and implement encoded live audio reliable delivery.
-4. [x] Update README examples to choose API by use case, leading with the boundary caveat for live sources.
-5. [ ] Add a convenience recording API (Option D) in a later RFC, layered on top of `reliablePackets()`.
-6. [ ] If users continue to misuse `packets()` for archival, consider renaming or deprecating in a major release.
+1. Keep current `packets()` unchanged.
+2. Land the generic `ReliablePackets<Element>` type and expose `reliablePackets()` on **file/decode-style sources first** (e.g. `URIDecodeSource`-based pipelines). Live-source exposure is deferred until the *Reliability Boundary* concerns are resolved by `RFC-002`.
+3. Update README examples to choose API by use case, leading with the boundary caveat for live sources.
+4. Add a convenience recording API (Option D) in a later RFC, layered on top of `reliablePackets()`.
+5. If users continue to misuse `packets()` for archival, consider renaming or deprecating in a major release.
 
 ## Resolved Decisions
 
 These started as open questions and are resolved as part of accepting this RFC.
 
-- **Generic vs. audio-only.** The primitive is generic (`ReliablePackets<Element>`) so video packet sources can adopt it later without a parallel type. The first concrete entry point is `AudioFileSource.reliablePackets() -> ReliablePackets<Buffer>` through `AudioSource.file(path:)`; RFC-002 adds encoded live `AudioSource.reliablePackets() -> ReliablePackets<ReliablePacket<Buffer>>`.
+- **Generic vs. audio-only.** The primitive is generic (`ReliablePackets<Element>`) so video packet sources can adopt it later without a parallel type. The first concrete entry point is `AudioSource.reliablePackets() -> ReliablePackets<Buffer>`.
 - **Throwing.** `next()` is `async throws`. A silent short read on an archival API is a worse failure mode than a thrown error, because partial output without an error indication can corrupt recordings or uploads. Bus / pipeline errors observed during iteration surface through the thrown error; clean EOS surfaces as `nil`.
-- **Backpressure configuration.** Not exposed as a knob on `ReliablePackets` itself. The reliable API is consumer-driven by construction; RFC-002 exposes live-source upstream queue policy on the source builder.
+- **Backpressure configuration.** Not exposed as a knob in the first cut. The reliable API is consumer-driven by construction; whatever upstream queue policy is needed for live sources is a property of the *source builder*, not of `reliablePackets()`. Re-evaluate when the live-source RFC lands.
 - **Recording API.** A file-oriented API is desirable but out of scope for this RFC; it will be built on top of `reliablePackets()` rather than instead of it.
-- **Live-source exposure.** Resolved by RFC-002 for encoded live audio with explicit `QueueLeaky` and queue bounds on `AudioSourceBuilder`.
 
 ## Deferred Questions
 
+- Naming: keep `reliablePackets()` or switch to `archivalPackets()`. Both are acceptable; the doc comment carries the load either way. To be picked at implementation time.
 - Whether `packets()` should grow a `packets(buffer:)` overload exposing the realtime queue depth (currently fixed at `MediaStreamBackpressure.encodedPacketsNewest = 8`). Defer until a real caller asks for it.
-- Public reliable video delivery, raw reliable live buffers, and higher-level recording remain deferred to future RFCs.
+- Live-source exposure of `reliablePackets()` and the upstream queue-policy contract. See `RFC-002`.

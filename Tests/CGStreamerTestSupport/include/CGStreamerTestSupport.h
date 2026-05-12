@@ -10,23 +10,6 @@ extern "C" {
 
 typedef struct SwiftGstTestProbe SwiftGstTestProbe;
 
-typedef enum {
-    SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_OK,
-    SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_CREATE_APPSINK_FAILED,
-    SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_CONNECT_FAILED,
-    SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_EMIT_THREAD_FAILED,
-    SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_TIMEOUT,
-    SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_UNBALANCED_RETAIN_RELEASE,
-} SwiftGstTestCallbackRegistrationRaceStatus;
-
-typedef struct {
-    gboolean success;
-    SwiftGstTestCallbackRegistrationRaceStatus status;
-    guint callback_count;
-    guint retain_count;
-    guint release_count;
-} SwiftGstTestCallbackRegistrationRaceResult;
-
 gboolean swift_gst_test_element_factory_exists(const gchar* factory_name);
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
@@ -71,8 +54,6 @@ gchar* swift_gst_test_sample_caps_string(GstSample* sample);
 gchar* swift_gst_test_appsink_first_sample_caps_string(GstAppSink* appsink, GstClockTime timeout);
 
 gboolean swift_gst_test_bus_pop_marker(GstBus* bus, const gchar* marker, GstClockTime timeout);
-
-SwiftGstTestCallbackRegistrationRaceResult swift_gst_test_callback_registration_disconnect_while_in_flight(void);
 
 #ifdef __cplusplus
 }

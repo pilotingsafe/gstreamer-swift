@@ -21,7 +21,6 @@ struct SwiftGstCallbackRegistration {
     guint in_flight;
     gboolean disconnected;
     gboolean signal_destroyed;
-    gboolean destroying;
 };
 
 static void swift_gst_callback_registration_retain_context(SwiftGstCallbackRegistration* registration) {
@@ -34,32 +33,6 @@ static void swift_gst_callback_registration_release_context(SwiftGstCallbackRegi
     if (registration->context != NULL && registration->release_context != NULL) {
         registration->release_context(registration->context);
     }
-}
-
-/* Caller must hold registration->mutex. */
-static gboolean swift_gst_callback_registration_claim_destroy_locked(
-    SwiftGstCallbackRegistration* registration
-) {
-    if (registration->signal_destroyed
-        && registration->in_flight == 0
-        && !registration->destroying) {
-        registration->destroying = TRUE;
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
-static void swift_gst_callback_registration_destroy_claimed(
-    SwiftGstCallbackRegistration* registration
-) {
-    swift_gst_callback_registration_release_context(registration);
-    if (registration->kind == SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE) {
-        gst_bus_disable_sync_message_emission(GST_BUS(registration->instance));
-    }
-    g_object_unref(registration->instance);
-    g_mutex_clear(&registration->mutex);
-    g_free(registration);
 }
 
 static SwiftGstCallbackRegistration* swift_gst_callback_registration_new(
@@ -84,6 +57,26 @@ static SwiftGstCallbackRegistration* swift_gst_callback_registration_new(
     return registration;
 }
 
+static void swift_gst_callback_registration_try_destroy(SwiftGstCallbackRegistration* registration) {
+    gboolean should_destroy = FALSE;
+
+    g_mutex_lock(&registration->mutex);
+    should_destroy = registration->signal_destroyed && registration->in_flight == 0;
+    g_mutex_unlock(&registration->mutex);
+
+    if (!should_destroy) {
+        return;
+    }
+
+    swift_gst_callback_registration_release_context(registration);
+    if (registration->kind == SWIFT_GST_CALLBACK_BUS_SYNC_MESSAGE) {
+        gst_bus_disable_sync_message_emission(GST_BUS(registration->instance));
+    }
+    g_object_unref(registration->instance);
+    g_mutex_clear(&registration->mutex);
+    g_free(registration);
+}
+
 static gboolean swift_gst_callback_registration_begin(
     SwiftGstCallbackRegistration* registration,
     void** context
@@ -93,33 +86,25 @@ static gboolean swift_gst_callback_registration_begin(
     g_mutex_lock(&registration->mutex);
     if (!registration->disconnected && !registration->signal_destroyed) {
         registration->in_flight++;
+        swift_gst_callback_registration_retain_context(registration);
         *context = registration->context;
         should_call = TRUE;
     }
     g_mutex_unlock(&registration->mutex);
 
-    if (should_call) {
-        swift_gst_callback_registration_retain_context(registration);
-    }
-
     return should_call;
 }
 
 static void swift_gst_callback_registration_end(SwiftGstCallbackRegistration* registration) {
-    gboolean destroy_claimed = FALSE;
-
     swift_gst_callback_registration_release_context(registration);
 
     g_mutex_lock(&registration->mutex);
     if (registration->in_flight > 0) {
         registration->in_flight--;
     }
-    destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
     g_mutex_unlock(&registration->mutex);
 
-    if (destroy_claimed) {
-        swift_gst_callback_registration_destroy_claimed(registration);
-    }
+    swift_gst_callback_registration_try_destroy(registration);
 }
 
 static void swift_gst_callback_registration_signal_destroy(gpointer data, GClosure* closure) {
@@ -130,18 +115,13 @@ static void swift_gst_callback_registration_signal_destroy(gpointer data, GClosu
         return;
     }
 
-    gboolean destroy_claimed = FALSE;
-
     g_mutex_lock(&registration->mutex);
     registration->disconnected = TRUE;
     registration->signal_destroyed = TRUE;
     registration->handler_id = 0;
-    destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
     g_mutex_unlock(&registration->mutex);
 
-    if (destroy_claimed) {
-        swift_gst_callback_registration_destroy_claimed(registration);
-    }
+    swift_gst_callback_registration_try_destroy(registration);
 }
 
 static GstFlowReturn swift_gst_app_sink_new_sample_trampoline(
@@ -269,16 +249,11 @@ SwiftGstCallbackRegistration* swift_gst_app_sink_connect_new_sample(
         0
     );
     if (registration->handler_id == 0) {
-        gboolean destroy_claimed = FALSE;
-
         g_mutex_lock(&registration->mutex);
         registration->disconnected = TRUE;
         registration->signal_destroyed = TRUE;
-        destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
         g_mutex_unlock(&registration->mutex);
-        if (destroy_claimed) {
-            swift_gst_callback_registration_destroy_claimed(registration);
-        }
+        swift_gst_callback_registration_try_destroy(registration);
         return NULL;
     }
     return registration;
@@ -316,16 +291,11 @@ SwiftGstCallbackRegistration* swift_gst_app_sink_connect_eos(
         0
     );
     if (registration->handler_id == 0) {
-        gboolean destroy_claimed = FALSE;
-
         g_mutex_lock(&registration->mutex);
         registration->disconnected = TRUE;
         registration->signal_destroyed = TRUE;
-        destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
         g_mutex_unlock(&registration->mutex);
-        if (destroy_claimed) {
-            swift_gst_callback_registration_destroy_claimed(registration);
-        }
+        swift_gst_callback_registration_try_destroy(registration);
         return NULL;
     }
     return registration;
@@ -364,16 +334,11 @@ SwiftGstCallbackRegistration* swift_gst_bus_connect_sync_message_observer(
         0
     );
     if (registration->handler_id == 0) {
-        gboolean destroy_claimed = FALSE;
-
         g_mutex_lock(&registration->mutex);
         registration->disconnected = TRUE;
         registration->signal_destroyed = TRUE;
-        destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
         g_mutex_unlock(&registration->mutex);
-        if (destroy_claimed) {
-            swift_gst_callback_registration_destroy_claimed(registration);
-        }
+        swift_gst_callback_registration_try_destroy(registration);
         return NULL;
     }
     return registration;
@@ -384,7 +349,6 @@ void swift_gst_callback_registration_disconnect(SwiftGstCallbackRegistration* re
         return;
     }
 
-    gboolean destroy_claimed = FALSE;
     gulong handler_id = 0;
     GObject* instance = NULL;
 
@@ -392,21 +356,14 @@ void swift_gst_callback_registration_disconnect(SwiftGstCallbackRegistration* re
     if (!registration->disconnected) {
         registration->disconnected = TRUE;
         handler_id = registration->handler_id;
-        if (handler_id != 0) {
-            instance = registration->instance;
-        } else {
-            registration->signal_destroyed = TRUE;
-            destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
-        }
-    } else {
-        destroy_claimed = swift_gst_callback_registration_claim_destroy_locked(registration);
+        instance = registration->instance;
     }
     g_mutex_unlock(&registration->mutex);
 
     if (handler_id != 0 && instance != NULL) {
         g_signal_handler_disconnect(instance, handler_id);
-    } else if (destroy_claimed) {
-        swift_gst_callback_registration_destroy_claimed(registration);
+    } else {
+        swift_gst_callback_registration_try_destroy(registration);
     }
 }
 
