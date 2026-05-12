@@ -322,10 +322,13 @@ pipeline.stop()
 
 `messageSequence(filter:)` is a single-owner async sequence backed by a private
 GStreamer bus watch. Creating an iterator starts the watch, which can drain and
-buffer matching `BusMessage` values before the consumer awaits `next()`. EOS and
-ERROR are delivered as values so the caller decides when to break. Use it when
-one task owns bus draining and you want to avoid blocking Swift concurrency
-threads.
+buffer matching `BusMessage` values before the consumer awaits `next()`. That
+parsed-message buffer currently holds at most 256 parsed messages and uses
+best-effort overflow handling: ERROR and EOS are critical, older
+noncritical messages are discarded first, and a newest critical message remains
+observable even if older critical messages must be evicted. EOS and ERROR are
+delivered as values so the caller decides when to break. Use it when one task
+owns bus draining and you want to avoid blocking Swift concurrency threads.
 
 `messages(filter:)` remains the stream-based compatibility API. It uses a
 detached producer task and an `AsyncStream`, finishes after delivering EOS, and

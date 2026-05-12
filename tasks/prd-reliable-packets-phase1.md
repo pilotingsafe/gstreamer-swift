@@ -10,12 +10,14 @@ The rationale, semantics, options analysis, and reliability boundary discussion 
 
 ## Status
 
-Last updated: 2026-05-11.
+Last updated: 2026-05-12.
 
 - PRD: accepted for Phase 1 implementation.
 - Implementation: complete in local uncommitted changes; review-ready.
-- Story status: US-001 through US-013 implemented for Phase 1.
-- Follow-up hardening: complete for callback context lifetime, startup-timeout atomicity, and shared duration conversion.
+- Story status: US-001 through US-014 implemented for Phase 1.
+- Follow-up hardening: complete for callback context lifetime, startup-timeout
+  atomicity, shared duration conversion, cooperative zero-length sample
+  handling, and robust fallback timeout coverage.
 - Checklist: all Phase 1 acceptance criteria and follow-up hardening checks completed.
 - Verification:
   - `swiftly run swift test --filter Reliable` passed.
@@ -192,6 +194,10 @@ duration conversion overflow handling.
 - [x] Startup timeout reporting checks active candidate identity, shutdown state, and first-packet delivery under one state lock before writing `terminalError`.
 - [x] The first delivered packet is marked before `next()` returns it to the caller.
 - [x] `Duration.nanosecondsForReliablePackets` delegates to `ReliableDurationConversion.nanosecondsClampingNegativeToZero`.
+- [x] Zero-length samples are skipped without a hot nonblocking pull loop; the
+  iterator yields cooperatively and re-checks terminal state before retrying.
+- [x] The startup fallback test gives the valid fallback candidate a realistic
+  deadline under full parallel test load.
 - [x] Static API safety tests cover callback lifetime, startup-timeout atomicity, and duration conversion.
 
 ## Functional Requirements
@@ -211,6 +217,10 @@ duration conversion overflow handling.
 - **FR-13:** File reliable callback registration must protect local `passUnretained` contexts through the complete C registration call.
 - **FR-14:** File reliable startup timeout must not write a terminal timeout error after the first packet has been delivered.
 - **FR-15:** Reliable startup timeout duration conversion must use the shared overflow-safe reliable duration conversion helper.
+- **FR-16:** File/decode reliable zero-length samples must not busy-spin inside
+  the nonblocking `try_pull_sample(..., 0)` path.
+- **FR-17:** Candidate fallback tests must not make a valid fallback candidate
+  fail solely because a first-candidate startup timeout is intentionally short.
 
 ## Non-Goals (Out of Scope)
 
@@ -257,4 +267,6 @@ duration conversion overflow handling.
 - **Misuse error model:** microphone-built `AudioSource` misuse does not compile because no `reliablePackets()` member is exposed there.
 - **Test asset format:** deterministic runtime-generated fixtures, with raw and Opus coverage plus conditional AAC coverage.
 - **Bus error type taxonomy:** existing `GStreamerError.busError(...)`.
-- **Follow-up hardening:** `AudioFileSource.ActiveCandidate` callback lifetime, startup-timeout race handling, and duration conversion reuse are complete.
+- **Follow-up hardening:** `AudioFileSource.ActiveCandidate` callback lifetime,
+  startup-timeout race handling, duration conversion reuse, cooperative
+  zero-length sample handling, and fallback-timeout test hardening are complete.

@@ -183,6 +183,17 @@ public enum BusMessage: Sendable {
     case info(message: String, debug: String?)
 }
 
+private extension BusMessage {
+    var isCriticalForMessageSequenceOverflow: Bool {
+        switch self {
+        case .error, .eos:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 // MARK: - CustomStringConvertible
 
 extension BusMessage: CustomStringConvertible {
@@ -397,6 +408,13 @@ private func busWatchMessageCallback(
 /// ``messageSequence(filter:)`` path uses a private GLib bus watch and native
 /// thread so async iterator calls do not block a Swift cooperative executor.
 public final class Bus: @unchecked Sendable {
+    /// Maximum parsed messages buffered by ``messageSequence(filter:)`` when no
+    /// iterator call is waiting for immediate delivery.
+    ///
+    /// Overflow handling is best effort: ERROR and EOS are treated as critical
+    /// and older noncritical queued messages are discarded first.
+    internal static let messageSequenceMaximumBufferedMessages = 256
+
     /// Filter for bus messages.
     ///
     /// Use this to specify which message types to receive from the bus.
@@ -501,6 +519,15 @@ public final class Bus: @unchecked Sendable {
     /// that do not match the requested filter, or that this wrapper does not
     /// model, are ignored before returning to GStreamer.
     ///
+    /// When the watch receives matching messages before the consumer awaits
+    /// `next()`, the sequence stores parsed ``BusMessage`` values in a bounded
+    /// buffer capped by `Bus.messageSequenceMaximumBufferedMessages`. Overflow
+    /// is best effort: ERROR and EOS are critical and older noncritical queued
+    /// messages are discarded first; if the buffer is already full of critical
+    /// messages, the newest critical message replaces the oldest critical one.
+    /// Noncritical incoming messages are dropped when only critical messages are
+    /// buffered. The sequence never stores raw `GstMessage` pointers.
+    ///
     /// Treat a bus as having one active drainer. Multiple consumers, including
     /// independent ``Messages`` values, ``messages(filter:)`` streams, and the
     /// convenience APIs, compete for the same underlying queue and can consume
@@ -555,6 +582,11 @@ public final class Bus: @unchecked Sendable {
     /// broadest set of message kinds modeled by this Swift wrapper, not raw
     /// `GST_MESSAGE_ANY`.
     ///
+    /// The watch can receive matching messages before `next()` is awaited. Those
+    /// parsed values are held in a bounded internal buffer with best-effort
+    /// overflow behavior that prefers preserving ERROR and EOS over older
+    /// noncritical messages.
+    ///
     /// Keep one active drainer per bus. Multiple sequences, streams, or
     /// convenience API calls compete for the same queue. ERROR messages are
     /// returned as values, EOS is returned as a value and does not terminate the
@@ -579,6 +611,33 @@ public final class Bus: @unchecked Sendable {
             var nextWaiterID: UInt64 = 0
             var closed = false
             var startupFailed = false
+
+            mutating func appendWithBoundedOverflow(
+                _ message: BusMessage,
+                maximumBufferedMessages: Int
+            ) {
+                guard maximumBufferedMessages > 0 else {
+                    return
+                }
+
+                guard queue.count >= maximumBufferedMessages else {
+                    queue.append(message)
+                    return
+                }
+
+                if let noncriticalIndex = queue.firstIndex(where: { !$0.isCriticalForMessageSequenceOverflow }) {
+                    queue.remove(at: noncriticalIndex)
+                    queue.append(message)
+                    return
+                }
+
+                guard message.isCriticalForMessageSequenceOverflow else {
+                    return
+                }
+
+                queue.removeFirst()
+                queue.append(message)
+            }
         }
 
         private enum NextRegistration {
@@ -665,7 +724,10 @@ public final class Bus: @unchecked Sendable {
                 if !state.waiters.isEmpty {
                     return state.waiters.removeFirst()
                 }
-                state.queue.append(message)
+                state.appendWithBoundedOverflow(
+                    message,
+                    maximumBufferedMessages: Bus.messageSequenceMaximumBufferedMessages
+                )
                 return nil
             }
 

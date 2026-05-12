@@ -44,7 +44,8 @@ internal final class ReliableLiveAudioSourceHarnessForTesting: @unchecked Sendab
     encoding: AudioSource.Encoding,
     delivery: ReliableLiveDeliveryConfigurationForTesting,
     finalizeBehavior: ReliableLiveFinalizeBehaviorForTesting,
-    suppressEOSCallbacksForTesting: Bool = false
+    suppressEOSCallbacksForTesting: Bool = false,
+    appSinkMaxBuffers: UInt = 1
   ) throws {
     let state = ReliableLiveAudioSourceHarnessState(finalizeBehavior: finalizeBehavior)
     let suppressEOSCallbacks =
@@ -53,7 +54,7 @@ internal final class ReliableLiveAudioSourceHarnessForTesting: @unchecked Sendab
     let sinkName = "reliable_live_test_sink"
     let pipelineDescription = [
       "appsrc name=\(sourceName) is-live=true format=time do-timestamp=false",
-      "appsink name=\(sinkName) drop=false sync=false emit-signals=true enable-last-sample=false wait-on-eos=true max-buffers=1",
+      "appsink name=\(sinkName) drop=false sync=false emit-signals=true enable-last-sample=false wait-on-eos=true max-buffers=\(appSinkMaxBuffers)",
     ].joined(separator: " ! ")
 
     let source = try AudioSource.microphone()

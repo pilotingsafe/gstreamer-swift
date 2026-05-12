@@ -221,6 +221,9 @@ None of these are acceptable archival behavior for an indefinitely-running micro
 
 - Phase 1 exposed `reliablePackets()` only on file/decode sources that can be backpressured end-to-end.
 - RFC-002 extends `reliablePackets()` to encoded live audio sources only when callers explicitly configure upstream queue policy on the builder.
+- File/decode reliable delivery skips zero-length marker samples cooperatively:
+  an empty sample is not surfaced as a packet, and repeated empty samples do not
+  hot-spin the nonblocking pull loop.
 - The doc comment on `reliablePackets()` MUST say, in plain language: *"Reliable delivery requires a source that can be backpressured. For live capture sources, configure upstream queue policy explicitly; otherwise prefer a finite-duration recording API."*
 - The Migration Plan landed `reliablePackets()` first on file/decode sources; RFC-002 then implemented encoded live audio reliable delivery with explicit upstream queue policy.
 

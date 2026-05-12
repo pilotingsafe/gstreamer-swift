@@ -272,6 +272,7 @@ struct APISafetyStaticTests {
         let messagePump = (try? Self.bracedDeclaration(beginningWith: "fileprivate final class MessagePump", in: bus))
             ?? (try? Self.bracedDeclaration(beginningWith: "private final class MessagePump", in: bus))
             ?? ""
+        let enqueue = try Self.bracedDeclaration(beginningWith: "private func enqueue", in: messagePump)
         let sequencePath = [messages, messagePump].joined(separator: "\n")
         let disallowedSnippets = [
             "swift_gst_bus_timed_pop_filtered",
@@ -294,6 +295,18 @@ struct APISafetyStaticTests {
         #expect(
             Self.containsWatchBackedContinuationQueue(in: bus),
             "Bus message watch pump must use continuations, waiters, and FIFO queueing"
+        )
+        #expect(
+            Self.containsMessageSequenceMaximumBufferedMessages(in: bus),
+            "Bus must declare an explicit internal messageSequenceMaximumBufferedMessages bound"
+        )
+        #expect(
+            Self.messagePumpEnqueueUsesBoundedOverflowHandling(enqueue: enqueue, messagePump: messagePump),
+            "Bus.MessagePump.enqueue must apply bounded overflow handling when no waiter is pending"
+        )
+        #expect(
+            !Self.messagePumpEnqueueHasUnguardedNoWaiterAppend(enqueue),
+            "Bus.MessagePump.enqueue must not fall back to an unguarded state.queue.append(message) no-waiter path"
         )
         #expect(
             !Self.containsRawGstMessagePointerStorage(in: sequencePath),
@@ -609,6 +622,35 @@ struct APISafetyStaticTests {
         #expect(
             Self.containsAtomicStartupTimeoutTransition(in: reliableSource),
             "Startup timeout handling must atomically check active candidate, shutdown, and delivered-first-packet before setting terminalError and resuming pending outside the lock"
+        )
+    }
+
+    @Test("Audio file reliable packet empty samples yield before retrying pulls")
+    func audioFileReliablePacketEmptySamplesYieldBeforeRetryingPulls() throws {
+        let root = try Self.packageRoot()
+        let source = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/AudioFileSource.swift")
+        )
+        let reliableSource = try Self.bracedDeclaration(
+            beginningWith: "private final class AudioFileReliablePacketSource",
+            in: source
+        )
+        let nextPacket = try Self.bracedDeclaration(
+            beginningWith: "private func nextPacket(from active",
+            in: reliableSource
+        )
+        let pullPacket = try Self.bracedDeclaration(
+            beginningWith: "private func pullPacket(from active",
+            in: reliableSource
+        )
+
+        #expect(
+            !Self.pullPacketContainsZeroSizeContinueBranch(pullPacket),
+            "AudioFileReliablePacketSource.pullPacket(from:) must not spin on zero-size samples with a continue branch"
+        )
+        #expect(
+            Self.nextPacketHasSkippedEmptyYieldAndTerminalChecks(nextPacket),
+            "AudioFileReliablePacketSource.nextPacket(from:) must yield after skipped empty samples and check terminal state before the next nonblocking pull"
         )
     }
 
@@ -1863,6 +1905,94 @@ struct APISafetyStaticTests {
         }
     }
 
+    private static func containsMessageSequenceMaximumBufferedMessages(in source: String) -> Bool {
+        source.range(
+            of: #"(?m)\b(?:public\s+|internal\s+)?static\s+(?:let|var)\s+messageSequenceMaximumBufferedMessages\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private static func messagePumpEnqueueUsesBoundedOverflowHandling(
+        enqueue: String,
+        messagePump: String
+    ) -> Bool {
+        let combined = enqueue + "\n" + messagePump
+        let mentionsLimit = combined.contains("messageSequenceMaximumBufferedMessages")
+        let checksQueueCount = enqueue.range(
+            of: #"\b(?:state\.)?queue\.count\b"#,
+            options: .regularExpression
+        ) != nil
+        let directOverflowHandling = enqueue.range(
+            of: #"(?i)\b(?:overflow|bounded|drop|discard|evict|trim|removeFirst)\b"#,
+            options: .regularExpression
+        ) != nil
+        let overflowHelperCall = enqueue.range(
+            of: #"(?i)\b\w*(?:overflow|bounded|drop|discard|evict|trim)\w*\s*\("#,
+            options: .regularExpression
+        ) != nil
+
+        return mentionsLimit && (overflowHelperCall || (checksQueueCount && directOverflowHandling))
+    }
+
+    private static func messagePumpEnqueueHasUnguardedNoWaiterAppend(_ enqueue: String) -> Bool {
+        let normalized = normalizedWhitespace(enqueue)
+        let directlyAppendsMessage = normalized.contains("state.queue.append(message)")
+        let hasBoundedGuard = normalized.contains("messageSequenceMaximumBufferedMessages")
+            || normalized.range(
+                of: #"(?i)\b(?:overflow|bounded|drop|discard|evict|trim|removeFirst)\b"#,
+                options: .regularExpression
+            ) != nil
+            || normalized.range(
+                of: #"\b(?:state\.)?queue\.count\b"#,
+                options: .regularExpression
+            ) != nil
+
+        return directlyAppendsMessage && !hasBoundedGuard
+    }
+
+    private static func pullPacketContainsZeroSizeContinueBranch(_ source: String) -> Bool {
+        let zeroSizeGuardContinue = #"(?s)swift_gst_buffer_get_size\s*\([^)]*\)\s*>\s*0\s*else\s*\{[^}]*\bcontinue\b"#
+        let zeroSizeIfContinue = #"(?s)swift_gst_buffer_get_size\s*\([^)]*\)\s*(?:==|<=)\s*0[^{]*\{[^}]*\bcontinue\b"#
+
+        return source.range(of: zeroSizeGuardContinue, options: .regularExpression) != nil
+            || source.range(of: zeroSizeIfContinue, options: .regularExpression) != nil
+    }
+
+    private static func nextPacketHasSkippedEmptyYieldAndTerminalChecks(_ source: String) -> Bool {
+        let lowercased = source.lowercased()
+        let mentionsSkippedEmptySample = lowercased.contains("empty")
+            || lowercased.contains("zero")
+            || lowercased.contains("skipped")
+        let yieldsBeforeRetry = regexPatternsAppearInOrder(
+            [
+                #"await\s+Task\.yield\(\)"#,
+                #"\bcontinue\b"#,
+            ],
+            in: source
+        )
+
+        guard let pullRange = source.range(of: "pullPacket(from: active)") else {
+            return false
+        }
+
+        let beforePull = String(source[..<pullRange.lowerBound])
+        let checksTerminalStateBeforePull = beforePull.contains("terminalError")
+            || beforePull.contains("state.terminalError")
+            || beforePull.contains("eos")
+            || beforePull.contains("state.eos")
+            || beforePull.contains("shuttingDown")
+            || beforePull.contains("isCurrent(active)")
+            || beforePull.range(
+                of: #"(?i)\b(?:terminal|finished|completed)\w*\s*\("#,
+                options: .regularExpression
+            ) != nil
+
+        return mentionsSkippedEmptySample
+            && source.contains("await Task.yield()")
+            && yieldsBeforeRetry
+            && checksTerminalStateBeforePull
+    }
+
     private static func containsWatchBackedContinuationQueue(in source: String) -> Bool {
         let normalized = normalizedWhitespace(source)
         let lowercased = normalized.lowercased()
@@ -1906,6 +2036,13 @@ struct APISafetyStaticTests {
             "100 ms timed pop. current",
             "no continuation or detached producer exists on the messagesequence path",
             "continues to back the `errors()`, `warnings()`, `statechanges()`, and `waitforeos()`",
+            "does not introduce a dropping bounded policy for bus messages",
+            "do not add a dropping bounded policy",
+            "does not add or standardize a new bounded buffer size",
+            "no bounded dropping policy for bus messages",
+            "default unbounded buffering policy",
+            "does not silently drop yielded bus messages",
+            "avoid introducing a swift-side dropping policy for bus control-plane messages",
         ]
         let hasWatchSemantics = normalized.contains("private gstreamer bus watch")
             || normalized.contains("private bus watch")
@@ -1913,9 +2050,23 @@ struct APISafetyStaticTests {
         let allowsBufferedBeforeNext = normalized.contains("before the consumer awaits next()")
             || normalized.contains("before next() is awaited")
             || normalized.contains("before `next()` is awaited")
+        let describesBoundedBuffer = normalized.contains("bounded")
+            && (
+                normalized.contains("maximum buffered")
+                    || normalized.contains("messagesequencemaximumbufferedmessages")
+                    || normalized.contains("buffer limit")
+                    || normalized.contains("buffer cap")
+            )
+        let describesOverflow = normalized.contains("overflow")
+            || normalized.contains("drop oldest")
+            || normalized.contains("drops oldest")
+            || normalized.contains("evict oldest")
+            || normalized.contains("evicts oldest")
 
         return hasWatchSemantics
             && allowsBufferedBeforeNext
+            && describesBoundedBuffer
+            && describesOverflow
             && staleClaims.allSatisfy { !normalized.contains($0) }
     }
 

@@ -508,6 +508,12 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
     }
   }
 
+  private enum PullPacketResult {
+    case packet(ReliablePacket<Buffer>)
+    case skippedMarker
+    case noSample
+  }
+
   private struct PacketState {
     var pending: CheckedContinuation<Bool, Error>?
     var drainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -861,30 +867,36 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
         return state.sampleGeneration
       }
 
-      if let packet = try pullPacket() {
+      switch try pullPacket() {
+      case .packet(let packet):
         return packet
-      }
 
-      if try await waitForEvent(after: generation) == false {
-        completeCleanEOS()
-        return nil
+      case .skippedMarker:
+        await Task.yield()
+        continue
+
+      case .noSample:
+        if try await waitForEvent(after: generation) == false {
+          completeCleanEOS()
+          return nil
+        }
       }
     }
   }
 
-  private func pullPacket() throws -> ReliablePacket<Buffer>? {
+  private func pullPacket() throws -> PullPacketResult {
     let shouldPull = packetState.withLock { state in
       !state.cancelled && !state.stopped
     }
     guard shouldPull else {
-      return nil
+      return .noSample
     }
 
     guard let sample = swift_gst_app_sink_try_pull_sample(appSink, 0) else {
       if swift_gst_app_sink_is_eos(appSink) != 0 {
         reportEOS()
       }
-      return nil
+      return .noSample
     }
     defer { swift_gst_sample_unref(UnsafeMutableRawPointer(sample)) }
 
@@ -907,15 +919,17 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
     )
 
     if bufferSize == 0 {
-      return nil
+      return .skippedMarker
     }
 
     _ = swift_gst_buffer_ref(gstBuffer)
-    return ReliablePacket(
-      payload: Buffer(buffer: gstBuffer, ownsReference: true),
-      pts: pts,
-      duration: duration,
-      priorDiscontinuity: discontinuity
+    return .packet(
+      ReliablePacket(
+        payload: Buffer(buffer: gstBuffer, ownsReference: true),
+        pts: pts,
+        duration: duration,
+        priorDiscontinuity: discontinuity
+      )
     )
   }
 

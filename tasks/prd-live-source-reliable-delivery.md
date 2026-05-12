@@ -10,15 +10,15 @@ The first implementation phase is encoded audio only (`Opus` and `AAC`). Raw rel
 
 ## Status
 
-Last updated: 2026-05-11.
+Last updated: 2026-05-12.
 
 - Drafting: complete.
 - RFC update: complete.
 - Implementation: complete.
-- Functional requirements: all achieved (FR-1 through FR-15).
+- Functional requirements: all achieved (FR-1 through FR-20).
 - Follow-up hardening: complete in `tasks/prd-live-caps-bus-watch-concurrency-fixes.md`.
 - Checklist: all original acceptance criteria and follow-up hardening checks completed.
-- Review: implementation and follow-up hardening are ready for maintainer review.
+- Review: implementation and follow-up hardening are ready for maintainer review; latest review follow-up addressed zero-size live marker drainage before queued packets and EOS.
 - Verification completed on 2026-05-11:
   - `swiftly run swift build`
   - `swiftly run swift test --filter Reliable`
@@ -30,6 +30,8 @@ Last updated: 2026-05-11.
   - During status verification, one `Audio` filter run timed out in `appsinkEOSStateCompletesWhenEOSCallbacksAreSuppressed`; the same case passed in the full suite and a later `swiftly run swift test --filter Audio` rerun.
   - During status verification, one full-suite run failed in `QueueLeakyBehaviorTests` downstream-leaky behavior; `swiftly run swift test --filter QueueLeakyBehaviorTests` passed immediately after and the full suite passed on rerun.
   - These are recorded as flake watch items, not open FR gaps.
+  - 2026-05-12 review hardening added focused coverage for a zero-size live
+    marker queued before a real packet and EOS.
 
 ## Goals
 
@@ -224,6 +226,8 @@ implementation to incorporate review hardening before it is treated as complete.
 - [x] Live reliable discontinuity detection keeps caps refcount and equality work outside `packetState.withLock`.
 - [x] Startup rollback marks an unstored new-sample registration as disconnected so cleanup does not decrement handler state twice.
 - [x] Shared callback registration destruction is single-shot when disconnect races with an in-flight callback.
+- [x] Live reliable zero-size marker samples continue draining already queued
+  real samples instead of waiting for a newer generation.
 - [x] Static API safety tests cover the live reliable lifetime, caps-lock, and rollback invariants.
 - [x] Focused callback lifecycle tests cover disconnect while a callback is in flight.
 
@@ -248,6 +252,8 @@ implementation to incorporate review hardening before it is treated as complete.
 - [x] **FR-17:** Live reliable caps comparison, retain, and release operations must not execute while `packetState.withLock` is held.
 - [x] **FR-18:** Failed live startup callback registration rollback must not let later cleanup double-decrement new-sample handler state.
 - [x] **FR-19:** Shared callback registration destruction must be claimed once under the C registration mutex before final release work runs.
+- [x] **FR-20:** Zero-size live marker samples must not stall delivery of a
+  real sample that is already queued before EOS.
 
 ## Non-Goals (Out of Scope)
 

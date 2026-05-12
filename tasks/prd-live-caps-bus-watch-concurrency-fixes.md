@@ -34,20 +34,25 @@ release path runs.
 This PRD now records the implemented Swift, C shim, test, and documentation
 changes for the caps-lock, bus-watch, callback lifetime, startup-timeout,
 duration-conversion, element-field, and callback-registration lifecycle fixes.
+A later review pass bounded the watch-backed bus parsed-message backlog and
+closed zero-size reliable-packet marker edge cases without changing public API.
 
 ## Status
 
-Last updated: 2026-05-11.
+Last updated: 2026-05-12.
 
 - PRD: complete.
 - Implementation: complete.
 - Checklist: all acceptance criteria completed.
-- Review: follow-up review comments addressed, including the callback
-  registration single-shot destruction issue.
-- Verification: dependency preflight, focused tests, static API checks, `git diff --check`, and full `swiftly run swift test` passed on 2026-05-11.
+- Review: follow-up review comments addressed, including callback registration
+  single-shot destruction, bounded bus backlog overflow, live zero-size marker
+  draining, audio-file zero-size sample yielding, and reliable fallback timeout
+  test hardening.
+- Verification: dependency preflight, focused tests, static API checks, `git diff --check`, and full `swiftly run swift test` passed on 2026-05-11. Additional 2026-05-12 focused verification covers the bounded bus backlog, reliable zero-length markers, live zero-size marker drainage, startup fallback timeout, queue leaky behavior, and static safety checks.
 - Scope: caps-lock, bus-watch, callback context lifetime, callback
   registration lifecycle, startup-timeout, duration-conversion, live rollback,
-  and element-field parsing fixes described here.
+  element-field parsing, bounded bus backlog, and zero-size reliable marker
+  fixes described here.
 - Active implementation toolchain: Swift 6.3.1.
 - Package compatibility requirement: preserve compatibility with the manifest's declared `// swift-tools-version:6.2`.
 
@@ -58,12 +63,16 @@ Last updated: 2026-05-11.
 - Remove synchronous 100 ms bus timed-pop blocking from `Bus.Messages.AsyncIterator.next()`.
 - Keep `Bus.messageSequence(filter:)`, `Bus.Messages`, and `Bus.Messages.AsyncIterator.next()` public signatures source-compatible.
 - Preserve demand-facing async iteration while allowing the active bus watch to buffer matching `BusMessage` values.
+- Bound the watch-backed bus parsed-message backlog and prefer ERROR/EOS during
+  best-effort overflow.
 - Make C and Swift ownership, cancellation, and teardown rules explicit enough for a safe implementation.
 - Ensure Swift callback contexts outlive registration calls until C-side retain callbacks have executed.
 - Make C callback registration destruction single-shot when disconnect races with an in-flight callback.
 - Prevent reliable audio startup timeout and cleanup races from writing stale terminal errors or over-adjusting handler counts.
 - Reuse the shared reliable duration conversion path for overflow-safe timeout conversion.
 - Populate `BusMessage.element` structure fields instead of returning an unconditional empty payload.
+- Ensure zero-size reliable marker samples do not stall live drainage or hot-spin
+  file/decode iteration.
 
 ## User Stories
 
@@ -121,6 +130,9 @@ Last updated: 2026-05-11.
 - [x] `Bus.Messages.AsyncIterator.next()` remains `async -> BusMessage?` and non-throwing.
 - [x] `next()` no longer calls `swift_gst_bus_timed_pop_filtered`.
 - [x] `next()` returns queued messages in FIFO order.
+- [x] Queued parsed messages are capped at 256 while no waiter is pending.
+- [x] Overflow keeps later ERROR/EOS observable on a best-effort basis by
+  dropping older noncritical messages first.
 - [x] EOS remains a `BusMessage.eos` value and does not automatically finish the sequence.
 - [x] ERROR remains a `BusMessage.error(message:debug:)` value and does not throw from `next()`.
 
@@ -148,6 +160,9 @@ Last updated: 2026-05-11.
 - [x] Static bus checks forbid `Task.detached` in the Swift iterator path.
 - [x] Static bus checks allow continuations and waiters for the watch-backed queue.
 - [x] Static bus checks verify raw `GstMessage` pointers are not stored or queued in the Swift iterator or pump path.
+- [x] Static bus checks require an explicit `messageSequence` buffer limit and
+  bounded overflow handling.
+- [x] Runtime bus tests verify bounded overflow keeps a later ERROR observable.
 
 ### US-008: Protect Callback Context Lifetime Across C Registration
 
@@ -189,6 +204,8 @@ extreme testing inputs.
 - [x] The first delivered audio-file packet is marked before `next()` returns it to the caller.
 - [x] `Duration.nanosecondsForReliablePackets` delegates to `ReliableDurationConversion.nanosecondsClampingNegativeToZero`.
 - [x] Static API safety tests cover rollback, startup-timeout atomicity, and duration conversion.
+- [x] Startup fallback tests avoid applying an unrealistically short timeout to
+  the valid fallback candidate under full parallel test load.
 
 ### US-011: Populate Element Message Fields
 
@@ -202,6 +219,25 @@ messages such as navigation, marker, or sink-specific events.
 - [x] String fields are read with `gst_structure_get_string` to avoid lossy quoting.
 - [x] Non-string fields use `gst_value_serialize` as a best-effort textual representation.
 - [x] Runtime bus tests verify an element marker field is delivered through `messageSequence(filter: [.element])`.
+
+### US-012: Close Bounded Backlog and Zero-Size Marker Review Findings
+
+**Description:** As a maintainer, I need the review follow-ups to keep
+backpressured bus iteration memory bounded and make zero-size reliable marker
+samples cooperative under queued-sample and flood conditions.
+
+**Acceptance Criteria:**
+- [x] `Bus.messageSequence(filter:)` buffers at most 256 parsed `BusMessage`
+  values while no waiter is pending.
+- [x] Bus overflow handling treats ERROR and EOS as critical, dropping older
+  noncritical messages before discarding critical events.
+- [x] Live reliable zero-size marker samples are skipped by continuing the
+  nonblocking drain loop before waiting on a newer generation.
+- [x] Audio file/decode reliable zero-size samples are skipped one sample per
+  pull, yield cooperatively before retrying, and re-check terminal state.
+- [x] Review hardening tests cover bus backlog overflow, live queued-marker
+  drainage, repeated file zero-length samples, fallback startup timeout, and the
+  queue leaky comparison flake.
 
 ## Functional Requirements
 
@@ -219,7 +255,9 @@ messages such as navigation, marker, or sink-specific events.
 - **FR-12:** The watch-backed path must use a private `GMainContext` and native thread per active watch pump.
 - **FR-13:** The C shim must use `gst_bus_create_watch` to create the `GSource`.
 - **FR-14:** The watch callback must consume all bus messages delivered to the active watch, filter them using the caller's `filter.gstMessageType`, parse matching modeled messages into `BusMessage`, and ignore nonmatching or unmodeled messages.
-- **FR-15:** The Swift pump must use an unbounded FIFO queue for matching `BusMessage` values while the iterator is active.
+- **FR-15:** The Swift pump must use a bounded FIFO queue for matching parsed
+  `BusMessage` values while the iterator is active, capped at 256 messages when
+  no waiter is pending.
 - **FR-16:** If watch startup fails, or GStreamer refuses a second active watch for a bus, the pump must close deterministically: release partial resources, resume pending waiters with nil, and make future `next()` calls return nil.
 - **FR-17:** `Bus.Messages.AsyncIterator` copies made from the same `makeAsyncIterator()` result must share one pump reference rather than creating competing watches.
 - **FR-18:** Public `Bus` and `Bus.Messages` API signatures must remain source-compatible.
@@ -229,12 +267,20 @@ messages such as navigation, marker, or sink-specific events.
 - **FR-22:** Audio file reliable startup timeout must not write a terminal timeout error after the first packet has been delivered.
 - **FR-23:** Reliable packet duration conversion must clamp negative values to zero and overflow values to `UInt64.max` through the shared helper.
 - **FR-24:** `BusMessage.element` must preserve available structure fields as `[String: String]` without changing the public enum shape.
+- **FR-25:** Bus overflow handling must prefer ERROR and EOS over older
+  noncritical messages on a best-effort basis.
+- **FR-26:** Live reliable zero-size marker samples must not cause iteration to
+  wait for a newer generation when a real sample is already queued.
+- **FR-27:** Audio file/decode reliable zero-size samples must not spin in a
+  nonblocking pull loop without yielding or checking terminal state.
 
 ## Non-Goals (Out of Scope)
 
 - No public bus observer API is added.
 - No fan-out bus dispatcher or replay registry is added.
-- No bounded dropping policy is added for bus messages.
+- No legacy `Bus.messages(filter:)` buffering contract is changed. Bounded
+  overflow is scoped to the watch-backed `messageSequence(filter:)` parsed-value
+  backlog.
 - No public `BusMessage` shape change is added.
 - No change is made to `Bus.messages(filter:)`, `Bus.errors()`, `Bus.warnings()`, or `Bus.stateChanges()` public signatures.
 - No change is made to the package manifest's declared Swift tools version.
@@ -246,7 +292,7 @@ messages such as navigation, marker, or sink-specific events.
 - The discontinuity retry token should be simple and internal, for example a monotonically increasing integer stored in packet state.
 - The bus watch callback receives borrowed messages. GStreamer unrefs those messages after the callback returns, so the Swift path must queue value-typed `BusMessage` results, not raw message pointers.
 - The watch pump lock should protect all mutable Swift pump state. It should not be held while resuming continuations.
-- The active watch changes internal semantics of `messageSequence(filter:)`: the API remains demand-facing, but messages can be drained and buffered before the consumer awaits `next()`.
+- The active watch changes internal semantics of `messageSequence(filter:)`: the API remains demand-facing, but messages can be drained and buffered before the consumer awaits `next()`. That parsed-value backlog is bounded at 256 messages with best-effort ERROR/EOS retention.
 - `withExtendedLifetime(context)` is required around registration calls that rely on the C shim's retain callback, because the raw `UnsafeMutableRawPointer` produced by `passUnretained` is not an ARC lifetime use after `toOpaque()` returns.
 - The C callback registration finalizer must run after releasing the registration mutex; only the single-shot claim itself belongs under the lock.
 - Documentation and static tests must be updated to remove the old claim that `messageSequence(filter:)` polls only when `next()` is awaited.
@@ -262,6 +308,8 @@ messages such as navigation, marker, or sink-specific events.
 - [x] Add a bus filter test proving nonmatching messages consumed by the active watch are not delivered to a narrower-filter iterator.
 - [x] Update static bus tests to remove requirements for `swift_gst_bus_timed_pop_filtered`, `100_000_000`, and `swift_gst_message_unref` inside `Bus.Messages`.
 - [x] Update static bus tests to require the new watch shim path, forbid `Task.detached` in Swift iterator code, allow continuations or waiters, and verify raw `GstMessage` pointers are not stored or queued.
+- [x] Add static and runtime checks for the bounded watch-backed bus backlog and
+  best-effort ERROR/EOS overflow behavior.
 - [x] Add static checks for `withExtendedLifetime(context)` around live reliable, audio file reliable, and bus watch callback registration.
 - [x] Add static checks for callback registration single-shot destruction claimed under the mutex.
 - [x] Add a focused callback lifecycle test for disconnect while a callback is in flight.
@@ -269,6 +317,10 @@ messages such as navigation, marker, or sink-specific events.
 - [x] Add static checks for audio file startup-timeout atomicity.
 - [x] Add static checks for shared overflow-safe duration conversion.
 - [x] Add bus runtime coverage for element message structure fields.
+- [x] Add reliable-packet coverage for live zero-size marker drainage and
+  repeated file/decode zero-length samples.
+- [x] Harden the startup fallback timeout and queue leaky behavior tests against
+  full parallel suite scheduling noise.
 - [x] Run dependency preflight: `pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0`.
 - [x] Run focused verification with Swift 6.3.1:
   - [x] `swiftly run swift test --filter AudioSourceReliableLiveBehavior`
@@ -276,7 +328,12 @@ messages such as navigation, marker, or sink-specific events.
   - [x] `swiftly run swift test --filter CallbackRegistrationLifecycleTests`
   - [x] `swiftly run swift test --filter APISafetyStaticTests`
   - [x] `git diff --check`
-  - [x] `swiftly run swift test`
+- [x] `swiftly run swift test`
+  - [x] 2026-05-12 focused review follow-up checks:
+    `BusMessageSequenceTests`, `ReliablePacketZeroLengthMarkerTests`,
+    `AudioSourceReliableLiveBehaviorTests`,
+    `ReliablePacketStartupTimeoutTests`, `QueueLeakyBehaviorTests`, and
+    `APISafetyStaticTests`.
 
 ## Success Metrics
 
@@ -284,7 +341,7 @@ messages such as navigation, marker, or sink-specific events.
 - [x] The PRD is detailed enough for an implementer to proceed without choosing caps ownership, retry, watch lifecycle, filtering, buffering, or cancellation semantics.
 - [x] The PRD preserves public API compatibility while documenting the accepted internal semantic change for `messageSequence(filter:)`.
 - [x] The PRD lists concrete static and runtime verification steps.
-- [x] The PRD records the follow-up callback lifetime, C registration lifecycle, startup-timeout, duration-conversion, and element-field parsing fixes.
+- [x] The PRD records the follow-up callback lifetime, C registration lifecycle, startup-timeout, duration-conversion, element-field parsing, bounded bus backlog, and zero-size marker fixes.
 
 ## Open Questions
 
