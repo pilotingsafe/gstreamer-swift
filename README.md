@@ -320,16 +320,20 @@ messageLoop: for await message in pipeline.bus.messageSequence(filter: [.eos, .e
 pipeline.stop()
 ```
 
-`messageSequence(filter:)` is pull-based: the bus is polled only when the
-consumer awaits the next value, and EOS or ERROR are delivered as values so the
-caller decides when to break. Use it when one task owns bus draining and you want
-clear backpressure without a Swift-side producer buffer.
+`messageSequence(filter:)` is a single-owner async sequence backed by a private
+GStreamer bus watch. Creating an iterator starts the watch, which can drain and
+buffer matching `BusMessage` values before the consumer awaits `next()`. EOS and
+ERROR are delivered as values so the caller decides when to break. Use it when
+one task owns bus draining and you want to avoid blocking Swift concurrency
+threads.
 
 `messages(filter:)` remains the stream-based compatibility API. It uses a
 detached producer task and an `AsyncStream`, finishes after delivering EOS, and
-continues to back the `errors()`, `warnings()`, `stateChanges()`, and
-`waitForEOS()` convenience APIs. Do not run multiple bus consumers unless you
-intend them to compete for the same destructive GStreamer bus queue.
+continues to back the `errors()`, `warnings()`, and `stateChanges()`
+convenience streams. The EOS waiting helpers use `messageSequence(filter:)` and
+inherit its single-owner bus-draining behavior. Do not run multiple bus
+consumers unless you intend them to compete for the same destructive GStreamer
+bus queue.
 
 ### Pulling Video Frames
 

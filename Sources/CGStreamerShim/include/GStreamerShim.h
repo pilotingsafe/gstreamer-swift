@@ -54,6 +54,23 @@ GstMessage* swift_gst_bus_timed_pop(GstBus* bus, GstClockTime timeout);
 /// Pop a message from the bus filtered by type
 GstMessage* swift_gst_bus_timed_pop_filtered(GstBus* bus, GstClockTime timeout, GstMessageType types);
 
+typedef struct SwiftGstBusWatchRegistration SwiftGstBusWatchRegistration;
+typedef void (*SwiftGstBusWatchMessageCallback)(GstMessage* message, void* context);
+typedef void (*SwiftGstBusWatchContextRetainFunc)(void* context);
+typedef void (*SwiftGstBusWatchContextReleaseFunc)(void* context);
+
+/// Start a private native-thread GstBus watch. The callback receives a borrowed message.
+SwiftGstBusWatchRegistration* swift_gst_bus_watch_start(
+    GstBus* bus,
+    SwiftGstBusWatchMessageCallback callback,
+    void* context,
+    SwiftGstBusWatchContextRetainFunc retain_context,
+    SwiftGstBusWatchContextReleaseFunc release_context
+);
+
+/// Stop a private GstBus watch, join its thread, and clear the registration pointer.
+void swift_gst_bus_watch_stop(SwiftGstBusWatchRegistration** registration);
+
 /// Get message type
 GstMessageType swift_gst_message_type(GstMessage* message);
 

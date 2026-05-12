@@ -398,10 +398,7 @@ private final class AudioFileReliablePacketProbeState: @unchecked Sendable {
 
 private extension Duration {
   var nanosecondsForReliablePackets: UInt64 {
-    let components = self.components
-    let seconds = max(Int64(0), components.seconds)
-    let attoseconds = max(Int64(0), components.attoseconds)
-    return UInt64(seconds) * 1_000_000_000 + UInt64(attoseconds / 1_000_000_000)
+    ReliableDurationConversion.nanosecondsClampingNegativeToZero(self)
   }
 }
 
@@ -447,7 +444,6 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
 
       do {
         if let packet = try await nextPacket(from: active) {
-          markFirstPacketDelivered()
           return packet
         }
 
@@ -578,6 +574,7 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
       let generation = sampleGeneration()
 
       if let packet = try pullPacket(from: active) {
+        try markFirstPacketDelivered(from: active)
         return packet
       }
 
@@ -602,7 +599,7 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
       } catch {
         return
       }
-      self?.reportStartupTimeout(candidateID: active.id)
+      self?.reportStartupTimeoutIfStillBeforeFirstPacket(candidateID: active.id)
     }
   }
 
@@ -682,8 +679,21 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
     }
   }
 
-  private func markFirstPacketDelivered() {
-    state.withLock { $0.deliveredFirstPacket = true }
+  private func markFirstPacketDelivered(from active: ActiveCandidate) throws {
+    let error = state.withLock { state -> Error? in
+      guard state.active?.id == active.id, !state.shuttingDown else {
+        return CancellationError()
+      }
+      if let terminalError = state.terminalError {
+        return terminalError
+      }
+      state.deliveredFirstPacket = true
+      return nil
+    }
+
+    if let error {
+      throw error
+    }
   }
 
   private func hasDeliveredFirstPacket() -> Bool {
@@ -785,15 +795,33 @@ private final class AudioFileReliablePacketSource: @unchecked Sendable {
     pending?.resume(throwing: error)
   }
 
-  private func reportStartupTimeout(candidateID: UInt64) {
-    reportBusError(
-      candidateID: candidateID,
-      error: GStreamerError.busError(
+  private func reportStartupTimeoutIfStillBeforeFirstPacket(candidateID: UInt64) {
+    let timeout = state.withLock {
+      state -> (pending: CheckedContinuation<Bool, Error>?, error: GStreamerError)? in
+      guard state.active?.id == candidateID,
+        !state.shuttingDown,
+        !state.deliveredFirstPacket
+      else {
+        return nil
+      }
+
+      let error = GStreamerError.busError(
         "Reliable packet startup timed out",
         source: "ReliablePackets",
         debug: "No decodable audio packet arrived before startup timeout"
       )
-    )
+      state.terminalError = error
+      let pending = state.pending
+      state.pending = nil
+      if pending != nil {
+        configuration.probeState.setPendingContinuationCount(0)
+      }
+      return (pending, error)
+    }
+
+    if let timeout {
+      timeout.pending?.resume(throwing: timeout.error)
+    }
   }
 
   private func notifyCandidateStartForParseFailure(_ candidate: AudioFilePipelineCandidate) {
@@ -996,8 +1024,9 @@ private final class ActiveCandidate: @unchecked Sendable {
     guard let sinkElement = pipeline.element(named: candidate.sinkName) else {
       throw GStreamerError.elementNotFound(candidate.sinkName)
     }
+    let callbackBus = pipeline.bus
     self.sinkElement = sinkElement
-    self.bus = pipeline.bus
+    self.bus = callbackBus
     self.probeState = configuration.probeState
     self.onCleanupForTesting = configuration.onCleanupForTesting
 
@@ -1005,63 +1034,68 @@ private final class ActiveCandidate: @unchecked Sendable {
     let contextPointer = Unmanaged.passUnretained(context).toOpaque()
 
     let appSink = UnsafeMutableRawPointer(sinkElement.element).assumingMemoryBound(to: GstAppSink.self)
-    guard
-      let newSampleRegistration = swift_gst_app_sink_connect_new_sample(
-        appSink,
-        audioFileReliableNewSampleCallback,
-        contextPointer,
-        audioFileReliableRetainContext,
-        audioFileReliableReleaseContext
-      )
-    else {
-      throw GStreamerError.busError(
-        "Failed to connect appsink new-sample callback",
-        source: "ReliablePackets",
-        debug: nil
-      )
-    }
-    configuration.probeState.incrementNewSampleHandlerCount()
+    let registrations = try withExtendedLifetime(context) {
+      () throws -> (newSample: OpaquePointer, eos: OpaquePointer, bus: OpaquePointer) in
+      guard
+        let newSampleRegistration = swift_gst_app_sink_connect_new_sample(
+          appSink,
+          audioFileReliableNewSampleCallback,
+          contextPointer,
+          audioFileReliableRetainContext,
+          audioFileReliableReleaseContext
+        )
+      else {
+        throw GStreamerError.busError(
+          "Failed to connect appsink new-sample callback",
+          source: "ReliablePackets",
+          debug: nil
+        )
+      }
+      configuration.probeState.incrementNewSampleHandlerCount()
 
-    guard
-      let eosRegistration = swift_gst_app_sink_connect_eos(
-        appSink,
-        audioFileReliableEOSCallback,
-        contextPointer,
-        audioFileReliableRetainContext,
-        audioFileReliableReleaseContext
-      )
-    else {
-      swift_gst_callback_registration_disconnect(newSampleRegistration)
-      configuration.probeState.decrementNewSampleHandlerCount()
-      throw GStreamerError.busError(
-        "Failed to connect appsink eos callback",
-        source: "ReliablePackets",
-        debug: nil
-      )
+      guard
+        let eosRegistration = swift_gst_app_sink_connect_eos(
+          appSink,
+          audioFileReliableEOSCallback,
+          contextPointer,
+          audioFileReliableRetainContext,
+          audioFileReliableReleaseContext
+        )
+      else {
+        swift_gst_callback_registration_disconnect(newSampleRegistration)
+        configuration.probeState.decrementNewSampleHandlerCount()
+        throw GStreamerError.busError(
+          "Failed to connect appsink eos callback",
+          source: "ReliablePackets",
+          debug: nil
+        )
+      }
+
+      guard
+        let busRegistration = swift_gst_bus_connect_sync_message_observer(
+          callbackBus._bus,
+          audioFileReliableBusSyncMessageCallback,
+          contextPointer,
+          audioFileReliableRetainContext,
+          audioFileReliableReleaseContext
+        )
+      else {
+        swift_gst_callback_registration_disconnect(newSampleRegistration)
+        configuration.probeState.decrementNewSampleHandlerCount()
+        swift_gst_callback_registration_disconnect(eosRegistration)
+        throw GStreamerError.busError(
+          "Failed to connect bus sync-message observer",
+          source: "ReliablePackets",
+          debug: nil
+        )
+      }
+
+      return (newSampleRegistration, eosRegistration, busRegistration)
     }
 
-    guard
-      let busRegistration = swift_gst_bus_connect_sync_message_observer(
-        bus._bus,
-        audioFileReliableBusSyncMessageCallback,
-        contextPointer,
-        audioFileReliableRetainContext,
-        audioFileReliableReleaseContext
-      )
-    else {
-      swift_gst_callback_registration_disconnect(newSampleRegistration)
-      configuration.probeState.decrementNewSampleHandlerCount()
-      swift_gst_callback_registration_disconnect(eosRegistration)
-      throw GStreamerError.busError(
-        "Failed to connect bus sync-message observer",
-        source: "ReliablePackets",
-        debug: nil
-      )
-    }
-
-    self.newSampleRegistration = newSampleRegistration
-    self.eosRegistration = eosRegistration
-    self.busRegistration = busRegistration
+    self.newSampleRegistration = registrations.newSample
+    self.eosRegistration = registrations.eos
+    self.busRegistration = registrations.bus
     configuration.probeState.recordPipeline(pipeline)
   }
 

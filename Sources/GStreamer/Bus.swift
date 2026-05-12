@@ -1,5 +1,6 @@
 import CGStreamer
 import CGStreamerShim
+import Synchronization
 
 /// Messages received from the GStreamer pipeline bus.
 ///
@@ -239,6 +240,92 @@ extension BusMessage: CustomStringConvertible {
     }
 }
 
+private final class BusMessageWaiterCancellation: @unchecked Sendable {
+    private struct State {
+        var pump: Bus.MessagePump?
+        var waiterID: UInt64?
+        var completed = false
+        var cancelled = false
+    }
+
+    private let state = Mutex(State())
+
+    func register(pump: Bus.MessagePump, waiterID: UInt64) {
+        let shouldCancel = state.withLock { state -> Bool in
+            guard !state.completed else {
+                return false
+            }
+            state.pump = pump
+            state.waiterID = waiterID
+            return state.cancelled
+        }
+
+        if shouldCancel {
+            pump.cancelWaiter(id: waiterID)
+        }
+    }
+
+    func finish() {
+        state.withLock { state in
+            state.completed = true
+            state.pump = nil
+            state.waiterID = nil
+        }
+    }
+
+    func cancel() {
+        let target = state.withLock { state -> (Bus.MessagePump, UInt64)? in
+            state.cancelled = true
+            guard !state.completed,
+                  let pump = state.pump,
+                  let waiterID = state.waiterID
+            else {
+                return nil
+            }
+            state.completed = true
+            state.pump = nil
+            state.waiterID = nil
+            return (pump, waiterID)
+        }
+
+        if let target {
+            target.0.cancelWaiter(id: target.1)
+        }
+    }
+}
+
+private final class BusWatchCallbackContext: @unchecked Sendable {
+    weak var pump: Bus.MessagePump?
+
+    init(pump: Bus.MessagePump) {
+        self.pump = pump
+    }
+}
+
+private func busWatchRetainContext(_ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    _ = Unmanaged<BusWatchCallbackContext>.fromOpaque(context).retain()
+}
+
+private func busWatchReleaseContext(_ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    Unmanaged<BusWatchCallbackContext>.fromOpaque(context).release()
+}
+
+private func busWatchMessageCallback(
+    _ message: UnsafeMutablePointer<GstMessage>?,
+    _ context: UnsafeMutableRawPointer?
+) {
+    guard let message, let context else {
+        return
+    }
+
+    let callbackContext = Unmanaged<BusWatchCallbackContext>
+        .fromOpaque(context)
+        .takeUnretainedValue()
+    callbackContext.pump?.handleBorrowedMessage(message)
+}
+
 /// A GStreamer bus for receiving messages from a pipeline.
 ///
 /// The bus provides async message APIs that can be used to monitor pipeline
@@ -307,8 +394,8 @@ extension BusMessage: CustomStringConvertible {
 /// GStreamer's bus is internally thread-safe for posting and receiving messages.
 /// The async stream returned by ``messages(filter:)`` uses `Task.detached` with
 /// proper cancellation handling for safe concurrent access. The pull-based
-/// ``messageSequence(filter:)`` path performs timed bus pops only when its
-/// iterator is asked for the next value.
+/// ``messageSequence(filter:)`` path uses a private GLib bus watch and native
+/// thread so async iterator calls do not block a Swift cooperative executor.
 public final class Bus: @unchecked Sendable {
     /// Filter for bus messages.
     ///
@@ -404,18 +491,15 @@ public final class Bus: @unchecked Sendable {
 
     /// A pull-based async sequence of messages from a GStreamer bus.
     ///
-    /// `Messages` destructively consumes the underlying `GstBus`: every
-    /// successful pop removes one message from the bus queue. It is intended
-    /// for callers that want direct backpressure from `for await` iteration
-    /// instead of the detached producer and Swift-side buffering used by
-    /// ``messages(filter:)``.
+    /// `Messages` destructively consumes the underlying `GstBus`: every message
+    /// delivered to the active watch is removed from the bus queue. It is
+    /// intended for callers that want async iteration over one active bus
+    /// drainer instead of the detached producer used by ``messages(filter:)``.
     ///
-    /// The sequence uses GStreamer's filtered timed pop API. While searching
-    /// for a matching message, that C API may discard queued messages that do
-    /// not match the requested filter. The default ``Filter/all`` filter is the
-    /// broadest set of message kinds modeled by this Swift wrapper; it is not
-    /// `GST_MESSAGE_ANY`, so unmodeled GStreamer message kinds are outside that
-    /// default.
+    /// The sequence uses a private GLib main context, a native thread, and a
+    /// `GstBus` watch. The watch consumes all delivered bus messages. Messages
+    /// that do not match the requested filter, or that this wrapper does not
+    /// model, are ignored before returning to GStreamer.
     ///
     /// Treat a bus as having one active drainer. Multiple consumers, including
     /// independent ``Messages`` values, ``messages(filter:)`` streams, and the
@@ -426,9 +510,9 @@ public final class Bus: @unchecked Sendable {
     /// Errors are delivered as ``BusMessage/error(message:debug:)`` values and
     /// do not throw from iteration. End-of-stream is delivered as ``BusMessage/eos``
     /// and does not automatically end the sequence; callers should break their
-    /// loop when EOS is the desired stopping point. Cancellation is observed
-    /// between timed pops, so exit latency is bounded by the 100 ms polling
-    /// interval plus task scheduling delay.
+    /// loop when EOS is the desired stopping point. Cancelling one pending
+    /// `next()` call removes only that waiter and leaves the shared watch active
+    /// for other copies of the same iterator.
     public struct Messages: AsyncSequence, Sendable {
         public typealias Element = BusMessage
 
@@ -440,78 +524,216 @@ public final class Bus: @unchecked Sendable {
             self.filter = filter
         }
 
-        /// Creates an iterator that polls the bus only when `next()` is awaited.
+        /// Creates an iterator backed by one shared private bus-watch pump.
         public func makeAsyncIterator() -> AsyncIterator {
-            AsyncIterator(bus: bus, filter: filter)
+            AsyncIterator(pump: MessagePump(bus: bus, filter: filter))
         }
 
         /// The pull-based iterator for ``Bus/Messages``.
         public struct AsyncIterator: AsyncIteratorProtocol, Sendable {
-            private let bus: Bus
-            private let filter: Filter
+            private let pump: MessagePump
 
-            internal init(bus: Bus, filter: Filter) {
-                self.bus = bus
-                self.filter = filter
+            fileprivate init(pump: MessagePump) {
+                self.pump = pump
             }
 
             /// Returns the next parsed bus message, or `nil` after cancellation.
             ///
-            /// Each call performs the bus polling work itself. Messages that
-            /// the Swift wrapper does not model are consumed and ignored.
+            /// Messages that the Swift wrapper does not model are consumed and
+            /// ignored by the active bus watch.
             @concurrent
             public mutating func next() async -> BusMessage? {
-                while true {
-                    if Task.isCancelled {
-                        return nil
-                    }
-
-                    if let msg = swift_gst_bus_timed_pop_filtered(
-                        bus._bus,
-                        100_000_000,
-                        filter.gstMessageType
-                    ) {
-                        defer { swift_gst_message_unref(msg) }
-
-                        if let busMessage = bus.parseMessage(msg) {
-                            return busMessage
-                        }
-
-                        continue
-                    }
-
-                    if Task.isCancelled {
-                        return nil
-                    }
-
-                    await Task.yield()
-                }
+                await pump.next()
             }
         }
     }
 
     /// Returns a pull-based async sequence of bus messages.
     ///
-    /// This API destructively drains the underlying `GstBus` when the consumer
-    /// awaits the iterator's `next()` method. Prefer it when the caller owns bus
-    /// draining and wants demand-driven polling without the detached producer
-    /// and Swift-side buffering used by ``messages(filter:)``.
-    ///
-    /// `messageSequence(filter:)` uses GStreamer's C-side filtered timed pop.
-    /// Non-matching queued messages may be discarded by that C API while it
-    /// searches for a matching message. The default ``Filter/all`` is the
+    /// This API destructively drains the underlying `GstBus` through a private
+    /// bus watch while an iterator is active. The default ``Filter/all`` is the
     /// broadest set of message kinds modeled by this Swift wrapper, not raw
     /// `GST_MESSAGE_ANY`.
     ///
     /// Keep one active drainer per bus. Multiple sequences, streams, or
     /// convenience API calls compete for the same queue. ERROR messages are
     /// returned as values, EOS is returned as a value and does not terminate the
-    /// sequence, and cancellation is checked between 100 ms timed polls.
+    /// sequence, and cancellation of one pending `next()` does not stop the
+    /// shared watch for copied iterators.
     ///
     /// - Parameter filter: Message types to receive. Defaults to ``Filter/all``.
     /// - Returns: A pull-based ``Messages`` sequence.
     public func messageSequence(filter: Filter = .all) -> Messages {
         Messages(bus: self, filter: filter)
+    }
+
+    fileprivate final class MessagePump: @unchecked Sendable {
+        private struct Waiter: Sendable {
+            let id: UInt64
+            let continuation: CheckedContinuation<BusMessage?, Never>
+        }
+
+        private struct State {
+            var queue: [BusMessage] = []
+            var waiters: [Waiter] = []
+            var nextWaiterID: UInt64 = 0
+            var closed = false
+            var startupFailed = false
+        }
+
+        private enum NextRegistration {
+            case immediate(BusMessage?)
+            case waiting(UInt64)
+        }
+
+        private let bus: Bus
+        private let filter: Filter
+        private let state = Mutex(State())
+        private var registration: OpaquePointer?
+
+        init(bus: Bus, filter: Filter) {
+            self.bus = bus
+            self.filter = filter
+            startWatch()
+        }
+
+        deinit {
+            close()
+        }
+
+        @concurrent
+        func next() async -> BusMessage? {
+            if Task.isCancelled {
+                return nil
+            }
+
+            let cancellation = BusMessageWaiterCancellation()
+            let result = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    let registration = state.withLock { state -> NextRegistration in
+                        if !state.queue.isEmpty {
+                            return .immediate(state.queue.removeFirst())
+                        }
+                        if state.closed || state.startupFailed {
+                            return .immediate(nil)
+                        }
+
+                        let waiterID = state.nextWaiterID
+                        state.nextWaiterID &+= 1
+                        state.waiters.append(Waiter(id: waiterID, continuation: continuation))
+                        return .waiting(waiterID)
+                    }
+
+                    switch registration {
+                    case .immediate(let message):
+                        cancellation.finish()
+                        continuation.resume(returning: message)
+
+                    case .waiting(let waiterID):
+                        cancellation.register(pump: self, waiterID: waiterID)
+                        if Task.isCancelled {
+                            cancellation.cancel()
+                        }
+                    }
+                }
+            } onCancel: {
+                cancellation.cancel()
+            }
+
+            cancellation.finish()
+            return result
+        }
+
+        fileprivate func handleBorrowedMessage(_ message: UnsafeMutablePointer<GstMessage>) {
+            let messageType = swift_gst_message_type(message)
+            let messageMask = UInt32(bitPattern: messageType.rawValue)
+            guard messageMask & filter.rawValue != 0 else {
+                return
+            }
+            guard let busMessage = bus.parseMessage(message) else {
+                return
+            }
+
+            enqueue(busMessage)
+        }
+
+        private func enqueue(_ message: BusMessage) {
+            let waiter = state.withLock { state -> Waiter? in
+                guard !state.closed, !state.startupFailed else {
+                    return nil
+                }
+                if !state.waiters.isEmpty {
+                    return state.waiters.removeFirst()
+                }
+                state.queue.append(message)
+                return nil
+            }
+
+            waiter?.continuation.resume(returning: message)
+        }
+
+        fileprivate func cancelWaiter(id: UInt64) {
+            let waiter = state.withLock { state -> Waiter? in
+                guard let index = state.waiters.firstIndex(where: { $0.id == id }) else {
+                    return nil
+                }
+                return state.waiters.remove(at: index)
+            }
+
+            waiter?.continuation.resume(returning: nil)
+        }
+
+        private func close(startupFailed: Bool = false) {
+            let waiters = state.withLock { state -> [Waiter] in
+                guard !state.closed else {
+                    if startupFailed {
+                        state.startupFailed = true
+                    }
+                    return []
+                }
+
+                state.closed = true
+                state.startupFailed = startupFailed
+                state.queue.removeAll()
+                let waiters = state.waiters
+                state.waiters.removeAll()
+                return waiters
+            }
+
+            for waiter in waiters {
+                waiter.continuation.resume(returning: nil)
+            }
+            stopWatch()
+        }
+
+        private func startWatch() {
+            let context = BusWatchCallbackContext(pump: self)
+            let contextPointer = Unmanaged.passUnretained(context).toOpaque()
+            guard let watch = (withExtendedLifetime(context) {
+                swift_gst_bus_watch_start(
+                    bus._bus,
+                    busWatchMessageCallback,
+                    contextPointer,
+                    busWatchRetainContext,
+                    busWatchReleaseContext
+                )
+            }) else {
+                close(startupFailed: true)
+                return
+            }
+
+            registration = watch
+        }
+
+        private func stopWatch() {
+            let watch = registration
+            registration = nil
+
+            if let watch {
+                var watchToStop: OpaquePointer? = watch
+                swift_gst_bus_watch_stop(&watchToStop)
+            }
+        }
     }
 
     /// An async stream of messages from the bus.
@@ -596,6 +818,41 @@ public final class Bus: @unchecked Sendable {
         }
     }
 
+    private func parseElementMessageFields(
+        _ msg: UnsafeMutablePointer<GstMessage>
+    ) -> [String: String] {
+        guard let structure = gst_message_get_structure(msg) else {
+            return [:]
+        }
+
+        let fieldCount = Int(gst_structure_n_fields(structure))
+        guard fieldCount > 0 else {
+            return [:]
+        }
+
+        var fields: [String: String] = [:]
+        for index in 0..<fieldCount {
+            guard let fieldNamePointer = gst_structure_nth_field_name(structure, guint(index)) else {
+                continue
+            }
+
+            let fieldName = String(cString: fieldNamePointer)
+            if let stringValue = gst_structure_get_string(structure, fieldNamePointer) {
+                fields[fieldName] = String(cString: stringValue)
+                continue
+            }
+
+            guard let value = gst_structure_get_value(structure, fieldNamePointer),
+                  let serialized = gst_value_serialize(value)
+            else {
+                continue
+            }
+            fields[fieldName] = GLibString.takeOwnership(serialized)
+        }
+
+        return fields
+    }
+
     /// Parse a GstMessage into a BusMessage.
     private func parseMessage(_ msg: UnsafeMutablePointer<GstMessage>) -> BusMessage? {
         let messageType = swift_gst_message_type(msg)
@@ -636,7 +893,7 @@ public final class Bus: @unchecked Sendable {
 
         case GST_MESSAGE_ELEMENT:
             let sourceName = GLibString.takeOwnership(swift_gst_message_src(msg).flatMap { gst_object_get_name($0) }) ?? "element"
-            return .element(name: sourceName, fields: [:])
+            return .element(name: sourceName, fields: parseElementMessageFields(msg))
 
         case GST_MESSAGE_BUFFERING:
             var percent: gint = 0
