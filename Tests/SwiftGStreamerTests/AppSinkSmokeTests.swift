@@ -50,7 +50,8 @@ struct AppSinkSmokeTests {
             }
 
             // Access buffer data
-            #expect(frame.bytes.byteCount > 0)
+            let byteCount = try frame.withUnsafeBytes { $0.count }
+            #expect(byteCount > 0)
 
             if frameCount >= 3 { break }
         }
@@ -79,7 +80,8 @@ struct AppSinkSmokeTests {
         }
 
         let frame = try #require(firstFrame, "Expected videotestsrc to yield one BGRA frame")
-        #expect(frame.bytes.byteCount == 4 * 4 * 4) // width * height * bytesPerPixel
+        let byteCount = try frame.withUnsafeBytes { $0.count }
+        #expect(byteCount == 4 * 4 * 4) // width * height * bytesPerPixel
     }
 
     @Test("Pipeline convenience method for AppSink")

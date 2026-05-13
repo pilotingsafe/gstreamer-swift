@@ -1163,7 +1163,11 @@ struct APISafetyStaticTests {
             (
                 "Tests/SwiftGStreamerTests/AppSinkSmokeTests.swift",
                 "func videoFrameData() async throws",
-                ["#require(firstFrame", "#expect(frame.bytes.byteCount == 4 * 4 * 4)"]
+                [
+                    "#require(firstFrame",
+                    "let byteCount = try frame.withUnsafeBytes",
+                    "#expect(byteCount == 4 * 4 * 4)",
+                ]
             ),
             (
                 "Tests/SwiftGStreamerTests/AppSinkSmokeTests.swift",
