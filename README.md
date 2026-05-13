@@ -12,7 +12,7 @@ concurrency-friendly helpers.
 - Low-level `Pipeline`, `Element`, and `Bus` wrappers around GStreamer primitives
 - `AppSink` and `AppSource` helpers for pulling frames and pushing data
 - `Buffer`, `AudioBuffer`, and `VideoFrame` access through lifetime-bound `RawSpan`
-- Swift Concurrency sequences for bus messages, frames, buffers, and packets
+- Swift Concurrency sequences for bus messages, frames, and buffers
 - Typed pipeline builders for composable video pipeline construction
 - Explicit packet-delivery contracts for realtime best-effort and reliable streams
 - Convenience builders for common audio/video source and sink workflows
