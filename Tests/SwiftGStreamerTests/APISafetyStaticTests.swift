@@ -1075,6 +1075,52 @@ struct APISafetyStaticTests {
         )
     }
 
+    @Test("Release scope docs state v0.1 stable surface and limitations")
+    func releaseScopeDocsStateV01StableSurfaceAndLimitations() throws {
+        let root = try Self.packageRoot()
+        let paths = [
+            "RELEASE.md",
+            "docs/v0.1-scope.md",
+        ]
+        var failures: [String] = []
+
+        for path in paths {
+            let file = root.appendingPathComponent(path)
+            #expect(FileManager.default.fileExists(atPath: file.path), "\(path) must exist")
+
+            let documentation = try Self.contents(of: file)
+            let normalized = Self.normalizedLowercase(documentation)
+
+            let missingStableNames = Self.v01StableSurfaceNames().filter { !documentation.contains("`\($0)`") }
+            if !missingStableNames.isEmpty {
+                failures.append("\(path): missing exact stable surface names: \(missingStableNames.joined(separator: ", "))")
+            }
+
+            if !Self.containsSourceSinkBuilderScope(normalized) {
+                failures.append("\(path): missing non-core/convenience source and sink builder scope")
+            }
+            if !Self.containsTypedDSLScope(normalized) {
+                failures.append("\(path): missing experimental/non-core typed pipeline DSL scope")
+            }
+            if !Self.containsFiniteReliableDeliveryScope(normalized) {
+                failures.append("\(path): missing scoped non-core finite file/decode reliable delivery")
+            }
+            if !Self.containsReliableLiveDeliveryScope(normalized) {
+                failures.append("\(path): missing experimental/non-core reliable live delivery and sustained-slowness limit")
+            }
+
+            let missingLimitations = Self.missingV01KnownLimitations(in: normalized)
+            if !missingLimitations.isEmpty {
+                failures.append("\(path): missing known limitations: \(missingLimitations.joined(separator: ", "))")
+            }
+        }
+
+        #expect(
+            failures.isEmpty,
+            "Release scope docs must state the exact v0.1 surface and limitations:\n\(failures.joined(separator: "\n"))"
+        )
+    }
+
     @Test("Source symbol DocC comments mark non-core convenience and experimental fronts")
     func sourceSymbolDocCCommentsMarkNonCoreConvenienceAndExperimentalFronts() throws {
         let root = try Self.packageRoot()
@@ -1302,6 +1348,58 @@ struct APISafetyStaticTests {
         let hasAppSource = normalized.contains("appsource") || normalized.contains("app source")
 
         return hasRequiredTerms && hasAppSink && hasAppSource
+    }
+
+    private static func v01StableSurfaceNames() -> [String] {
+        [
+            "Pipeline",
+            "Element",
+            "Bus",
+            "AppSink",
+            "AppSource",
+            "Buffer",
+            "AudioBufferSink",
+            "AudioBuffer",
+            "VideoFrame",
+        ]
+    }
+
+    private static func containsSourceSinkBuilderScope(_ normalized: String) -> Bool {
+        let mentionsSourceSinkBuilders = normalized.contains("source and sink builders")
+            || normalized.contains("source/sink builders")
+        return mentionsSourceSinkBuilders
+            && normalized.contains("non-core")
+            && normalized.contains("convenience")
+    }
+
+    private static func containsTypedDSLScope(_ normalized: String) -> Bool {
+        normalized.contains("typed pipeline dsl")
+            && normalized.contains("experimental")
+            && normalized.contains("non-core")
+    }
+
+    private static func containsFiniteReliableDeliveryScope(_ normalized: String) -> Bool {
+        normalized.contains("finite file/decode reliable delivery")
+            && normalized.contains("audiofilesource.reliablepackets()")
+            && normalized.contains("scoped non-core")
+    }
+
+    private static func containsReliableLiveDeliveryScope(_ normalized: String) -> Bool {
+        normalized.contains("reliable live delivery")
+            && normalized.contains("experimental")
+            && normalized.contains("non-core")
+            && normalized.contains("not lossless")
+            && normalized.contains("sustained slowness")
+    }
+
+    private static func missingV01KnownLimitations(in normalized: String) -> [String] {
+        [
+            "one bus drainer only",
+            "no bus fan-out",
+            "reliable live source is not lossless under sustained slowness",
+            "typed dsl is experimental",
+            "macos/linux verified only",
+        ].filter { !normalized.contains($0) }
     }
 
     private static func missingPositionedNonCoreLayers(in source: String) -> [String] {

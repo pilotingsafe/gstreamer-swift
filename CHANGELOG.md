@@ -4,10 +4,14 @@
 
 ### Positioning
 
-- Repositioned v0.1 compatibility around a low-level core public surface:
-  `Pipeline`, `Element`, `Bus`, `AppSink`, `AppSource`, and buffer/frame
-  wrappers. Source/sink builders, typed pipelines, and reliable packet delivery
-  are documented as convenience or experimental layers.
+- Added v0.1 release scope notes in [RELEASE.md](RELEASE.md) and
+  [docs/v0.1-scope.md](docs/v0.1-scope.md). v0.1 compatibility is centered on
+  the low-level core public surface: `Pipeline`, `Element`, `Bus`, `AppSink`,
+  `AppSource`, and buffer/frame wrappers. Source/sink builders are documented
+  as non-core convenience layers, the typed pipeline DSL is experimental, finite
+  file/decode reliable delivery has a scoped non-core contract, and reliable
+  live delivery remains experimental/non-core; sustained slowness can still
+  surface upstream or device-level loss.
 
 ### Features
 
