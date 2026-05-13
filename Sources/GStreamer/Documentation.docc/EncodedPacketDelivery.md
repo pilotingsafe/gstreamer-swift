@@ -4,6 +4,9 @@ Choose between realtime best-effort streams and reliable archival streams.
 
 ## Overview
 
+For the cross-cutting lifecycle, bus-draining, packet-delivery, and
+single-consumer rules, start with <doc:APIContract>.
+
 `AudioSource.packets()` is a realtime stream. It uses bounded newest-buffer
 backpressure and can drop older packets when the consumer is slower than the
 capture source. This is the right tradeoff for live microphone capture.

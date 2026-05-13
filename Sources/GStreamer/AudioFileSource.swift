@@ -78,6 +78,23 @@ public struct AudioFileSource: Sendable {
   }
 }
 
+internal enum AudioFileReliableCallbackRegistrationFailureForTesting: Sendable, Equatable {
+  case newSample
+  case eos
+  case bus
+
+  fileprivate var errorMessage: String {
+    switch self {
+    case .newSample:
+      return "Failed to connect appsink new-sample callback"
+    case .eos:
+      return "Failed to connect appsink eos callback"
+    case .bus:
+      return "Failed to connect bus sync-message observer"
+    }
+  }
+}
+
 /// Builder for an audio file source that can produce reliable packets.
 public struct AudioFileSourceBuilder: Sendable {
   private let path: String
@@ -90,8 +107,11 @@ public struct AudioFileSourceBuilder: Sendable {
   private var candidateDescriptionsForTesting: [String]?
   private var candidateSinkNameForTesting: String?
   private var onCandidateStartForTesting: (@Sendable (Pipeline, String) -> Void)?
+  private var afterCallbackRegistrationForTesting: (@Sendable (Pipeline, String) -> Void)?
   private var afterCandidatePlayForTesting: (@Sendable (Pipeline, String) -> Void)?
   private var onCleanupForTesting: (@Sendable () -> Void)?
+  private var reliableCallbackRegistrationFailureForTesting:
+    AudioFileReliableCallbackRegistrationFailureForTesting?
 
   fileprivate init(path: String) {
     self.path = path
@@ -179,8 +199,10 @@ public struct AudioFileSourceBuilder: Sendable {
       candidateDescriptionsForTesting: candidateDescriptionsForTesting,
       candidateSinkNameForTesting: candidateSinkNameForTesting,
       onCandidateStartForTesting: onCandidateStartForTesting,
+      afterCallbackRegistrationForTesting: afterCallbackRegistrationForTesting,
       afterCandidatePlayForTesting: afterCandidatePlayForTesting,
       onCleanupForTesting: onCleanupForTesting,
+      reliableCallbackRegistrationFailureForTesting: reliableCallbackRegistrationFailureForTesting,
       probeState: AudioFileReliablePacketProbeState()
     )
     return AudioFileSource(configuration: configuration)
@@ -226,6 +248,14 @@ public struct AudioFileSourceBuilder: Sendable {
     return copy
   }
 
+  internal func withReliablePacketAfterCallbackRegistrationForTesting(
+    _ callback: @escaping @Sendable (Pipeline, String) -> Void
+  ) -> AudioFileSourceBuilder {
+    var copy = self
+    copy.afterCallbackRegistrationForTesting = callback
+    return copy
+  }
+
   internal func withReliablePacketAfterCandidatePlayForTesting(
     _ callback: @escaping @Sendable (Pipeline, String) -> Void
   ) -> AudioFileSourceBuilder {
@@ -239,6 +269,14 @@ public struct AudioFileSourceBuilder: Sendable {
   ) -> AudioFileSourceBuilder {
     var copy = self
     copy.onCleanupForTesting = callback
+    return copy
+  }
+
+  internal func withReliablePacketCallbackRegistrationFailureForTesting(
+    _ failure: AudioFileReliableCallbackRegistrationFailureForTesting?
+  ) -> AudioFileSourceBuilder {
+    var copy = self
+    copy.reliableCallbackRegistrationFailureForTesting = failure
     return copy
   }
 
@@ -295,8 +333,11 @@ private struct AudioFileSourceConfiguration: Sendable {
   let candidateDescriptionsForTesting: [String]?
   let candidateSinkNameForTesting: String?
   let onCandidateStartForTesting: (@Sendable (Pipeline, String) -> Void)?
+  let afterCallbackRegistrationForTesting: (@Sendable (Pipeline, String) -> Void)?
   let afterCandidatePlayForTesting: (@Sendable (Pipeline, String) -> Void)?
   let onCleanupForTesting: (@Sendable () -> Void)?
+  let reliableCallbackRegistrationFailureForTesting:
+    AudioFileReliableCallbackRegistrationFailureForTesting?
   let probeState: AudioFileReliablePacketProbeState
 }
 
@@ -1074,16 +1115,18 @@ private final class ActiveCandidate: @unchecked Sendable {
     let registrations = try withExtendedLifetime(context) {
       () throws -> (newSample: OpaquePointer, eos: OpaquePointer, bus: OpaquePointer) in
       guard
-        let newSampleRegistration = swift_gst_app_sink_connect_new_sample(
-          appSink,
-          audioFileReliableNewSampleCallback,
-          contextPointer,
-          audioFileReliableRetainContext,
-          audioFileReliableReleaseContext
-        )
+        let newSampleRegistration = configuration.reliableCallbackRegistrationFailureForTesting == .newSample
+          ? nil
+          : swift_gst_app_sink_connect_new_sample(
+              appSink,
+              audioFileReliableNewSampleCallback,
+              contextPointer,
+              audioFileReliableRetainContext,
+              audioFileReliableReleaseContext
+            )
       else {
         throw GStreamerError.busError(
-          "Failed to connect appsink new-sample callback",
+          AudioFileReliableCallbackRegistrationFailureForTesting.newSample.errorMessage,
           source: "ReliablePackets",
           debug: nil
         )
@@ -1091,37 +1134,41 @@ private final class ActiveCandidate: @unchecked Sendable {
       configuration.probeState.incrementNewSampleHandlerCount()
 
       guard
-        let eosRegistration = swift_gst_app_sink_connect_eos(
-          appSink,
-          audioFileReliableEOSCallback,
-          contextPointer,
-          audioFileReliableRetainContext,
-          audioFileReliableReleaseContext
-        )
+        let eosRegistration = configuration.reliableCallbackRegistrationFailureForTesting == .eos
+          ? nil
+          : swift_gst_app_sink_connect_eos(
+              appSink,
+              audioFileReliableEOSCallback,
+              contextPointer,
+              audioFileReliableRetainContext,
+              audioFileReliableReleaseContext
+            )
       else {
         swift_gst_callback_registration_disconnect(newSampleRegistration)
         configuration.probeState.decrementNewSampleHandlerCount()
         throw GStreamerError.busError(
-          "Failed to connect appsink eos callback",
+          AudioFileReliableCallbackRegistrationFailureForTesting.eos.errorMessage,
           source: "ReliablePackets",
           debug: nil
         )
       }
 
       guard
-        let busRegistration = swift_gst_bus_connect_sync_message_observer(
-          callbackBus._bus,
-          audioFileReliableBusSyncMessageCallback,
-          contextPointer,
-          audioFileReliableRetainContext,
-          audioFileReliableReleaseContext
-        )
+        let busRegistration = configuration.reliableCallbackRegistrationFailureForTesting == .bus
+          ? nil
+          : swift_gst_bus_connect_sync_message_observer(
+              callbackBus._bus,
+              audioFileReliableBusSyncMessageCallback,
+              contextPointer,
+              audioFileReliableRetainContext,
+              audioFileReliableReleaseContext
+            )
       else {
         swift_gst_callback_registration_disconnect(newSampleRegistration)
         configuration.probeState.decrementNewSampleHandlerCount()
         swift_gst_callback_registration_disconnect(eosRegistration)
         throw GStreamerError.busError(
-          "Failed to connect bus sync-message observer",
+          AudioFileReliableCallbackRegistrationFailureForTesting.bus.errorMessage,
           source: "ReliablePackets",
           debug: nil
         )
@@ -1134,6 +1181,7 @@ private final class ActiveCandidate: @unchecked Sendable {
     self.eosRegistration = registrations.eos
     self.busRegistration = registrations.bus
     configuration.probeState.recordPipeline(pipeline)
+    configuration.afterCallbackRegistrationForTesting?(pipeline, candidate.sinkName)
   }
 
   deinit {

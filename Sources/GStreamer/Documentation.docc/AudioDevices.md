@@ -1,11 +1,12 @@
 # Audio Sources and Outputs
 
-Capture from microphones and play to speakers with high-level builders.
+Capture from microphones and play to speakers with convenience builders.
 
 ## Overview
 
-``AudioSource`` and ``AudioSink`` provide cross-platform audio pipelines with
-device enumeration, format configuration, and optional encoding for capture.
+``AudioSource`` and ``AudioSink`` build audio pipelines using the devices and
+GStreamer backends available on the current platform. They provide device
+enumeration, format configuration, and optional encoding for capture.
 
 ## Enumerating Devices
 
@@ -70,5 +71,5 @@ try await speaker.play(buffer)
 
 ## Notes
 
-``AudioBufferSink`` remains the low-level appsink wrapper for raw audio capture.
-Use ``AudioSource`` for the high-level builder API.
+``AudioBufferSink`` remains the lower-level appsink wrapper for raw audio
+capture. Use ``AudioSource`` when a convenience builder fits the application.

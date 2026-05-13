@@ -917,40 +917,163 @@ struct ReliablePacketCancellationTests {
         #expect(breakCount == 3)
         #expect(breakCleanup)
     }
+}
 
-    @Test("Handler, continuation, cleanup ack, and same-pipeline bus drainability are observable after cleanup")
-    func lifecycleProbesAreCleanAfterReliableCleanup() async throws {
+@Suite("Reliable Packet Natural EOS Cleanup", .timeLimit(.minutes(1)))
+struct ReliablePacketNaturalEOSCleanupTests {
+
+    init() throws {
+        try GStreamer.initialize()
+    }
+
+    @Test("Natural EOS cleanup clears runtime probes")
+    func naturalEOSCleanupClearsRuntimeProbes() async throws {
         let fixture = try await ReliablePacketsTests.makeAudioFixture(packetCount: 20)
-        let pipelineCapture = PipelineCapture()
         let source = try AudioSource.file(path: fixture.path)
             .withOpusEncoding(bitrate: 64_000)
-            .withReliablePacketOnCandidateStartForTesting { pipeline, _ in
-                pipelineCapture.record(pipeline)
-            }
             .build()
 
-        _ = try await ReliablePacketsTests.collectTrace(source.reliablePackets(), limit: 4)
+        let trace = try await ReliablePacketsTests.collectTrace(source.reliablePackets())
         let snapshot = await source.reliablePacketRuntimeSnapshotForTesting()
 
+        #expect(trace.count > 0)
+        #expect(trace.reachedCleanEOS)
         #expect(snapshot.newSampleHandlerCount == 0)
         #expect(snapshot.pendingContinuationCount == 0)
         #expect(snapshot.cleanupAcknowledgementCount >= 1)
         #expect(await source.reliablePacketPipelineForTesting() == nil)
+    }
+}
 
-        let pipeline = try #require(pipelineCapture.pipeline())
-        #expect(swift_gst_test_post_element_marker(pipeline._element, "after-reliable-cleanup") != 0)
+@Suite("Reliable Packet Callback Registration Rollback", .timeLimit(.minutes(1)))
+struct ReliablePacketCallbackRegistrationRollbackTests {
 
-        var sawElementMessage = false
-        for await message in pipeline.bus.messages(filter: [.element, .error]) {
-            if case .element = message {
-                sawElementMessage = true
-                break
+    init() throws {
+        try GStreamer.initialize()
+    }
+
+    @Test(
+        "Injected callback registration failures roll back registered callbacks",
+        arguments: ReliableCallbackRegistrationFailureCase.all
+    )
+    func injectedCallbackRegistrationFailuresRollBackRegisteredCallbacks(
+        _ failureCase: ReliableCallbackRegistrationFailureCase
+    ) async throws {
+        let fixture = try await ReliablePacketsTests.makeAudioFixture(packetCount: 4)
+        let sinkName = "reliable_registration_sink"
+        let candidateDescription = try ReliablePacketsTests.reliableCandidateDescription(
+            for: fixture,
+            sinkName: sinkName
+        )
+        let capture = PipelineSinkCapture()
+        let source = try AudioSource.file(path: fixture.path)
+            .withOpusEncoding(bitrate: 64_000)
+            .withReliablePacketCandidateDescriptionsForTesting(
+                [candidateDescription],
+                sinkName: sinkName
+            )
+            .withReliablePacketCallbackRegistrationFailureForTesting(failureCase.failure)
+            .withReliablePacketOnCandidateStartForTesting { pipeline, candidateSinkName in
+                capture.record(pipeline: pipeline, sinkName: candidateSinkName)
             }
-            if case .error(let message, let debug) = message {
-                throw GStreamerError.busError(message, source: "ReliablePacketsTests", debug: debug)
+            .build()
+
+        let error = try #require(await ReliablePacketsTests.captureAsyncError {
+            try await ReliablePacketsTests.withTimeout(.seconds(2)) {
+                _ = try await ReliablePacketsTests.collectTrace(source.reliablePackets())
             }
-        }
-        #expect(sawElementMessage)
+        })
+
+        ReliablePacketsTests.expectBusError(
+            error,
+            message: failureCase.expectedMessage,
+            source: "ReliablePackets",
+            debug: nil
+        )
+
+        let snapshot = await source.reliablePacketRuntimeSnapshotForTesting()
+        #expect(snapshot.newSampleHandlerCount == 0)
+        #expect(snapshot.pendingContinuationCount == 0)
+        #expect(snapshot.cleanupAcknowledgementCount == 0)
+        #expect(await source.reliablePacketPipelineForTesting() == nil)
+
+        let captured = try #require(capture.snapshot())
+        #expect(captured.sinkName == sinkName)
+        let sinkElement = try #require(captured.pipeline.element(named: sinkName))
+        #expect(ReliablePacketsTests.signalHandlerCount(on: sinkElement, signalName: "new-sample") == 0)
+        #expect(ReliablePacketsTests.signalHandlerCount(on: sinkElement, signalName: "eos") == 0)
+        #expect(ReliablePacketsTests.signalHandlerCount(on: captured.pipeline.bus, signalName: "sync-message") == 0)
+    }
+}
+
+@Suite("Reliable Packet Runtime Callback Lifecycle", .timeLimit(.minutes(1)))
+struct ReliablePacketRuntimeCallbackLifecycleTests {
+
+    init() throws {
+        try GStreamer.initialize()
+    }
+
+    @Test("Runtime callbacks are connected before flow and disconnected after EOS cleanup")
+    func runtimeCallbacksAreConnectedBeforeFlowAndDisconnectedAfterEOSCleanup() async throws {
+        let fixture = try await ReliablePacketsTests.makeAudioFixture(packetCount: 12)
+        let capture = PipelineSinkCapture()
+        let activeCounts = ReliableCallbackHandlerCountCapture()
+        let source = try AudioSource.file(path: fixture.path)
+            .withOpusEncoding(bitrate: 64_000)
+            .withReliablePacketAfterCallbackRegistrationForTesting { pipeline, sinkName in
+                capture.record(pipeline: pipeline, sinkName: sinkName)
+                guard let sinkElement = pipeline.element(named: sinkName) else {
+                    return
+                }
+                activeCounts.record(
+                    ReliableCallbackHandlerCounts(
+                        newSample: ReliablePacketsTests.signalHandlerCount(
+                            on: sinkElement,
+                            signalName: "new-sample"
+                        ),
+                        eos: ReliablePacketsTests.signalHandlerCount(
+                            on: sinkElement,
+                            signalName: "eos"
+                        ),
+                        bus: ReliablePacketsTests.signalHandlerCount(
+                            on: pipeline.bus,
+                            signalName: "sync-message"
+                        )
+                    )
+                )
+            }
+            .build()
+
+        let trace = try await ReliablePacketsTests.collectTrace(source.reliablePackets())
+        let snapshot = await source.reliablePacketRuntimeSnapshotForTesting()
+
+        let counts = try #require(activeCounts.snapshot())
+        #expect(counts.newSample > 0)
+        #expect(counts.eos > 0)
+        #expect(counts.bus > 0)
+        #expect(trace.count > 0)
+        #expect(trace.reachedCleanEOS)
+        #expect(snapshot.newSampleHandlerCount == 0)
+        #expect(snapshot.pendingContinuationCount == 0)
+        #expect(snapshot.cleanupAcknowledgementCount >= 1)
+
+        let captured = try #require(capture.snapshot())
+        let sinkElement = try #require(captured.pipeline.element(named: captured.sinkName))
+        #expect(ReliablePacketsTests.signalHandlerCount(on: sinkElement, signalName: "new-sample") == 0)
+        #expect(ReliablePacketsTests.signalHandlerCount(on: sinkElement, signalName: "eos") == 0)
+        #expect(ReliablePacketsTests.signalHandlerCount(on: captured.pipeline.bus, signalName: "sync-message") == 0)
+        #expect(await source.reliablePacketPipelineForTesting() == nil)
+        let cleanupMarker = "after-reliable-runtime-cleanup"
+        let cleanupMarkerTimeoutNanoseconds: UInt64 = 2_000_000_000
+        #expect(swift_gst_test_post_element_marker(captured.pipeline._element, cleanupMarker) != 0)
+        #expect(
+            swift_gst_test_bus_pop_marker(
+                captured.pipeline.bus._bus,
+                cleanupMarker,
+                cleanupMarkerTimeoutNanoseconds
+            ) != 0,
+            "Expected to drain the posted runtime cleanup marker"
+        )
     }
 }
 
@@ -1074,6 +1197,20 @@ extension ReliablePacketsTests {
 
     static func elementFactoryExists(_ name: String) -> Bool {
         name.withCString { swift_gst_test_element_factory_exists($0) != 0 }
+    }
+
+    static func signalHandlerCount(on element: Element, signalName: String) -> UInt32 {
+        let object = UnsafeMutableRawPointer(element.element).assumingMemoryBound(to: GObject.self)
+        return signalName.withCString {
+            swift_gst_test_signal_handler_count(object, $0)
+        }
+    }
+
+    static func signalHandlerCount(on bus: Bus, signalName: String) -> UInt32 {
+        let object = UnsafeMutableRawPointer(bus._bus).assumingMemoryBound(to: GObject.self)
+        return signalName.withCString {
+            swift_gst_test_signal_handler_count(object, $0)
+        }
     }
 
     static func collectTrace(
@@ -1280,6 +1417,37 @@ extension ReliablePacketsTests {
         return UInt64(info.resident_size)
     }
     #endif
+}
+
+struct ReliableCallbackRegistrationFailureCase: Sendable, CustomTestStringConvertible {
+    let failure: AudioFileReliableCallbackRegistrationFailureForTesting
+    let expectedMessage: String
+
+    static let all: [ReliableCallbackRegistrationFailureCase] = [
+        ReliableCallbackRegistrationFailureCase(
+            failure: .newSample,
+            expectedMessage: "Failed to connect appsink new-sample callback"
+        ),
+        ReliableCallbackRegistrationFailureCase(
+            failure: .eos,
+            expectedMessage: "Failed to connect appsink eos callback"
+        ),
+        ReliableCallbackRegistrationFailureCase(
+            failure: .bus,
+            expectedMessage: "Failed to connect bus sync-message observer"
+        ),
+    ]
+
+    var testDescription: String {
+        switch failure {
+        case .newSample:
+            return "new-sample"
+        case .eos:
+            return "eos"
+        case .bus:
+            return "bus"
+        }
+    }
 }
 
 enum ReliableEncodingSpec: String, Sendable, CustomTestStringConvertible {
@@ -1667,14 +1835,32 @@ private actor StringProbe {
     }
 }
 
-private final class PipelineCapture: @unchecked Sendable {
-    private let storage = Mutex<Pipeline?>(nil)
+private struct ReliableCallbackHandlerCounts: Sendable, Equatable {
+    var newSample: UInt32
+    var eos: UInt32
+    var bus: UInt32
+}
 
-    func record(_ pipeline: Pipeline) {
-        storage.withLock { $0 = pipeline }
+private final class ReliableCallbackHandlerCountCapture: @unchecked Sendable {
+    private let storage = Mutex<ReliableCallbackHandlerCounts?>(nil)
+
+    func record(_ counts: ReliableCallbackHandlerCounts) {
+        storage.withLock { $0 = counts }
     }
 
-    func pipeline() -> Pipeline? {
+    func snapshot() -> ReliableCallbackHandlerCounts? {
+        storage.withLock { $0 }
+    }
+}
+
+private final class PipelineSinkCapture: @unchecked Sendable {
+    private let storage = Mutex<(pipeline: Pipeline, sinkName: String)?>(nil)
+
+    func record(pipeline: Pipeline, sinkName: String) {
+        storage.withLock { $0 = (pipeline, sinkName) }
+    }
+
+    func snapshot() -> (pipeline: Pipeline, sinkName: String)? {
         storage.withLock { $0 }
     }
 }

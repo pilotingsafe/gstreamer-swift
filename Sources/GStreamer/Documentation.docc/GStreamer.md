@@ -1,10 +1,13 @@
 # ``GStreamer``
 
-A modern Swift wrapper for GStreamer with async/await support.
+A Swift package that wraps GStreamer with low-level Swift APIs and selected
+concurrency-friendly helpers.
 
 ## Overview
 
-GStreamer for Swift provides a type-safe, Swift-native interface to the GStreamer multimedia framework. Build powerful video processing pipelines with Swift Concurrency.
+GStreamer for Swift provides direct wrappers around pipelines, elements, bus
+messages, app sinks, app sources, and buffers. Convenience builders for common
+audio and video flows are layered on top of those lower-level APIs.
 
 ```swift
 import GStreamer
@@ -32,15 +35,16 @@ for await frame in sink.frames() {
 
 ## Featured
 
-Start with <doc:GettingStarted>, then explore typed pipelines, frame access,
-video capture, audio capture, audio devices, and platform-specific pipelines
-from the topic groups below.
+Start with <doc:GettingStarted> and <doc:APIContract>, then explore typed
+pipelines, frame access, video capture, audio capture, audio devices, and
+platform-specific pipelines from the topic groups below.
 
 ## Topics
 
 ### Essentials
 
 - <doc:GettingStarted>
+- <doc:APIContract>
 - ``GStreamer``
 - ``Pipeline``
 

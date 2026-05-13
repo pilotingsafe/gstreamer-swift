@@ -1,24 +1,29 @@
 # GStreamer
 
-[![CI](https://github.com/wendylabsinc/gstreamer/actions/workflows/ci.yml/badge.svg)](https://github.com/wendylabsinc/gstreamer/actions/workflows/ci.yml)
 [![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%20|%20Linux-blue.svg)](https://swift.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A modern Swift 6.2 wrapper for GStreamer, designed for robotics and computer vision applications.
+A Swift 6.2 package that wraps GStreamer with low-level Swift APIs and selected
+concurrency-friendly helpers.
 
 ## Features
 
-- Swift Concurrency support with `AsyncStream` for bus messages and video frames
-- Safe buffer access via `RawSpan` - memory views cannot escape their scope
-- Clean, ergonomic API with minimal boilerplate
-- Full `Sendable` conformance for safe concurrent access
-- Cross-platform: macOS, iOS, tvOS, watchOS, visionOS, and Linux
+- Low-level `Pipeline`, `Element`, and `Bus` wrappers around GStreamer primitives
+- `AppSink` and `AppSource` helpers for pulling frames and pushing data
+- `Buffer`, `AudioBuffer`, and `VideoFrame` access through lifetime-bound `RawSpan`
+- Swift Concurrency sequences for bus messages, frames, buffers, and packets
+- Typed pipeline builders for composable video pipeline construction
+- Explicit packet-delivery contracts for realtime best-effort and reliable streams
+- Convenience builders for common audio/video source and sink workflows
 
 ## Requirements
 
 - Swift 6.2+
-- macOS 26.0+ (typed pipelines use value generics, which are only available on macOS 26)
+- v0.1 documentation and verification focus on macOS and Linux
+- `Package.swift` declares Apple platform minimums for macOS, iOS, tvOS,
+  watchOS, and visionOS 26.0; those declarations are not the same as CI-tested
+  v0.1 support
 - `pkgconf`/`pkg-config` available on PATH
 - GStreamer 1.20+ development headers and libraries installed on your system
 - `pkg-config` metadata for the SwiftPM system-library targets:
@@ -35,20 +40,6 @@ This installs `pkg-config`, GStreamer, the base development files, and common pl
 ```bash
 gst-inspect-1.0 --version
 ```
-
-**Windows:**
-
-Option 1 - MSYS2 (recommended for Swift):
-```powershell
-# In MSYS2 UCRT64 terminal
-pacman -S mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gstreamer mingw-w64-ucrt-x86_64-gst-plugins-base mingw-w64-ucrt-x86_64-gst-plugins-good
-```
-
-Option 2 - Official Installer:
-1. Download from https://gstreamer.freedesktop.org/download/
-2. Install both **runtime** and **development** installers; SwiftPM needs the development headers, libraries, and `.pc` files
-3. Add to PATH: `C:\gstreamer\1.0\msvc_x86_64\bin`
-4. Set `PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig`
 
 **Ubuntu/Debian:**
 ```bash
@@ -71,37 +62,6 @@ sudo apt install gstreamer1.0-libav
 # For hardware acceleration (optional)
 sudo apt install gstreamer1.0-vaapi
 ```
-
-**Fedora/RHEL:**
-```bash
-# Core development libraries
-sudo dnf install \
-    pkgconf-pkg-config \
-    gstreamer1-devel \
-    gstreamer1-plugins-base-devel
-
-# Runtime plugins
-sudo dnf install \
-    gstreamer1-plugins-base \
-    gstreamer1-plugins-good \
-    gstreamer1-plugins-bad-free \
-    gstreamer1-plugins-ugly-free \
-    gstreamer1-libav
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S pkgconf gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
-```
-
-**NVIDIA Jetson (JetPack):**
-
-GStreamer runtime and hardware-accelerated plugins come pre-installed with JetPack, including support for NVENC/NVDEC and the Jetson multimedia API. You only need to install the development headers:
-```bash
-sudo apt install pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-```
-
-Jetson-specific plugins like `nvvidconv`, `nvv4l2decoder`, and `nvarguscamerasrc` are already available.
 
 **Verifying Installation:**
 ```bash
@@ -127,7 +87,15 @@ Add the package to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/wendylabsinc/gstreamer.git", from: "0.0.4")
+    .package(url: "https://github.com/pilotingsafe/gstreamer-swift.git", branch: "main")
+]
+```
+
+After a v0.1 tag exists, prefer:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/pilotingsafe/gstreamer-swift.git", from: "0.1.0")
 ]
 ```
 
@@ -142,7 +110,136 @@ Then add `GStreamer` to your target dependencies:
 
 ## Usage
 
-### High-Level Video Capture
+### Basic Pipeline
+
+```swift
+import GStreamer
+
+// Create and run a pipeline.
+let pipeline = try Pipeline("videotestsrc num-buffers=100 ! autovideosink")
+try pipeline.play()
+
+// Own bus draining with one sequence.
+messageLoop: for await message in pipeline.bus.messageSequence(filter: [.eos, .error]) {
+    switch message {
+    case .eos:
+        break messageLoop
+    case .error(let message, let debug):
+        print("Error: \(message)")
+        if let debug { print("Debug: \(debug)") }
+        break messageLoop
+    default:
+        break
+    }
+}
+
+pipeline.stop()
+```
+
+`messageSequence(filter:)` is a single-owner async sequence backed by a private
+GStreamer bus watch. Creating an iterator starts the watch, which can drain and
+buffer matching `BusMessage` values before the consumer awaits `next()`. That
+parsed-message buffer currently holds at most 256 parsed messages and uses
+best-effort overflow handling: ERROR and EOS are critical, older
+noncritical messages are discarded first, and a newest critical message remains
+observable even if older critical messages must be evicted. EOS and ERROR are
+delivered as values so the caller decides when to break.
+
+`messages(filter:)` remains the stream-based compatibility API. It uses a
+detached producer task and an `AsyncStream`, finishes after delivering EOS, and
+continues to back the `errors()`, `warnings()`, and `stateChanges()`
+convenience streams. The EOS waiting helpers use `messageSequence(filter:)` and
+inherit its single-owner bus-draining behavior. Do not run multiple bus
+consumers unless you intend them to compete for the same destructive GStreamer
+bus queue. See the DocC article `APIContract` for the consolidated lifecycle,
+bus, and packet-delivery contract.
+
+### Pulling Video Frames
+
+```swift
+import GStreamer
+
+let pipeline = try Pipeline("""
+    videotestsrc num-buffers=10 ! \
+    video/x-raw,format=BGRA,width=640,height=480 ! \
+    appsink name=sink
+    """)
+
+let sink = try AppSink(pipeline: pipeline, name: "sink")
+try pipeline.play()
+
+for await frame in sink.frames() {
+    print("Frame: \(frame.width)x\(frame.height) \(frame.format.formatString)")
+
+    try frame.withUnsafeBytes { buffer in
+        let firstPixel = Array(buffer.prefix(4))
+        print("First pixel: \(firstPixel)")
+    }
+}
+
+pipeline.stop()
+```
+
+### Pushing Data With AppSource
+
+```swift
+import GStreamer
+
+let pipeline = try Pipeline("""
+    appsrc name=src ! \
+    audio/x-raw,format=S16LE,rate=44100,channels=2,layout=interleaved ! \
+    audioconvert ! fakesink
+    """)
+
+let src = try AppSource(pipeline: pipeline, name: "src")
+src.setCaps("audio/x-raw,format=S16LE,rate=44100,channels=2,layout=interleaved")
+
+try pipeline.play()
+try src.push(data: [0, 0, 0, 0], pts: 0, duration: 22_675_736)
+src.endOfStream()
+pipeline.stop()
+```
+
+### Buffer Access
+
+```swift
+import GStreamer
+
+for await frame in sink.frames() {
+    let bytes = frame.bytes
+    print("Frame byte count: \(bytes.byteCount)")
+
+    try frame.withUnsafeBytes { buffer in
+        // Use this scoped pointer when an interop API needs UnsafeRawBufferPointer.
+    }
+}
+```
+
+### Type-Safe Pipelines
+
+```swift
+@VideoPipelineBuilder
+func pipeline() -> PartialPipeline<_VideoFrame<BGRA<640, 480>>> {
+    VideoTestSource()
+    VideoConvert()
+    RawVideoFormat(layout: BGRA<640, 480>.self, framerate: "30/1")
+}
+
+try await withPipeline {
+    pipeline()
+} withEachFrame: { frame in
+    let raw = frame.rawFrame
+    print("\(raw.width)x\(raw.height) \(raw.format)")
+}
+```
+
+## Convenience APIs
+
+The source and sink builders compose common pipeline fragments for application
+code. They are convenience APIs layered over the lower-level wrappers above, and
+their backend availability depends on platform and installed GStreamer plugins.
+
+### Video Capture
 
 ```swift
 import GStreamer
@@ -158,7 +255,7 @@ for try await frame in source.frames() {
 }
 ```
 
-### High-Level Audio Capture
+### Audio Capture
 
 ```swift
 import GStreamer
@@ -241,9 +338,10 @@ do {
 
 File reliable delivery is repeatable and backpressureable. Live reliable
 delivery is source-owned and single-sequence because it wraps one live appsink.
-See the DocC article `EncodedPacketDelivery` for the full boundary.
+Start with the DocC article `APIContract` for the consolidated contract, then
+see `EncodedPacketDelivery` for packet-specific details.
 
-### High-Level Audio Playback
+### Audio Playback
 
 ```swift
 import GStreamer
@@ -256,24 +354,6 @@ let speaker = try AudioSink.speaker()
 
 let buffer: AudioBuffer = /* ... */
 try await speaker.play(buffer)
-```
-
-### Type-Safe Pipelines
-
-```swift
-@VideoPipelineBuilder
-func pipeline() -> PartialPipeline<_VideoFrame<BGRA<640, 480>>> {
-    VideoTestSource()
-    VideoConvert()
-    RawVideoFormat(layout: BGRA<640, 480>.self, framerate: "30/1")
-}
-
-try await withPipeline {
-    pipeline()
-} withEachFrame: { frame in
-    let raw = frame.rawFrame
-    print("\(raw.width)x\(raw.height) \(raw.format)")
-}
 ```
 
 ### Device Enumeration
@@ -291,82 +371,6 @@ let speakers = try AudioSink.availableSpeakers()
 - `Examples/gst-audio-sink`: ergonomic speaker playback (sine tone)
 - `Examples/`: additional low-level pipelines, appsink/appsrc, and platform demos
 
-The sections below use raw pipeline strings for advanced or platform-specific cases.
-
-### Basic Pipeline
-
-```swift
-import GStreamer
-
-// Create and run a pipeline (GStreamer auto-initializes)
-let pipeline = try Pipeline("videotestsrc num-buffers=100 ! autovideosink")
-try pipeline.play()
-
-// Listen for bus messages
-messageLoop: for await message in pipeline.bus.messageSequence(filter: [.eos, .error]) {
-    switch message {
-    case .eos:
-        print("End of stream")
-        break messageLoop
-    case .error(let message, let debug):
-        print("Error: \(message)")
-        if let debug { print("Debug: \(debug)") }
-        break messageLoop
-    default:
-        break
-    }
-}
-
-pipeline.stop()
-```
-
-`messageSequence(filter:)` is a single-owner async sequence backed by a private
-GStreamer bus watch. Creating an iterator starts the watch, which can drain and
-buffer matching `BusMessage` values before the consumer awaits `next()`. That
-parsed-message buffer currently holds at most 256 parsed messages and uses
-best-effort overflow handling: ERROR and EOS are critical, older
-noncritical messages are discarded first, and a newest critical message remains
-observable even if older critical messages must be evicted. EOS and ERROR are
-delivered as values so the caller decides when to break. Use it when one task
-owns bus draining and you want to avoid blocking Swift concurrency threads.
-
-`messages(filter:)` remains the stream-based compatibility API. It uses a
-detached producer task and an `AsyncStream`, finishes after delivering EOS, and
-continues to back the `errors()`, `warnings()`, and `stateChanges()`
-convenience streams. The EOS waiting helpers use `messageSequence(filter:)` and
-inherit its single-owner bus-draining behavior. Do not run multiple bus
-consumers unless you intend them to compete for the same destructive GStreamer
-bus queue.
-
-### Pulling Video Frames
-
-```swift
-import GStreamer
-
-let pipeline = try Pipeline("""
-    videotestsrc num-buffers=10 ! \
-    video/x-raw,format=BGRA,width=640,height=480 ! \
-    appsink name=sink
-    """)
-
-let sink = try AppSink(pipeline: pipeline, name: "sink")
-try pipeline.play()
-
-// Process frames using AsyncStream
-for await frame in sink.frames() {
-    print("Frame: \(frame.width)x\(frame.height) \(frame.format.formatString)")
-
-    // Safe pointer access scoped to this closure
-    try frame.withUnsafeBytes { buffer in
-        // Process pixel data...
-        let firstPixel = Array(buffer.prefix(4)) // BGRA
-        print("First pixel: \(firstPixel)")
-    }
-}
-
-pipeline.stop()
-```
-
 ### Setting Element Properties
 
 ```swift
@@ -377,6 +381,36 @@ if let src = pipeline.element(named: "src") {
     src.set("is-live", true)     // Bool property
     src.set("name", "my-source") // String property
 }
+```
+
+## Manual Platform Notes
+
+These notes are platform-specific starting points, not v0.1 support guarantees.
+The first-class v0.1 setup path is macOS/Homebrew or Ubuntu/Debian with the
+required GStreamer development packages available through `pkg-config`.
+
+### Fedora/RHEL Setup
+
+```bash
+# Core development libraries
+sudo dnf install \
+    pkgconf-pkg-config \
+    gstreamer1-devel \
+    gstreamer1-plugins-base-devel
+
+# Runtime plugins
+sudo dnf install \
+    gstreamer1-plugins-base \
+    gstreamer1-plugins-good \
+    gstreamer1-plugins-bad-free \
+    gstreamer1-plugins-ugly-free \
+    gstreamer1-libav
+```
+
+### Arch Linux Setup
+
+```bash
+sudo pacman -S pkgconf gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
 ```
 
 ### Webcam Capture (Linux v4l2src)
@@ -614,45 +648,6 @@ if let camera = monitor.videoSources().first,
 }
 ```
 
-### NVIDIA Jetson Camera
-
-Use hardware-accelerated capture on NVIDIA Jetson:
-
-```swift
-import GStreamer
-
-// CSI camera with nvarguscamerasrc (IMX219, IMX477, etc.)
-let pipeline = try Pipeline("""
-    nvarguscamerasrc sensor-id=0 ! \
-    video/x-raw(memory:NVMM),width=1920,height=1080,framerate=30/1 ! \
-    nvvidconv ! \
-    video/x-raw,format=BGRA ! \
-    appsink name=sink
-    """)
-
-let sink = try pipeline.appSink(named: "sink")
-try pipeline.play()
-
-for await frame in sink.frames() {
-    // Process hardware-accelerated frames
-    try frame.withUnsafeBytes { buffer in
-        // Run TensorRT inference, etc.
-    }
-}
-```
-
-USB camera on Jetson with hardware conversion:
-
-```swift
-let pipeline = try Pipeline("""
-    v4l2src device=/dev/video0 ! \
-    video/x-raw,width=1280,height=720 ! \
-    nvvidconv ! \
-    video/x-raw,format=BGRA ! \
-    appsink name=sink
-    """)
-```
-
 ### RTSP Camera Stream
 
 Receive video from IP cameras:
@@ -714,7 +709,7 @@ public final class Pipeline: @unchecked Sendable {
 }
 ```
 
-### High-Level APIs
+### Convenience Builders
 
 ```swift
 public final class VideoSource: @unchecked Sendable {

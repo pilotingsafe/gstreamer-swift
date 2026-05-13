@@ -1,12 +1,14 @@
 # Video Source Guide
 
-Capture video from webcams with a high-level, cross-platform API.
+Capture video from webcams with convenience builders layered over GStreamer
+pipelines.
 
 ## Overview
 
-``VideoSource`` builds a pipeline for you and automatically selects the best
-available backend on each platform. It supports common configuration such as
-resolution, framerate, aspect-ratio handling, and optional encoding.
+``VideoSource`` builds a pipeline for you and selects from the backends
+available on the current platform and GStreamer installation. It supports common
+configuration such as resolution, framerate, aspect-ratio handling, and optional
+encoding.
 
 ## Enumerating Cameras
 

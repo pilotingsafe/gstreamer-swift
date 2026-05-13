@@ -228,26 +228,6 @@ public final class AppSink: @unchecked Sendable {
     ///     }
     /// }
     /// ```
-    ///
-    /// ## NVIDIA Jetson Example
-    ///
-    /// ```swift
-    /// // Jetson camera with hardware acceleration
-    /// let pipeline = try Pipeline("""
-    ///     nvarguscamerasrc ! \
-    ///     video/x-raw(memory:NVMM),width=1920,height=1080,framerate=30/1 ! \
-    ///     nvvidconv ! \
-    ///     video/x-raw,format=BGRA ! \
-    ///     appsink name=sink
-    ///     """)
-    ///
-    /// let sink = try AppSink(pipeline: pipeline, name: "sink")
-    /// try pipeline.play()
-    ///
-    /// for await frame in sink.frames() {
-    ///     // Process 1080p frames from Jetson camera
-    /// }
-    /// ```
     public func frames() -> Frames {
         Frames(sink: self)
     }

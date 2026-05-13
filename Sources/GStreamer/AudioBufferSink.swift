@@ -81,25 +81,6 @@ extension MediaStreamBackpressure {
 ///     }
 /// }
 /// ```
-///
-/// ## NVIDIA Jetson Audio
-///
-/// ```swift
-/// // Capture from USB microphone on Jetson
-/// let pipeline = try Pipeline("""
-///     alsasrc device=hw:1,0 ! \
-///     audioconvert ! \
-///     audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
-///     appsink name=sink
-///     """)
-///
-/// let sink = try AudioBufferSink(pipeline: pipeline, name: "sink")
-/// try pipeline.play()
-///
-/// for await buffer in sink.buffers() {
-///     // Feed to TensorRT speech model
-/// }
-/// ```
 public final class AudioBufferSink: @unchecked Sendable {
   /// The underlying element.
   private let element: Element

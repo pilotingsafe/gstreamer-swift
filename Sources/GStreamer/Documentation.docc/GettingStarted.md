@@ -13,7 +13,7 @@ This guide walks you through installing GStreamer, adding the Swift package to y
 Install GStreamer using Homebrew:
 
 ```bash
-brew install gstreamer
+brew install pkgconf gstreamer
 ```
 
 ### Linux (Ubuntu/Debian)
@@ -30,15 +30,7 @@ sudo apt-get install -y \
     gstreamer1.0-tools
 ```
 
-### NVIDIA Jetson
-
-GStreamer comes pre-installed with JetPack. Install Swift development tools:
-
-```bash
-# GStreamer is already included with JetPack
-# Just ensure the dev packages are available
-sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-```
+For other platform-specific pipeline examples, see <doc:PlatformGuide>.
 
 ## Adding the Package
 
@@ -46,7 +38,15 @@ Add GStreamer to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/wendylabsinc/gstreamer.git", from: "1.0.0")
+    .package(url: "https://github.com/pilotingsafe/gstreamer-swift.git", branch: "main")
+]
+```
+
+After a v0.1 tag exists, prefer:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/pilotingsafe/gstreamer-swift.git", from: "0.1.0")
 ]
 ```
 
@@ -98,6 +98,9 @@ for await message in pipeline.bus.messages() {
 pipeline.stop()
 ```
 
+See <doc:APIContract> before composing additional bus consumers, reliable
+packet streams, or shutdown flows.
+
 ### Process Video Frames
 
 To process video frames in your application, use `appsink`:
@@ -125,6 +128,7 @@ pipeline.stop()
 
 ## Next Steps
 
+- <doc:APIContract>
 - <doc:WorkingWithVideoFrames>
 - <doc:PlatformGuide>
 - ``Pipeline``

@@ -4,7 +4,10 @@ Configure GStreamer pipelines for different platforms and devices.
 
 ## Overview
 
-GStreamer provides platform-specific elements for optimal performance on each system. This guide covers common configurations for Linux, NVIDIA Jetson, macOS, and more.
+GStreamer provides platform-specific elements for optimal performance on each
+system. This guide collects manual pipeline examples for Linux distributions,
+macOS, and network or file workflows; these examples are not v0.1 support
+guarantees.
 
 ## Linux Webcam Capture
 
@@ -74,46 +77,6 @@ let pipeline = try Pipeline("""
     pulsesrc ! \
     audioconvert ! \
     audio/x-raw,format=S16LE,rate=48000,channels=1 ! \
-    appsink name=sink
-    """)
-```
-
-## NVIDIA Jetson
-
-### CSI Camera with nvarguscamerasrc
-
-NVIDIA Jetson devices have hardware-accelerated camera capture:
-
-```swift
-// Jetson CSI camera (e.g., IMX219, IMX477)
-let pipeline = try Pipeline("""
-    nvarguscamerasrc sensor-id=0 ! \
-    video/x-raw(memory:NVMM),width=1920,height=1080,framerate=30/1 ! \
-    nvvidconv ! \
-    video/x-raw,format=BGRA ! \
-    appsink name=sink
-    """)
-
-let sink = try pipeline.appSink(named: "sink")
-try pipeline.play()
-
-for await frame in sink.frames() {
-    // Process hardware-accelerated frames
-    try frame.withUnsafeBytes { buffer in
-        // Run inference on BGRA data
-    }
-}
-```
-
-### USB Camera on Jetson
-
-```swift
-// USB camera with hardware conversion
-let pipeline = try Pipeline("""
-    v4l2src device=/dev/video0 ! \
-    video/x-raw,width=1280,height=720 ! \
-    nvvidconv ! \
-    video/x-raw,format=BGRA ! \
     appsink name=sink
     """)
 ```
