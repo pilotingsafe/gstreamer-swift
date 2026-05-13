@@ -1,7 +1,9 @@
-/// High-level webcam capture API with automatic source selection and fallback.
+/// Convenience webcam capture API with automatic source selection and fallback.
 ///
-/// VideoSource provides a fluent builder for common camera capture pipelines,
-/// including resolution, framerate, aspect ratio handling, and optional encoding.
+/// `VideoSource` is a non-core v0.1 layer over the low-level ``Pipeline`` and
+/// ``AppSink`` wrappers. It provides a fluent builder for common camera capture
+/// pipelines, including resolution, framerate, aspect ratio handling, and
+/// optional encoding.
 ///
 /// ## Example
 ///
@@ -318,7 +320,11 @@ public final class VideoSource: @unchecked Sendable {
   }
 }
 
-/// Builder for configuring a VideoSource pipeline.
+/// Builder for configuring a convenience ``VideoSource`` pipeline.
+///
+/// The builder composes common camera/test-pattern, conversion, scaling, caps,
+/// encoding, and appsink fragments. Use direct ``Pipeline`` construction when
+/// an application needs exact GStreamer element control.
 public struct VideoSourceBuilder: Sendable {
   fileprivate enum DeviceSelection: Sendable {
     case deviceIndex(Int)

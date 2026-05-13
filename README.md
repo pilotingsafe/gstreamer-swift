@@ -1,6 +1,7 @@
 # GStreamer
 
 [![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
+[![CI](https://github.com/pilotingsafe/gstreamer-swift/actions/workflows/ci.yml/badge.svg)](https://github.com/pilotingsafe/gstreamer-swift/actions/workflows/ci.yml)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%20|%20Linux-blue.svg)](https://swift.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -9,10 +10,15 @@ concurrency-friendly helpers.
 
 ## Features
 
+### Core v0.1 Surface
+
 - Low-level `Pipeline`, `Element`, and `Bus` wrappers around GStreamer primitives
 - `AppSink` and `AppSource` helpers for pulling frames and pushing data
 - `Buffer`, `AudioBuffer`, and `VideoFrame` access through lifetime-bound `RawSpan`
 - Swift Concurrency sequences for bus messages, frames, and buffers
+
+### Convenience and Experimental Layers
+
 - Typed pipeline builders for composable video pipeline construction
 - Explicit packet-delivery contracts for realtime best-effort and reliable streams
 - Convenience builders for common audio/video source and sink workflows
@@ -21,6 +27,8 @@ concurrency-friendly helpers.
 
 - Swift 6.2+
 - v0.1 documentation and verification focus on macOS and Linux
+- GitHub Actions CI runs Swift 6.2.4 on ubuntu-22.04 and macos-26 (arm64)
+  with GStreamer system dependencies installed
 - `Package.swift` declares Apple platform minimums for macOS, iOS, tvOS,
   watchOS, and visionOS 26.0; those declarations are not the same as CI-tested
   v0.1 support
@@ -217,6 +225,10 @@ for await frame in sink.frames() {
 
 ### Type-Safe Pipelines
 
+Status: the typed pipeline DSL is an experimental, non-core v0.1 convenience
+layer. The low-level `Pipeline`, `Element`, and appsink/appsrc APIs above are
+the stable foundation for direct GStreamer work.
+
 ```swift
 @VideoPipelineBuilder
 func pipeline() -> PartialPipeline<_VideoFrame<BGRA<640, 480>>> {
@@ -234,6 +246,11 @@ try await withPipeline {
 ```
 
 ## Convenience APIs
+
+Status: source and sink builders are non-core v0.1 convenience layers over the
+lower-level wrappers. Use them when their platform/plugin choices fit your
+application; use manual `Pipeline` construction when you need direct GStreamer
+control.
 
 The source and sink builders compose common pipeline fragments for application
 code. They are convenience APIs layered over the lower-level wrappers above, and
@@ -276,6 +293,10 @@ dropped under slow-consumer backpressure.
 
 ### Reliable Live Audio Packets
 
+Status: reliable packet delivery is a non-core v0.1 convenience layer for
+encoded audio. It documents explicit delivery policy, but it does not make live
+devices indefinitely lossless.
+
 Use `withReliableDelivery(...)` when encoded live audio needs explicit queue
 policy, structured discontinuity metadata, and graceful EOS drain. This phase is
 encoded audio only; configure Opus or AAC before `build()`.
@@ -311,6 +332,9 @@ up, but a slow consumer can block upstream and expose source xruns. Choose
 immediate shutdown; `finalize(timeout:)` is the reliable EOS-drain path.
 
 ### Reliable File Audio Packets
+
+Status: file reliable packet delivery is a non-core v0.1 convenience layer for
+finite local file/decode workflows where backpressure is possible.
 
 Use `AudioSource.file(path:)` for finite file/decode workloads where every
 packet must be delivered in order. The resulting `AudioFileSource` is
@@ -681,7 +705,7 @@ print(caps.description)
 
 ## API Reference
 
-### GStreamer
+### Core: Initialization
 
 ```swift
 public enum GStreamer {
@@ -691,7 +715,7 @@ public enum GStreamer {
 }
 ```
 
-### Pipeline
+### Core: Pipeline, Elements, and Bus Access
 
 ```swift
 public final class Pipeline: @unchecked Sendable {
@@ -709,7 +733,7 @@ public final class Pipeline: @unchecked Sendable {
 }
 ```
 
-### Convenience Builders
+### Convenience and Experimental Builders
 
 ```swift
 public final class VideoSource: @unchecked Sendable {
@@ -726,8 +750,10 @@ public final class AudioSource: @unchecked Sendable {
     static func microphone(deviceIndex: Int = 0) -> AudioSourceBuilder
     static func microphone(name: String) throws -> AudioSourceBuilder
     static func microphone(devicePath: String) throws -> AudioSourceBuilder
+    static func file(path: String) -> AudioFileSourceBuilder
     func buffers() -> AsyncStream<AudioBuffer>
     func packets() -> AsyncStream<Buffer>
+    func reliablePackets() throws -> ReliablePackets<ReliablePacket<Buffer>>
 }
 
 public final class AudioSink: @unchecked Sendable {
@@ -738,9 +764,31 @@ public final class AudioSink: @unchecked Sendable {
     func play(_ buffer: AudioBuffer) async throws
     func play(_ buffer: Buffer) async throws
 }
+
+public struct AudioFileSource: Sendable {
+    func reliablePackets() -> ReliablePackets<Buffer>
+}
 ```
 
-### Bus & Messages
+### Experimental Typed Pipeline DSL
+
+```swift
+@resultBuilder
+public struct VideoPipelineBuilder: Sendable { ... }
+
+public struct PartialPipeline<Element: Sendable>: Sendable { ... }
+
+public func runPipeline(
+    @VideoPipelineBuilder buildPipeline: @Sendable () -> PartialPipeline<Never>
+) async throws
+
+public func withPipeline<Frame: VideoFrameProtocol>(
+    @VideoPipelineBuilder buildPipeline: @Sendable () -> PartialPipeline<Frame>,
+    withEachFrame: @Sendable (Frame) async throws -> Void
+) async throws
+```
+
+### Core: Bus and Messages
 
 ```swift
 public enum BusMessage: Sendable {
@@ -758,7 +806,7 @@ public final class Bus: @unchecked Sendable {
 }
 ```
 
-### AppSink & VideoFrame
+### Core: AppSink, AppSource, and Video Frames
 
 ```swift
 public final class AppSink: @unchecked Sendable {
@@ -779,7 +827,7 @@ public enum PixelFormat: Sendable, Equatable {
 }
 ```
 
-### AudioBufferSink & AudioBuffer
+### Core: Audio Buffers
 
 ```swift
 public final class AudioBufferSink: @unchecked Sendable {

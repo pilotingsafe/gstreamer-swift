@@ -1,13 +1,20 @@
 # ``GStreamer``
 
 A Swift package that wraps GStreamer with low-level Swift APIs and selected
-concurrency-friendly helpers.
+convenience layers.
 
 ## Overview
 
-GStreamer for Swift provides direct wrappers around pipelines, elements, bus
-messages, app sinks, app sources, and buffers. Convenience builders for common
-audio and video flows are layered on top of those lower-level APIs.
+GStreamer for Swift v0.1 is positioned as a low-level, thin, composable Swift
+wrapper around GStreamer. The core public surface provides direct wrappers around
+pipelines, elements, bus messages, app sinks, app sources, and buffers while
+preserving GStreamer's ownership, bus-consumption, and backpressure model.
+
+Higher-level source/sink builders, the typed pipeline DSL, and reliable packet
+delivery are convenience or experimental layers built on top of the core
+wrappers. They are useful when their fixed composition choices match your
+application, but direct `Pipeline`, `Element`, `AppSink`, `AppSource`, and
+`Bus` usage remains the v0.1 foundation.
 
 ```swift
 import GStreamer
@@ -35,9 +42,10 @@ for await frame in sink.frames() {
 
 ## Featured
 
-Start with <doc:GettingStarted> and <doc:APIContract>, then explore typed
-pipelines, frame access, video capture, audio capture, audio devices, and
-platform-specific pipelines from the topic groups below.
+Start with <doc:GettingStarted> and <doc:APIContract> for the v0.1 core
+contract, then explore frame access and platform-specific pipelines. Use the
+convenience and experimental guides when you want builder-driven sources,
+sinks, typed video composition, or reliable encoded packet delivery.
 
 ## Topics
 
@@ -48,29 +56,26 @@ platform-specific pipelines from the topic groups below.
 - ``GStreamer``
 - ``Pipeline``
 
-### Video Processing
+### Core Wrappers
 
-- <doc:TypedPipelines>
-- <doc:WorkingWithVideoFrames>
-- <doc:VideoSourceGuide>
-- ``VideoSource``
+- ``Element``
+- ``Caps``
+- ``Bus``
+- ``BusMessage``
 - ``AppSink``
-- ``VideoFrame``
-- ``PixelFormat``
-
-### Audio Processing
-
-- <doc:AudioCapture>
-- <doc:EncodedPacketDelivery>
-- <doc:AudioDevices>
-- ``AudioSource``
-- ``AudioFileSource``
-- ``ReliablePackets``
-- ``ReliablePacket``
-- ``Discontinuity``
-- ``AudioSink``
+- ``AppSource``
 - ``AudioBufferSink``
+- ``Buffer``
+- ``VideoFrame``
 - ``AudioBuffer``
+- ``Tee``
+- ``Pad``
+
+### Core Video and Audio Guides
+
+- <doc:WorkingWithVideoFrames>
+- ``PixelFormat``
+- <doc:AudioCapture>
 - ``AudioFormat``
 
 ### Device Discovery
@@ -78,18 +83,19 @@ platform-specific pipelines from the topic groups below.
 - ``DeviceMonitor``
 - ``Device``
 
-### Pipeline Components
+### Convenience and Experimental APIs
 
-- ``Element``
-- ``Caps``
-- ``Bus``
-- ``BusMessage``
-- ``Tee``
-- ``Pad``
-
-### Data Input
-
-- ``AppSource``
+- <doc:TypedPipelines>
+- <doc:VideoSourceGuide>
+- <doc:EncodedPacketDelivery>
+- <doc:AudioDevices>
+- ``VideoSource``
+- ``AudioSource``
+- ``AudioFileSource``
+- ``ReliablePackets``
+- ``ReliablePacket``
+- ``Discontinuity``
+- ``AudioSink``
 
 ### Error Handling
 

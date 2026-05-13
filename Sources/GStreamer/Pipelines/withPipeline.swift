@@ -1,3 +1,7 @@
+/// Run a terminal pipeline produced by the experimental typed pipeline DSL.
+///
+/// This helper is a non-core convenience wrapper around ``Pipeline``. It plays
+/// the generated launch string and drains bus messages until EOS or ERROR.
 public func runPipeline(
     @VideoPipelineBuilder buildPipeline: @Sendable () -> PartialPipeline<Never>
 ) async throws {
@@ -18,7 +22,12 @@ public func runPipeline(
     }
 }
 
-/// Run a pipeline that yields video frames, processing each frame with the provided closure.
+/// Run a typed pipeline that yields video frames for an async closure.
+///
+/// This helper is a non-core convenience wrapper around ``Pipeline`` and
+/// ``AppSink``. It appends an appsink to the generated launch string and
+/// forwards frames through the typed DSL's `unsafeCast` bridge.
+///
 /// The frame type is automatically inferred from the pipeline's sink.
 ///
 /// ## Example

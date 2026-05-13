@@ -5,17 +5,24 @@ import Foundation
 import Synchronization
 
 extension AudioSource {
-  /// Create an audio source from a local regular file.
+  /// Create a convenience audio source from a local regular file.
   ///
-  /// File sources are finite and backpressureable, so they can be consumed with
+  /// File-source reliable delivery is a non-core v0.1 layer over the low-level
+  /// pipeline and appsink wrappers. File sources are finite and
+  /// backpressureable, so they can be consumed with
   /// ``AudioFileSource/reliablePackets()``. Live microphone sources keep using
-  /// ``AudioSource/packets()`` for realtime best-effort delivery.
+  /// ``AudioSource/packets()`` for realtime best-effort delivery unless they
+  /// explicitly opt into reliable encoded live delivery.
   public static func file(path: String) -> AudioFileSourceBuilder {
     AudioFileSourceBuilder(path: path)
   }
 }
 
-/// Immutable audio source backed by a local file.
+/// Immutable convenience audio source backed by a local regular file.
+///
+/// `AudioFileSource` is a non-core v0.1 layer for finite file/decode workloads
+/// where packet delivery can be backpressured and repeated. Use direct
+/// ``Pipeline`` construction for custom file graphs.
 public struct AudioFileSource: Sendable {
   private let configuration: AudioFileSourceConfiguration
 
@@ -95,7 +102,11 @@ internal enum AudioFileReliableCallbackRegistrationFailureForTesting: Sendable, 
   }
 }
 
-/// Builder for an audio file source that can produce reliable packets.
+/// Builder for a convenience audio file source that can produce reliable packets.
+///
+/// The builder composes decode, optional raw caps, optional encoding, and
+/// appsink fragments for finite local files. It is part of the non-core v0.1
+/// reliable delivery layer.
 public struct AudioFileSourceBuilder: Sendable {
   private let path: String
   private var sampleRate: Int?

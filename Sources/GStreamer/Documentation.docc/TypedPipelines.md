@@ -4,6 +4,11 @@ Build type-safe video pipelines with `@VideoPipelineBuilder` and typed layouts.
 
 ## Overview
 
+Status: typed pipelines are an experimental, non-core v0.1 convenience layer.
+They compose pipeline strings with Swift result-builder syntax and static frame
+types, but direct ``Pipeline`` construction remains the core API for precise
+GStreamer control.
+
 The pipeline builder lets you compose GStreamer elements with Swift types that
 encode pixel layouts and sizes at compile time. This gives you strong guarantees
 about the frame format you receive, without parsing caps strings manually.

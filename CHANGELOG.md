@@ -2,6 +2,13 @@
 
 ## Next
 
+### Positioning
+
+- Repositioned v0.1 compatibility around a low-level core public surface:
+  `Pipeline`, `Element`, `Bus`, `AppSink`, `AppSource`, and buffer/frame
+  wrappers. Source/sink builders, typed pipelines, and reliable packet delivery
+  are documented as convenience or experimental layers.
+
 ### Features
 
 - Added `Bus.messageSequence(filter:)`, a source-compatible async sequence for

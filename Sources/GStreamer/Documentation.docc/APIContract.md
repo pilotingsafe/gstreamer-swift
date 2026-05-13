@@ -1,15 +1,22 @@
 # API Contract
 
-Use this page as the starting point for user-visible lifecycle, bus, and packet
-delivery rules.
+Use this page as the starting point for the v0.1 public-surface contract and
+user-visible lifecycle, bus, and packet-delivery rules.
 
 ## Overview
 
-GStreamer for Swift is a low-level wrapper around GStreamer primitives with
-selected convenience helpers layered on top. The lower-level APIs preserve
-GStreamer's ownership and consumption model: some streams are best-effort,
-some are reliable within an explicit scope, and several surfaces are
-single-consumer by design.
+GStreamer for Swift v0.1 treats the low-level Swift wrappers as the primary
+public surface: ``Pipeline``, ``Element``, ``Bus``, ``AppSink``, ``AppSource``,
+``Buffer``, ``AudioBufferSink``, ``AudioBuffer``, and ``VideoFrame``. These APIs
+stay close to GStreamer and preserve its ownership, bus-consumption, and
+backpressure model.
+
+Source/sink builders, the typed pipeline DSL, and reliable packet delivery are
+documented as convenience or experimental layers. They are public APIs, but
+they are not the core v0.1 contract and may continue to evolve around the
+stable low-level wrapper surface. Across both layers, some streams are
+best-effort, some are reliable within an explicit scope, and several surfaces
+are single-consumer by design.
 
 Detailed guides and symbol documentation describe each API in depth. This page
 summarizes the shared contracts that apply across those APIs.

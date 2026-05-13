@@ -963,6 +963,154 @@ struct APISafetyStaticTests {
         )
     }
 
+    @Test("README separates v0.1 core API surface from non-core layers")
+    func readmeSeparatesV01CoreAPISurfaceFromNonCoreLayers() throws {
+        let root = try Self.packageRoot()
+        let readme = try Self.contents(of: root.appendingPathComponent("README.md"))
+        let missingLayers = Self.missingPositionedNonCoreLayers(in: readme)
+
+        #expect(
+            Self.containsV01CoreCompatibilityPositioning(readme),
+            "README must explicitly describe the v0.1 core compatibility focus as low-level public surface"
+        )
+        #expect(
+            Self.containsCoreWrapperSurface(readme),
+            "README v0.1 core surface must name the low-level wrappers such as Pipeline, Element, Bus, buffers, AppSink, and AppSource"
+        )
+        #expect(
+            missingLayers.isEmpty,
+            "README must mark high-level source/sink builders, typed pipeline DSL, and reliable packet delivery as convenience, experimental, or non-core layers:\n\(missingLayers.joined(separator: "\n"))"
+        )
+    }
+
+    @Test("DocC contract pages separate v0.1 core API surface from non-core layers")
+    func doccContractPagesSeparateV01CoreAPISurfaceFromNonCoreLayers() throws {
+        let root = try Self.packageRoot()
+        let requirements = [
+            "Sources/GStreamer/Documentation.docc/APIContract.md",
+            "Sources/GStreamer/Documentation.docc/GStreamer.md",
+        ]
+        var failures: [String] = []
+
+        for path in requirements {
+            let documentation = try Self.contents(of: root.appendingPathComponent(path))
+            if !Self.containsV01CoreCompatibilityPositioning(documentation) {
+                failures.append("\(path): missing explicit v0.1 core compatibility/public-surface positioning")
+            }
+            if !Self.containsCoreWrapperSurface(documentation) {
+                failures.append("\(path): missing low-level wrapper surface names")
+            }
+
+            let missingLayers = Self.missingPositionedNonCoreLayers(in: documentation)
+            failures += missingLayers.map { "\(path): \($0)" }
+        }
+
+        #expect(
+            failures.isEmpty,
+            "APIContract and package DocC must describe the v0.1 public-surface contract and separate core from convenience/experimental topics:\n\(failures.joined(separator: "\n"))"
+        )
+    }
+
+    @Test("AudioCapture keeps manual pipeline capture core and scopes experimental wording")
+    func audioCaptureKeepsManualPipelineCaptureCoreAndScopesExperimentalWording() throws {
+        let root = try Self.packageRoot()
+        let documentation = try Self.contents(
+            of: root.appendingPathComponent("Sources/GStreamer/Documentation.docc/AudioCapture.md")
+        )
+        let manualSection = try #require(
+            Self.markdownSection(titled: "Basic Audio Capture", level: 3, in: documentation)
+        )
+        let highLevelFailures = Self.missingPositionedLayers(
+            in: documentation,
+            requirements: [
+                (
+                    label: "AudioSource high-level capture",
+                    anchors: ["AudioSource", "AudioSourceBuilder", "microphone()"]
+                ),
+                (
+                    label: "AudioFileSource reliable file/decode",
+                    anchors: ["AudioFileSource", "AudioSource.file(path:)", "file(path:)"]
+                ),
+                (
+                    label: "withReliableDelivery / reliablePackets",
+                    anchors: ["withReliableDelivery", "reliablePackets", "ReliablePackets"]
+                ),
+            ]
+        )
+
+        #expect(manualSection.contains("Pipeline"))
+        #expect(manualSection.contains("AudioBufferSink"))
+        #expect(
+            Self.containsV01CoreLanguage(manualSection),
+            "AudioCapture basic manual Pipeline + AudioBufferSink path must be documented as core v0.1 usage"
+        )
+        #expect(
+            !Self.containsExperimentalOrNonCoreLanguage(manualSection),
+            "AudioCapture must not label the manual Pipeline + AudioBufferSink path experimental or non-core"
+        )
+        #expect(
+            highLevelFailures.isEmpty,
+            "AudioCapture must scope convenience/experimental/non-core wording to high-level AudioSource, AudioFileSource, and reliable delivery sections:\n\(highLevelFailures.joined(separator: "\n"))"
+        )
+    }
+
+    @Test("CHANGELOG Next records v0.1 positioning")
+    func changelogNextRecordsV01Positioning() throws {
+        let root = try Self.packageRoot()
+        let changelog = try Self.contents(of: root.appendingPathComponent("CHANGELOG.md"))
+        let next = try #require(Self.markdownSection(titled: "Next", level: 2, in: changelog))
+        let missingLayers = Self.missingPositionedNonCoreLayers(in: next)
+
+        #expect(
+            Self.containsV01CoreCompatibilityPositioning(next),
+            "CHANGELOG Next must include a v0.1 positioning note for low-level core compatibility"
+        )
+        #expect(
+            Self.containsCoreWrapperSurface(next),
+            "CHANGELOG Next v0.1 note must name the low-level core wrapper surface"
+        )
+        #expect(
+            missingLayers.isEmpty,
+            "CHANGELOG Next must identify non-core/convenience/experimental layers affected by the v0.1 positioning:\n\(missingLayers.joined(separator: "\n"))"
+        )
+    }
+
+    @Test("Source symbol DocC comments mark non-core convenience and experimental fronts")
+    func sourceSymbolDocCCommentsMarkNonCoreConvenienceAndExperimentalFronts() throws {
+        let root = try Self.packageRoot()
+        let requirements: [(file: String, declaration: String, label: String)] = [
+            ("Sources/GStreamer/AudioSource.swift", "public final class AudioSource", "AudioSource"),
+            ("Sources/GStreamer/AudioSource.swift", "public struct AudioSourceBuilder", "AudioSourceBuilder"),
+            ("Sources/GStreamer/AudioSource.swift", "public func withReliableDelivery", "AudioSourceBuilder.withReliableDelivery"),
+            ("Sources/GStreamer/VideoSource.swift", "public final class VideoSource", "VideoSource"),
+            ("Sources/GStreamer/VideoSource.swift", "public struct VideoSourceBuilder", "VideoSourceBuilder"),
+            ("Sources/GStreamer/AudioSink.swift", "public final class AudioSink", "AudioSink"),
+            ("Sources/GStreamer/AudioSink.swift", "public struct AudioSinkBuilder", "AudioSinkBuilder"),
+            ("Sources/GStreamer/AudioFileSource.swift", "public struct AudioFileSource", "AudioFileSource"),
+            ("Sources/GStreamer/AudioFileSource.swift", "public struct AudioFileSourceBuilder", "AudioFileSourceBuilder"),
+            ("Sources/GStreamer/Pipelines/VideoPipelineBuilder.swift", "public struct VideoPipelineBuilder", "VideoPipelineBuilder"),
+            ("Sources/GStreamer/Pipelines/withPipeline.swift", "public func runPipeline", "runPipeline"),
+            ("Sources/GStreamer/Pipelines/withPipeline.swift", "public func withPipeline", "withPipeline"),
+        ]
+        var failures: [String] = []
+
+        for requirement in requirements {
+            let source = try Self.contents(of: root.appendingPathComponent(requirement.file))
+            let docs = try Self.leadingDocumentationCommentIncludingAttributes(
+                for: requirement.declaration,
+                in: source
+            )
+            if !Self.containsPositioningLanguage(docs) {
+                failures.append("\(requirement.file) \(requirement.label)")
+            }
+        }
+
+        #expect(
+            failures.isEmpty,
+            "Source symbol DocC comments must mention non-core, convenience, or experimental positioning:\n\(failures.joined(separator: "\n"))"
+        )
+    }
+
     @Test("README documents GStreamer dependency preflight")
     func readmeDocumentsGStreamerDependencyPreflight() throws {
         let root = try Self.packageRoot()
@@ -1114,6 +1262,177 @@ struct APISafetyStaticTests {
             || normalized.contains("another mutable")
 
         return mentionsMutation && explainsCopy && namesBuffer && namesMutableDestination
+    }
+
+    private static func containsV01CoreCompatibilityPositioning(_ source: String) -> Bool {
+        let normalized = normalizedLowercase(source)
+        let mentionsV01 = normalized.contains("v0.1")
+        let mentionsCore = normalized.contains("core")
+        let mentionsLowLevel = normalized.contains("low-level") || normalized.contains("low level")
+        let mentionsCompatibilityOrSurface = [
+            "compatibility",
+            "public surface",
+            "public-surface",
+            "surface contract",
+            "supported surface",
+        ].contains { normalized.contains($0) }
+
+        return mentionsV01 && mentionsCore && mentionsLowLevel && mentionsCompatibilityOrSurface
+    }
+
+    private static func containsV01CoreLanguage(_ source: String) -> Bool {
+        let normalized = normalizedLowercase(source)
+        return normalized.contains("v0.1") && normalized.contains("core")
+    }
+
+    private static func containsCoreWrapperSurface(_ source: String) -> Bool {
+        let normalized = normalizedLowercase(source)
+        let requiredWrapperTerms = [
+            "pipeline",
+            "element",
+            "bus",
+            "buffer",
+        ]
+        let hasRequiredTerms = requiredWrapperTerms.allSatisfy { normalized.contains($0) }
+        let hasAppSink = normalized.contains("appsink") || normalized.contains("app sink")
+        let hasAppSource = normalized.contains("appsource") || normalized.contains("app source")
+
+        return hasRequiredTerms && hasAppSink && hasAppSource
+    }
+
+    private static func missingPositionedNonCoreLayers(in source: String) -> [String] {
+        missingPositionedLayers(
+            in: source,
+            requirements: [
+                (
+                    label: "high-level source/sink builders",
+                    anchors: [
+                        "source and sink builders",
+                        "AudioSource",
+                        "VideoSource",
+                        "AudioSink",
+                        "AudioFileSource",
+                    ]
+                ),
+                (
+                    label: "typed pipeline DSL",
+                    anchors: [
+                        "typed pipeline",
+                        "type-safe pipeline",
+                        "VideoPipelineBuilder",
+                        "withPipeline",
+                    ]
+                ),
+                (
+                    label: "reliable packet delivery",
+                    anchors: [
+                        "reliable packet delivery",
+                        "withReliableDelivery",
+                        "ReliablePackets",
+                        "reliablePackets",
+                    ]
+                ),
+            ]
+        )
+    }
+
+    private static func missingPositionedLayers(
+        in source: String,
+        requirements: [(label: String, anchors: [String])]
+    ) -> [String] {
+        requirements.compactMap { requirement in
+            containsPositioningLanguageNearAnyAnchor(
+                in: source,
+                anchors: requirement.anchors
+            ) ? nil : "missing convenience/experimental/non-core positioning near \(requirement.label)"
+        }
+    }
+
+    private static func containsPositioningLanguageNearAnyAnchor(
+        in source: String,
+        anchors: [String],
+        radius: Int = 1_200
+    ) -> Bool {
+        let normalized = normalizedLowercase(source)
+
+        for anchor in anchors {
+            let normalizedAnchor = normalizedLowercase(anchor)
+            guard let anchorRange = normalized.range(of: normalizedAnchor) else {
+                continue
+            }
+
+            let start = normalized.index(
+                anchorRange.lowerBound,
+                offsetBy: -radius,
+                limitedBy: normalized.startIndex
+            ) ?? normalized.startIndex
+            let end = normalized.index(
+                anchorRange.upperBound,
+                offsetBy: radius,
+                limitedBy: normalized.endIndex
+            ) ?? normalized.endIndex
+            let context = String(normalized[start..<end])
+
+            if containsPositioningLanguage(context) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func containsPositioningLanguage(_ source: String) -> Bool {
+        let normalized = normalizedLowercase(source)
+        let terms = [
+            "non-core",
+            "noncore",
+            "not core",
+            "not a core",
+            "not part of the core",
+            "outside the core",
+            "outside core",
+            "convenience",
+            "experimental",
+        ]
+
+        return terms.contains { normalized.contains($0) }
+    }
+
+    private static func containsExperimentalOrNonCoreLanguage(_ source: String) -> Bool {
+        let normalized = normalizedLowercase(source)
+        let terms = [
+            "non-core",
+            "noncore",
+            "not core",
+            "not a core",
+            "not part of the core",
+            "outside the core",
+            "outside core",
+            "experimental",
+        ]
+
+        return terms.contains { normalized.contains($0) }
+    }
+
+    private static func markdownSection(titled title: String, level: Int, in source: String) -> String? {
+        let heading = String(repeating: "#", count: level) + " " + title
+        guard let headingRange = source.range(of: heading) else {
+            return nil
+        }
+
+        let nextHeadingPattern = #"(?m)^#{1,\#(level)}\s+"#
+        let searchRange = headingRange.upperBound..<source.endIndex
+        let end = source.range(
+            of: nextHeadingPattern,
+            options: .regularExpression,
+            range: searchRange
+        )?.lowerBound ?? source.endIndex
+
+        return String(source[headingRange.lowerBound..<end])
+    }
+
+    private static func normalizedLowercase(_ source: String) -> String {
+        normalizedWhitespace(source).lowercased()
     }
 
     private static func videoFrameReferenceScanFiles(in root: URL) throws -> [URL] {
@@ -2342,6 +2661,47 @@ struct APISafetyStaticTests {
                 continue
             }
             if trimmed.isEmpty && documentationLines.isEmpty {
+                continue
+            }
+            break
+        }
+
+        return documentationLines.reversed().joined(separator: "\n")
+    }
+
+    private static func leadingDocumentationCommentIncludingAttributes(
+        for declaration: String,
+        in source: String
+    ) throws -> String {
+        guard let declarationRange = source.range(of: declaration) else {
+            throw StaticAPISafetyError.declarationNotFound(declaration)
+        }
+
+        let lineStart = source[..<declarationRange.lowerBound].lastIndex(of: "\n")
+            .map { source.index(after: $0) } ?? source.startIndex
+        let prefix = source[..<lineStart]
+        let lines = prefix.split(separator: "\n", omittingEmptySubsequences: false)
+        var index = lines.count - 1
+
+        while index >= 0 {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("@") {
+                index -= 1
+                continue
+            }
+            break
+        }
+
+        var documentationLines: [String] = []
+        while index >= 0 {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("///") {
+                documentationLines.append(trimmed)
+                index -= 1
+                continue
+            }
+            if trimmed.isEmpty && documentationLines.isEmpty {
+                index -= 1
                 continue
             }
             break

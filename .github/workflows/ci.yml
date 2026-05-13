@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 22.04
+            os: ubuntu-22.04
+          - name: macOS 26 arm64
+            os: macos-26
+    env:
+      SWIFT_VERSION: 6.2.4
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Swiftly (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSLO https://download.swift.org/swiftly/darwin/swiftly.pkg
+          installer -pkg swiftly.pkg -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --skip-install --quiet-shell-followup --assume-yes
+          . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
+          echo "${SWIFTLY_BIN_DIR:-$HOME/.swiftly/bin}" >> "$GITHUB_PATH"
+
+      - name: Install Swiftly (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSLO "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"
+          tar zxf "swiftly-$(uname -m).tar.gz"
+          ./swiftly init --skip-install --quiet-shell-followup --assume-yes
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          echo "${SWIFTLY_BIN_DIR:-$HOME/.local/share/swiftly/bin}" >> "$GITHUB_PATH"
+
+      - name: Install Swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
+          else
+            . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          fi
+          swiftly install --use "$SWIFT_VERSION" --assume-yes
+
+      - name: Verify Swift toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
+          else
+            . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          fi
+          version_output="$(swiftly run swift --version)"
+          printf '%s\n' "$version_output"
+          case "$version_output" in
+            *"Swift version $SWIFT_VERSION"*) ;;
+            *)
+              echo "Expected Swift $SWIFT_VERSION"
+              exit 1
+              ;;
+          esac
+          swiftly run which swift
+
+      - name: Install GStreamer dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install pkgconf gstreamer
+
+      - name: Install GStreamer dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            pkg-config \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav
+
+      - name: Preflight GStreamer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
+          pkg-config --atleast-version=1.20 gstreamer-1.0
+          pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
+          gst-inspect-1.0 --version
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
+          else
+            . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          fi
+          swiftly run swift build
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
+          else
+            . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          fi
+          swiftly run swift test
+
+      - name: Dump public symbol graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
+          else
+            . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          fi
+          swiftly run swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members
+          symbol_graph="$(find .build -path '*/symbolgraph/GStreamer.symbols.json' -print -quit)"
+          if [[ -z "$symbol_graph" ]]; then
+            echo "GStreamer.symbols.json was not generated"
+            exit 1
+          fi
+          echo "Found symbol graph: $symbol_graph"

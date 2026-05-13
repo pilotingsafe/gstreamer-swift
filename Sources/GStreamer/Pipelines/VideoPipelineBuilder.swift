@@ -1,3 +1,8 @@
+/// Experimental result builder for composing typed video pipeline fragments.
+///
+/// `VideoPipelineBuilder` is a non-core v0.1 convenience layer. It assembles a
+/// GStreamer launch string while carrying Swift frame types through the builder;
+/// direct ``Pipeline`` construction remains the core API for custom graphs.
 @resultBuilder
 public struct VideoPipelineBuilder: Sendable {
     /// Source step that provides each frame.
@@ -88,23 +93,31 @@ public struct VideoPipelineBuilder: Sendable {
 
 // MARK: - Core Protocols
 
+/// Common protocol for typed pipeline DSL fragments.
+///
+/// Conforming values expose the GStreamer launch-string segment used by the
+/// experimental typed pipeline builder.
 public protocol VideoPipelineElement: Sendable {
     var pipeline: String { get }
 }
 
+/// Source fragment for the experimental typed video pipeline DSL.
 public protocol VideoPipelineSource: VideoPipelineElement {
     associatedtype VideoFrameOutput: VideoFrameProtocol
 }
 
+/// Transform fragment for the experimental typed video pipeline DSL.
 public protocol VideoPipelineConvert<VideoFrameInput, VideoFrameOutput>: VideoPipelineElement {
     associatedtype VideoFrameInput: VideoFrameProtocol
     associatedtype VideoFrameOutput: VideoFrameProtocol
 }
 
+/// Format fragment that constrains the output frame type in the typed DSL.
 public protocol VideoFormat<VideoFrameOutput>: VideoPipelineElement {
     associatedtype VideoFrameOutput: VideoFrameProtocol
 }
 
+/// Sink fragment that terminates or consumes frames in the typed DSL.
 public protocol VideoSink<VideoFrameInput>: VideoPipelineElement {
     associatedtype VideoFrameInput: VideoFrameProtocol
     associatedtype VideoFrameOutput: Sendable
@@ -115,7 +128,8 @@ public protocol VideoSink<VideoFrameInput>: VideoPipelineElement {
 /// Type-erased wrapper for strongly-typed pipeline converts.
 ///
 /// This wrapper allows elements to be used in typed pipelines while
-/// preserving the layout type information through the result builder.
+/// preserving the layout type information through the experimental result
+/// builder.
 public struct AnyTypedConvert<Layout: PixelLayoutProtocol>: VideoPipelineConvert {
     public typealias VideoFrameInput = _VideoFrame<Layout>
     public typealias VideoFrameOutput = _VideoFrame<Layout>
@@ -127,7 +141,7 @@ public struct AnyTypedConvert<Layout: PixelLayoutProtocol>: VideoPipelineConvert
     }
 }
 
-/// Type-erased wrapper for strongly-typed pipeline sinks.
+/// Type-erased wrapper for strongly-typed pipeline sinks in the experimental DSL.
 public struct AnyTypedSink<Layout: PixelLayoutProtocol>: VideoSink {
     public typealias VideoFrameInput = _VideoFrame<Layout>
     public typealias VideoFrameOutput = Never
@@ -143,6 +157,7 @@ public struct AnyTypedSink<Layout: PixelLayoutProtocol>: VideoSink {
 ///
 /// Elements conforming to this protocol can be used in typed pipelines
 /// without explicit type parameters - the `Layout` is inferred from context.
+/// This protocol belongs to the experimental typed pipeline layer.
 ///
 /// Example:
 /// ```swift
@@ -159,6 +174,8 @@ public protocol TypedConvertible: VideoPipelineElement {
 }
 
 /// A type that can produce a strongly-typed `VideoSink` element.
+///
+/// This protocol belongs to the experimental typed pipeline layer.
 public protocol TypedSinkable: VideoPipelineElement {
     /// Creates the strongly-typed sink for the given layout.
     func _asTypedSink<Layout: PixelLayoutProtocol>(_ layout: Layout.Type) -> AnyTypedSink<Layout>

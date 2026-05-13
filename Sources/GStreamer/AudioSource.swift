@@ -6,10 +6,12 @@ extension MediaStreamBackpressure {
   internal static let encodedPacketsNewest = 8
 }
 
-/// High-level microphone capture API with automatic source selection and encoding.
+/// Convenience microphone capture API with automatic source selection and encoding.
 ///
-/// AudioSource provides a fluent builder for common microphone pipelines,
-/// including sample rate, channel count, format, and optional encoding.
+/// `AudioSource` is a non-core v0.1 layer over the low-level ``Pipeline`` and
+/// appsink wrappers. It provides a fluent builder for common microphone
+/// pipelines, including sample rate, channel count, format, optional encoding,
+/// and optional reliable encoded packet delivery.
 ///
 /// ## Example
 ///
@@ -389,7 +391,11 @@ public final class AudioSource: @unchecked Sendable {
   }
 }
 
-/// Builder for configuring an AudioSource pipeline.
+/// Builder for configuring a convenience ``AudioSource`` pipeline.
+///
+/// The builder composes common microphone, conversion, encoding, queue, and
+/// appsink fragments. It is useful when those defaults fit the application; use
+/// direct ``Pipeline`` construction for fully custom GStreamer graphs.
 public struct AudioSourceBuilder: Sendable {
   fileprivate enum DeviceSelection: Sendable {
     case deviceIndex(Int)
@@ -448,6 +454,10 @@ public struct AudioSourceBuilder: Sendable {
   }
 
   /// Opt into encoded live reliable delivery with an explicit GStreamer queue policy.
+  ///
+  /// This is a non-core v0.1 convenience layer over GStreamer queues and
+  /// appsinks. It documents delivery boundaries for encoded audio, but it
+  /// cannot make live capture devices indefinitely lossless.
   ///
   /// Reliable live delivery inserts a bounded `queue` before the encoder and
   /// uses a bounded non-dropping appsink. `QueueLeaky.none` blocks upstream

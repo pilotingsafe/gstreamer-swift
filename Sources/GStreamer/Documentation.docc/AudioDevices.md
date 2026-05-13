@@ -4,6 +4,12 @@ Capture from microphones and play to speakers with convenience builders.
 
 ## Overview
 
+Status: ``AudioSource``, ``AudioSourceBuilder``, ``AudioSink``, and
+``AudioSinkBuilder`` are non-core v0.1 convenience APIs. They compose common
+capture and playback pipelines over the low-level wrappers; use direct
+``Pipeline``, ``AudioBufferSink``, and ``AppSource`` APIs when you need exact
+GStreamer element control.
+
 ``AudioSource`` and ``AudioSink`` build audio pipelines using the devices and
 GStreamer backends available on the current platform. They provide device
 enumeration, format configuration, and optional encoding for capture.

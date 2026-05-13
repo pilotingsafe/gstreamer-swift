@@ -2,10 +2,11 @@ import CGStreamer
 import CGStreamerApp
 import CGStreamerShim
 
-/// High-level audio playback API with device selection.
+/// Convenience audio playback API with device selection.
 ///
-/// AudioSink provides a builder for common speaker/headphone playback
-/// pipelines. Audio is pushed through the `play` overloads.
+/// `AudioSink` is a non-core v0.1 layer over the low-level ``Pipeline`` and
+/// ``AppSource`` wrappers. It provides a builder for common speaker/headphone
+/// playback pipelines, then pushes audio through the `play` overloads.
 public final class AudioSink: @unchecked Sendable {
   /// Errors that can occur when building an audio output.
   public enum AudioSinkError: Error, Sendable, CustomStringConvertible {
@@ -232,7 +233,11 @@ public final class AudioSink: @unchecked Sendable {
   }
 }
 
-/// Builder for configuring an AudioSink pipeline.
+/// Builder for configuring a convenience ``AudioSink`` pipeline.
+///
+/// The builder composes common appsrc, conversion, caps, and output sink
+/// fragments. Use direct ``Pipeline`` and ``AppSource`` construction when an
+/// application needs exact GStreamer element control.
 public struct AudioSinkBuilder: Sendable {
   fileprivate enum DeviceSelection: Sendable {
     case deviceIndex(Int)

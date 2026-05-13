@@ -4,6 +4,11 @@ Choose between realtime best-effort streams and reliable archival streams.
 
 ## Overview
 
+Status: reliable packet delivery is a non-core v0.1 convenience layer for
+encoded audio and finite file/decode workflows. It defines explicit delivery
+contracts above the low-level wrappers, but it does not replace direct
+``Pipeline``, ``AppSink``, ``AppSource``, or ``Bus`` usage for custom graphs.
+
 For the cross-cutting lifecycle, bus-draining, packet-delivery, and
 single-consumer rules, start with <doc:APIContract>.
 

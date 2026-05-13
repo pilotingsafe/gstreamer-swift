@@ -10,11 +10,14 @@ GStreamer supports multiple audio backends on Linux, allowing you to capture aud
 - **PipeWire** - Modern audio/video server (Fedora, Ubuntu 22.10+)
 - **PulseAudio** - Traditional Linux audio server
 
-All three work identically with the ``AudioBufferSink`` and ``AudioBuffer`` APIs.
-For finite file/decode workloads where every packet must be delivered, use
-``AudioFileSource/reliablePackets()`` as described in <doc:EncodedPacketDelivery>.
-For encoded live audio capture that needs explicit queue policy and graceful EOS
-drain, use ``AudioSourceBuilder/withReliableDelivery(leaky:maxBuffers:maxBytes:maxTime:)``
+All three work identically with the low-level ``Pipeline``, ``AudioBufferSink``,
+and ``AudioBuffer`` APIs shown below. The higher-level ``AudioSource``,
+``AudioFileSource``, and reliable packet delivery APIs are non-core v0.1
+convenience layers: for finite file/decode workloads where every packet must be
+delivered, use ``AudioFileSource/reliablePackets()`` as described in
+<doc:EncodedPacketDelivery>; for encoded live audio capture that needs explicit
+queue policy and graceful EOS drain, use
+``AudioSourceBuilder/withReliableDelivery(leaky:maxBuffers:maxBytes:maxTime:)``
 and ``AudioSource/reliablePackets()``.
 
 ## Capturing Audio
@@ -22,6 +25,9 @@ and ``AudioSource/reliablePackets()``.
 ### Basic Audio Capture
 
 Use ``AudioBufferSink`` to receive audio buffers from a pipeline:
+
+This manual ``Pipeline`` plus ``AudioBufferSink`` path is v0.1 core usage for
+audio capture when you want direct control over the GStreamer graph.
 
 ```swift
 import GStreamer

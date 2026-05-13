@@ -5,6 +5,11 @@ pipelines.
 
 ## Overview
 
+Status: ``VideoSource`` and ``VideoSourceBuilder`` are non-core v0.1 convenience
+APIs. They select and compose common source, conversion, encoding, and appsink
+fragments for you; use direct ``Pipeline`` and ``AppSink`` APIs when you need
+full control over the GStreamer graph.
+
 ``VideoSource`` builds a pipeline for you and selects from the backends
 available on the current platform and GStreamer installation. It supports common
 configuration such as resolution, framerate, aspect-ratio handling, and optional
