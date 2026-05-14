@@ -360,6 +360,8 @@ internal struct ReliablePacketRuntimeSnapshotForTesting: Sendable {
   let stopped: Bool
   let activePipeline: Pipeline?
   let activeSequence: Bool
+  let registeredCallbacks: ReliablePacketCallbackLifecycleSnapshotForTesting
+  let disconnectedCallbacks: ReliablePacketCallbackLifecycleSnapshotForTesting
 
   init(
     newSampleHandlerCount: Int,
@@ -368,7 +370,11 @@ internal struct ReliablePacketRuntimeSnapshotForTesting: Sendable {
     finalized: Bool = false,
     stopped: Bool = false,
     activePipeline: Pipeline? = nil,
-    activeSequence: Bool = false
+    activeSequence: Bool = false,
+    registeredCallbacks: ReliablePacketCallbackLifecycleSnapshotForTesting =
+      ReliablePacketCallbackLifecycleSnapshotForTesting(),
+    disconnectedCallbacks: ReliablePacketCallbackLifecycleSnapshotForTesting =
+      ReliablePacketCallbackLifecycleSnapshotForTesting()
   ) {
     self.newSampleHandlerCount = newSampleHandlerCount
     self.pendingContinuationCount = pendingContinuationCount
@@ -377,6 +383,24 @@ internal struct ReliablePacketRuntimeSnapshotForTesting: Sendable {
     self.stopped = stopped
     self.activePipeline = activePipeline
     self.activeSequence = activeSequence
+    self.registeredCallbacks = registeredCallbacks
+    self.disconnectedCallbacks = disconnectedCallbacks
+  }
+}
+
+internal struct ReliablePacketCallbackLifecycleSnapshotForTesting: Sendable {
+  let newSample: Bool
+  let eos: Bool
+  let busSyncMessage: Bool
+
+  init(
+    newSample: Bool = false,
+    eos: Bool = false,
+    busSyncMessage: Bool = false
+  ) {
+    self.newSample = newSample
+    self.eos = eos
+    self.busSyncMessage = busSyncMessage
   }
 }
 
@@ -387,6 +411,8 @@ private final class AudioFileReliablePacketProbeState: @unchecked Sendable {
     var newSampleHandlerCount = 0
     var pendingContinuationCount = 0
     var cleanupAcknowledgementCount = 0
+    var registeredCallbacks = ReliablePacketCallbackLifecycleSnapshotForTesting()
+    var disconnectedCallbacks = ReliablePacketCallbackLifecycleSnapshotForTesting()
   }
 
   private let state = Mutex(State())
@@ -437,12 +463,57 @@ private final class AudioFileReliablePacketProbeState: @unchecked Sendable {
     state.withLock { $0.cleanupAcknowledgementCount += 1 }
   }
 
+  func recordCallbacksRegistered() {
+    state.withLock {
+      $0.registeredCallbacks = ReliablePacketCallbackLifecycleSnapshotForTesting(
+        newSample: true,
+        eos: true,
+        busSyncMessage: true
+      )
+    }
+  }
+
+  func recordNewSampleCallbackDisconnected() {
+    state.withLock { state in
+      let disconnectedCallbacks = state.disconnectedCallbacks
+      state.disconnectedCallbacks = ReliablePacketCallbackLifecycleSnapshotForTesting(
+        newSample: true,
+        eos: disconnectedCallbacks.eos,
+        busSyncMessage: disconnectedCallbacks.busSyncMessage
+      )
+    }
+  }
+
+  func recordEOSCallbackDisconnected() {
+    state.withLock { state in
+      let disconnectedCallbacks = state.disconnectedCallbacks
+      state.disconnectedCallbacks = ReliablePacketCallbackLifecycleSnapshotForTesting(
+        newSample: disconnectedCallbacks.newSample,
+        eos: true,
+        busSyncMessage: disconnectedCallbacks.busSyncMessage
+      )
+    }
+  }
+
+  func recordBusSyncMessageCallbackDisconnected() {
+    state.withLock { state in
+      let disconnectedCallbacks = state.disconnectedCallbacks
+      state.disconnectedCallbacks = ReliablePacketCallbackLifecycleSnapshotForTesting(
+        newSample: disconnectedCallbacks.newSample,
+        eos: disconnectedCallbacks.eos,
+        busSyncMessage: true
+      )
+    }
+  }
+
   func snapshot() -> ReliablePacketRuntimeSnapshotForTesting {
     state.withLock {
       ReliablePacketRuntimeSnapshotForTesting(
         newSampleHandlerCount: $0.newSampleHandlerCount,
         pendingContinuationCount: $0.pendingContinuationCount,
-        cleanupAcknowledgementCount: $0.cleanupAcknowledgementCount
+        cleanupAcknowledgementCount: $0.cleanupAcknowledgementCount,
+        registeredCallbacks: $0.registeredCallbacks,
+        disconnectedCallbacks: $0.disconnectedCallbacks
       )
     }
   }
@@ -1156,6 +1227,7 @@ private final class ActiveCandidate: @unchecked Sendable {
             )
       else {
         swift_gst_callback_registration_disconnect(newSampleRegistration)
+        configuration.probeState.recordNewSampleCallbackDisconnected()
         configuration.probeState.decrementNewSampleHandlerCount()
         throw GStreamerError.busError(
           AudioFileReliableCallbackRegistrationFailureForTesting.eos.errorMessage,
@@ -1176,8 +1248,10 @@ private final class ActiveCandidate: @unchecked Sendable {
             )
       else {
         swift_gst_callback_registration_disconnect(newSampleRegistration)
+        configuration.probeState.recordNewSampleCallbackDisconnected()
         configuration.probeState.decrementNewSampleHandlerCount()
         swift_gst_callback_registration_disconnect(eosRegistration)
+        configuration.probeState.recordEOSCallbackDisconnected()
         throw GStreamerError.busError(
           AudioFileReliableCallbackRegistrationFailureForTesting.bus.errorMessage,
           source: "ReliablePackets",
@@ -1192,6 +1266,7 @@ private final class ActiveCandidate: @unchecked Sendable {
     self.eosRegistration = registrations.eos
     self.busRegistration = registrations.bus
     configuration.probeState.recordPipeline(pipeline)
+    configuration.probeState.recordCallbacksRegistered()
     configuration.afterCallbackRegistrationForTesting?(pipeline, candidate.sinkName)
   }
 
@@ -1211,6 +1286,7 @@ private final class ActiveCandidate: @unchecked Sendable {
     }
     if shouldDisconnect {
       swift_gst_callback_registration_disconnect(newSampleRegistration)
+      probeState.recordNewSampleCallbackDisconnected()
       probeState.decrementNewSampleHandlerCount()
     }
   }
@@ -1239,13 +1315,16 @@ private final class ActiveCandidate: @unchecked Sendable {
 
     if disconnects.newSample {
       swift_gst_callback_registration_disconnect(newSampleRegistration)
+      probeState.recordNewSampleCallbackDisconnected()
       probeState.decrementNewSampleHandlerCount()
     }
     if disconnects.eos {
       swift_gst_callback_registration_disconnect(eosRegistration)
+      probeState.recordEOSCallbackDisconnected()
     }
     if disconnects.bus {
       swift_gst_callback_registration_disconnect(busRegistration)
+      probeState.recordBusSyncMessageCallbackDisconnected()
     }
     pipeline.stop()
     gst_bus_set_flushing(bus._bus, 0)
