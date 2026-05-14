@@ -263,7 +263,7 @@ struct APISafetyStaticTests {
         let messageSequenceDocs = try [
             "README.md",
             "CHANGELOG.md",
-            "docs/ADRs/ADR-002-bus-message-delivery-model.md",
+            "Sources/GStreamer/Documentation.docc/APIContract.md",
             "tasks/prd-bus-message-delivery-model.md",
         ].map { path in
             try Self.contents(of: root.appendingPathComponent(path))
