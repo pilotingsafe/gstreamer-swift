@@ -38,7 +38,10 @@ For the exact v0.1 release scope and known limitations, see
 - `pkgconf`/`pkg-config` available on PATH
 - GStreamer 1.20+ development headers and libraries installed on your system
 - `pkg-config` metadata for the SwiftPM system-library targets:
-  `gstreamer-1.0`, `gstreamer-app-1.0`, and `gstreamer-video-1.0`
+  `gstreamer-1.0`, `gstreamer-app-1.0`, `gstreamer-video-1.0`, and
+  `gstreamer-base-1.0`
+- CI enforces GStreamer 1.28.2+ for those four modules as the Native Elements
+  readiness baseline
 
 ### Installing GStreamer
 
@@ -84,12 +87,12 @@ gst-inspect-1.0 --version
 
 Run this before `swift build` or `swift test` to confirm SwiftPM can find all system-library targets:
 ```bash
-pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
+pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0
 ```
 
 Print the resolved versions with:
 ```bash
-pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
+pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0
 ```
 
 ## Installation

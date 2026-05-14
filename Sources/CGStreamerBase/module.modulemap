@@ -1,0 +1,5 @@
+module CGStreamerBase [system] {
+    header "gstreamer_base.h"
+    link "gstbase-1.0"
+    export *
+}

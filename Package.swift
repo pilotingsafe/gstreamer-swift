@@ -51,6 +51,15 @@ let package = Package(
             ]
         ),
 
+        .systemLibrary(
+            name: "CGStreamerBase",
+            pkgConfig: "gstreamer-base-1.0",
+            providers: [
+                .brew(["gstreamer"]),
+                .apt(["libgstreamer-plugins-base1.0-dev"]),
+            ]
+        ),
+
         // MARK: - C Shim Layer
 
         .target(
@@ -63,11 +72,28 @@ let package = Package(
             ]
         ),
 
+        .target(
+            name: "CGStreamerBaseShim",
+            dependencies: ["CGStreamer", "CGStreamerBase"],
+            path: "Sources/CGStreamerBaseShim",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("include"),
+            ]
+        ),
+
         // MARK: - Swift API
 
         .target(
             name: "GStreamer",
-            dependencies: ["CGStreamer", "CGStreamerApp", "CGStreamerVideo", "CGStreamerShim"],
+            dependencies: [
+                "CGStreamer",
+                "CGStreamerApp",
+                "CGStreamerVideo",
+                "CGStreamerBase",
+                "CGStreamerShim",
+                "CGStreamerBaseShim",
+            ],
             path: "Sources/GStreamer",
             swiftSettings: [
                 .enableUpcomingFeature("InternalImportsByDefault"),
