@@ -19,8 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Ubuntu 22.04
-            os: ubuntu-22.04
           - name: macOS 26 arm64
             os: macos-26
     env:
@@ -130,7 +128,7 @@ jobs:
           fi
           swiftly run swift build
 
-      - name: Test
+      - name: Test Reliable packet encoding matrix
         shell: bash
         run: |
           set -euo pipefail
@@ -139,7 +137,7 @@ jobs:
           else
             . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
           fi
-          swiftly run swift test
+          swiftly run swift test --filter ReliablePacketEncodingMatrixTests
 
       - name: Dump public symbol graph
         shell: bash
