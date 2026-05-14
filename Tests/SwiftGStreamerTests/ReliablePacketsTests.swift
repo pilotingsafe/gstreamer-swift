@@ -1064,7 +1064,7 @@ struct ReliablePacketRuntimeCallbackLifecycleTests {
         #expect(ReliablePacketsTests.signalHandlerCount(on: captured.pipeline.bus, signalName: "sync-message") == 0)
         #expect(await source.reliablePacketPipelineForTesting() == nil)
         let cleanupMarker = "after-reliable-runtime-cleanup"
-        let cleanupMarkerTimeoutNanoseconds: UInt64 = 2_000_000_000
+        let cleanupMarkerTimeoutNanoseconds: GstClockTime = 2_000_000_000
         #expect(swift_gst_test_post_element_marker(captured.pipeline._element, cleanupMarker) != 0)
         #expect(
             swift_gst_test_bus_pop_marker(
@@ -1568,7 +1568,7 @@ enum InvalidBuildCase: CaseIterable, Sendable, CustomTestStringConvertible {
             }
 
         case .unreadableFile:
-            FileManager.default.createFile(atPath: path, contents: Data([0, 1, 2, 3]))
+            _ = FileManager.default.createFile(atPath: path, contents: Data([0, 1, 2, 3]))
             #if canImport(Darwin)
             _ = Darwin.chmod(path, 0)
             #elseif canImport(Glibc)
@@ -1584,7 +1584,7 @@ enum InvalidBuildCase: CaseIterable, Sendable, CustomTestStringConvertible {
             }
 
         case .invalidSampleRate, .invalidChannels, .invalidOpusBitrate, .invalidAACBitrate:
-            FileManager.default.createFile(atPath: path, contents: Data([0, 1, 2, 3]))
+            _ = FileManager.default.createFile(atPath: path, contents: Data([0, 1, 2, 3]))
             return {}
         }
     }
