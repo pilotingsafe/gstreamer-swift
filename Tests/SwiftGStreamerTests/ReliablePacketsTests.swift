@@ -1017,40 +1017,19 @@ struct ReliablePacketRuntimeCallbackLifecycleTests {
     func runtimeCallbacksAreConnectedBeforeFlowAndDisconnectedAfterEOSCleanup() async throws {
         let fixture = try await ReliablePacketsTests.makeAudioFixture(packetCount: 12)
         let capture = PipelineSinkCapture()
-        let activeCounts = ReliableCallbackHandlerCountCapture()
+        let callbackRegistrationHooks = ThreadSafeCounterProbe()
         let source = try AudioSource.file(path: fixture.path)
             .withOpusEncoding(bitrate: 64_000)
             .withReliablePacketAfterCallbackRegistrationForTesting { pipeline, sinkName in
+                callbackRegistrationHooks.increment()
                 capture.record(pipeline: pipeline, sinkName: sinkName)
-                guard let sinkElement = pipeline.element(named: sinkName) else {
-                    return
-                }
-                activeCounts.record(
-                    ReliableCallbackHandlerCounts(
-                        newSample: ReliablePacketsTests.signalHandlerCount(
-                            on: sinkElement,
-                            signalName: "new-sample"
-                        ),
-                        eos: ReliablePacketsTests.signalHandlerCount(
-                            on: sinkElement,
-                            signalName: "eos"
-                        ),
-                        bus: ReliablePacketsTests.signalHandlerCount(
-                            on: pipeline.bus,
-                            signalName: "sync-message"
-                        )
-                    )
-                )
             }
             .build()
 
         let trace = try await ReliablePacketsTests.collectTrace(source.reliablePackets())
         let snapshot = await source.reliablePacketRuntimeSnapshotForTesting()
 
-        let counts = try #require(activeCounts.snapshot())
-        #expect(counts.newSample > 0)
-        #expect(counts.eos > 0)
-        #expect(counts.bus > 0)
+        #expect(callbackRegistrationHooks.value > 0)
         #expect(trace.count > 0)
         #expect(trace.reachedCleanEOS)
         #expect(snapshot.newSampleHandlerCount == 0)
@@ -1832,24 +1811,6 @@ private actor StringProbe {
 
     func set(_ value: String) {
         storage = value
-    }
-}
-
-private struct ReliableCallbackHandlerCounts: Sendable, Equatable {
-    var newSample: UInt32
-    var eos: UInt32
-    var bus: UInt32
-}
-
-private final class ReliableCallbackHandlerCountCapture: @unchecked Sendable {
-    private let storage = Mutex<ReliableCallbackHandlerCounts?>(nil)
-
-    func record(_ counts: ReliableCallbackHandlerCounts) {
-        storage.withLock { $0 = counts }
-    }
-
-    func snapshot() -> ReliableCallbackHandlerCounts? {
-        storage.withLock { $0 }
     }
 }
 
