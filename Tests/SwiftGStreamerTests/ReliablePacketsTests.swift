@@ -1015,33 +1015,67 @@ struct ReliablePacketRuntimeCallbackLifecycleTests {
 
     @Test("Runtime callbacks are connected before flow and disconnected after EOS cleanup")
     func runtimeCallbacksAreConnectedBeforeFlowAndDisconnectedAfterEOSCleanup() async throws {
+        // Given a finite audio file source produces reliable packets
+        // And the reliable packet runtime reaches its callback registration hook
         let fixture = try await ReliablePacketsTests.makeAudioFixture(packetCount: 12)
         let capture = PipelineSinkCapture()
         let callbackRegistrationHooks = ThreadSafeCounterProbe()
+        let registeredHandlerCounts = CallbackHandlerCountCapture()
         let source = try AudioSource.file(path: fixture.path)
             .withOpusEncoding(bitrate: 64_000)
             .withReliablePacketAfterCallbackRegistrationForTesting { pipeline, sinkName in
                 callbackRegistrationHooks.increment()
                 capture.record(pipeline: pipeline, sinkName: sinkName)
+
+                guard let sinkElement = pipeline.element(named: sinkName) else {
+                    return
+                }
+                registeredHandlerCounts.record(
+                    newSample: ReliablePacketsTests.signalHandlerCount(
+                        on: sinkElement,
+                        signalName: "new-sample"
+                    ),
+                    eos: ReliablePacketsTests.signalHandlerCount(
+                        on: sinkElement,
+                        signalName: "eos"
+                    ),
+                    busSyncMessage: ReliablePacketsTests.signalHandlerCount(
+                        on: pipeline.bus,
+                        signalName: "sync-message"
+                    )
+                )
             }
             .build()
 
+        // When the lifecycle test records callback handler counts before packet flow
         let trace = try await ReliablePacketsTests.collectTrace(source.reliablePackets())
+        let registeredCounts = try #require(registeredHandlerCounts.snapshot())
+
+        // Then the app sink has new-sample and eos callback handlers attached
+        #expect(callbackRegistrationHooks.value > 0)
+        #expect(registeredCounts.newSample > 0)
+        #expect(registeredCounts.eos > 0)
+        // And the pipeline bus has a sync-message callback handler attached
+        #expect(registeredCounts.busSyncMessage > 0)
+
+        // When the reliable packet sequence drains to clean end-of-stream
         let snapshot = await source.reliablePacketRuntimeSnapshotForTesting()
 
-        #expect(callbackRegistrationHooks.value > 0)
         #expect(trace.count > 0)
         #expect(trace.reachedCleanEOS)
         #expect(snapshot.newSampleHandlerCount == 0)
         #expect(snapshot.pendingContinuationCount == 0)
         #expect(snapshot.cleanupAcknowledgementCount >= 1)
 
+        // Then the app sink and bus callback handlers are disconnected
         let captured = try #require(capture.snapshot())
         let sinkElement = try #require(captured.pipeline.element(named: captured.sinkName))
         #expect(ReliablePacketsTests.signalHandlerCount(on: sinkElement, signalName: "new-sample") == 0)
         #expect(ReliablePacketsTests.signalHandlerCount(on: sinkElement, signalName: "eos") == 0)
         #expect(ReliablePacketsTests.signalHandlerCount(on: captured.pipeline.bus, signalName: "sync-message") == 0)
+        // And the reliable packet runtime releases its active pipeline
         #expect(await source.reliablePacketPipelineForTesting() == nil)
+
         let cleanupMarker = "after-reliable-runtime-cleanup"
         let cleanupMarkerTimeoutNanoseconds: GstClockTime = 2_000_000_000
         #expect(swift_gst_test_post_element_marker(captured.pipeline._element, cleanupMarker) != 0)
@@ -1787,6 +1821,24 @@ private final class ThreadSafeCounterProbe: @unchecked Sendable {
 
     func increment() {
         storage.withLock { $0 += 1 }
+    }
+}
+
+private final class CallbackHandlerCountCapture: @unchecked Sendable {
+    private let storage = Mutex<(newSample: UInt32, eos: UInt32, busSyncMessage: UInt32)?>(nil)
+
+    func record(newSample: UInt32, eos: UInt32, busSyncMessage: UInt32) {
+        storage.withLock {
+            $0 = (
+                newSample: newSample,
+                eos: eos,
+                busSyncMessage: busSyncMessage
+            )
+        }
+    }
+
+    func snapshot() -> (newSample: UInt32, eos: UInt32, busSyncMessage: UInt32)? {
+        storage.withLock { $0 }
     }
 }
 
