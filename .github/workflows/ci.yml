@@ -128,7 +128,7 @@ jobs:
           fi
           swiftly run swift build
 
-      - name: Test Reliable packet encoding matrix
+      - name: Test Reliable packet suites
         shell: bash
         run: |
           set -euo pipefail
@@ -137,7 +137,7 @@ jobs:
           else
             . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
           fi
-          swiftly run swift test --filter ReliablePacketEncodingMatrixTests
+          swiftly run swift test --filter ReliablePacket
 
       - name: Dump public symbol graph
         shell: bash
