@@ -24,7 +24,7 @@ concurrency-friendly helpers.
 - Convenience builders for common audio/video source and sink workflows
 
 For the exact v0.1 release scope and known limitations, see
-[RELEASE.md](RELEASE.md) and [docs/v0.1-scope.md](docs/v0.1-scope.md).
+[RELEASE.md](RELEASE.md).
 
 ## Requirements
 

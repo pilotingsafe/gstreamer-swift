@@ -1,7 +1,6 @@
 # Release Scope
 
-This file summarizes the v0.1 release scope. For the detailed scope note, see
-[docs/v0.1-scope.md](docs/v0.1-scope.md).
+This file summarizes the v0.1 release scope and known limitations.
 
 ## Stable v0.1 Surface
 

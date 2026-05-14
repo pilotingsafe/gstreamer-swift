@@ -1078,10 +1078,7 @@ struct APISafetyStaticTests {
     @Test("Release scope docs state v0.1 stable surface and limitations")
     func releaseScopeDocsStateV01StableSurfaceAndLimitations() throws {
         let root = try Self.packageRoot()
-        let paths = [
-            "RELEASE.md",
-            "docs/v0.1-scope.md",
-        ]
+        let paths = ["RELEASE.md"]
         var failures: [String] = []
 
         for path in paths {
