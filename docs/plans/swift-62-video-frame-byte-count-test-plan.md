@@ -1,5 +1,9 @@
 # Swift 6.2 VideoFrame Byte Count Test Plan
 
+> Superseded note: the repository support baseline was later raised to Swift
+> 6.3.1. This historical plan documents the earlier Swift 6.2.4 compiler-crash
+> workaround and is no longer the active toolchain baseline plan.
+
 ## Summary
 
 Avoid a macOS CI Swift 6.2.4 compiler crash by reshaping test assertions that read

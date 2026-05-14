@@ -1,5 +1,9 @@
 # Spec Compliance Review
 
+> Superseded note: the repository support baseline was later raised to Swift
+> 6.3.1. This review is retained as historical context for the earlier Swift
+> 6.2.4 workaround.
+
 ## Verdict
 
 No Findings

@@ -1,5 +1,9 @@
 # PRD: Live Caps, Bus Watch, and Callback Concurrency Fixes
 
+> Superseded note: the repository support baseline was later raised to Swift
+> 6.3.1. Historical references below to preserving `// swift-tools-version:6.2`
+> describe the constraints that applied when this task was written.
+
 ## Introduction/Overview
 
 This PRD covers the concurrency and robustness follow-up fixes for reliable
