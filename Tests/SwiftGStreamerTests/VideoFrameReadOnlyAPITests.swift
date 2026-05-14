@@ -32,7 +32,8 @@ struct VideoFrameReadOnlyAPITests {
         }
 
         let frame = try #require(firstFrame)
-        #expect(frame.bytes.byteCount == expectedByteCount)
+        let bytesByteCount = frame.bytes.byteCount
+        #expect(bytesByteCount == expectedByteCount)
 
         let unsafeByteCount = try frame.withUnsafeBytes { bytes in
             bytes.count

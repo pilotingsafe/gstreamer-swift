@@ -127,7 +127,8 @@ struct AppSourceTests {
         }
 
         // Verify we can access the data
-        #expect(frame.bytes.byteCount == 16)  // 2x2x4 bytes
+        let byteCount = try frame.withUnsafeBytes { $0.count }
+        #expect(byteCount == 16)  // 2x2x4 bytes
     }
 
     @Test("pushVideoFrame overloads reject too-small data")

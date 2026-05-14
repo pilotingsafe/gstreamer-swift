@@ -1,11 +1,11 @@
 # GStreamer
 
-[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
+[![Swift 6.3.1](https://img.shields.io/badge/Swift-6.3.1-orange.svg)](https://swift.org)
 [![CI](https://github.com/pilotingsafe/gstreamer-swift/actions/workflows/ci.yml/badge.svg)](https://github.com/pilotingsafe/gstreamer-swift/actions/workflows/ci.yml)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%20|%20Linux-blue.svg)](https://swift.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A Swift 6.2 package that wraps GStreamer with low-level Swift APIs and selected
+A Swift 6.3.1 package that wraps GStreamer with low-level Swift APIs and selected
 concurrency-friendly helpers.
 
 ## Features
@@ -23,11 +23,14 @@ concurrency-friendly helpers.
 - Explicit packet-delivery contracts for realtime best-effort and reliable streams
 - Convenience builders for common audio/video source and sink workflows
 
+For the exact v0.1 release scope and known limitations, see
+[RELEASE.md](RELEASE.md).
+
 ## Requirements
 
-- Swift 6.2+
+- Swift 6.3.1+
 - v0.1 documentation and verification focus on macOS and Linux
-- GitHub Actions CI runs Swift 6.2.4 on ubuntu-22.04 and macos-26 (arm64)
+- GitHub Actions CI runs Swift 6.3.1 on ubuntu-22.04 and macos-26 (arm64)
   with GStreamer system dependencies installed
 - `Package.swift` declares Apple platform minimums for macOS, iOS, tvOS,
   watchOS, and visionOS 26.0; those declarations are not the same as CI-tested

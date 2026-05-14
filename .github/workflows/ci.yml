@@ -24,10 +24,31 @@ jobs:
           - name: macOS 26 arm64
             os: macos-26
     env:
-      SWIFT_VERSION: 6.2.4
+      SWIFT_VERSION: 6.3.1
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Install Swift and GStreamer dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get remove -y libunwind-13-dev libunwind-14-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libcurl4-openssl-dev \
+            pkg-config \
+            python3-lldb-13 \
+            libunwind-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav
 
       - name: Install Swiftly (macOS)
         if: runner.os == 'macOS'
@@ -89,23 +110,6 @@ jobs:
           set -euo pipefail
           brew install pkgconf gstreamer
 
-      - name: Install GStreamer dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            pkg-config \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav
-
       - name: Preflight GStreamer dependencies
         shell: bash
         run: |
@@ -126,7 +130,7 @@ jobs:
           fi
           swiftly run swift build
 
-      - name: Test
+      - name: Test serially
         shell: bash
         run: |
           set -euo pipefail
@@ -135,7 +139,7 @@ jobs:
           else
             . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
           fi
-          swiftly run swift test
+          swiftly run swift test --no-parallel
 
       - name: Dump public symbol graph
         shell: bash

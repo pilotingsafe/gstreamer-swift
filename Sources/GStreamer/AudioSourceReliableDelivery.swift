@@ -934,6 +934,47 @@ private final class LiveAudioReliablePacketBridge: @unchecked Sendable {
   }
 
   private func waitForEvent(after generation: UInt64) async throws -> Bool {
+    if configuration.suppressEOSCallbacksForTesting {
+      return try await waitForPolledEventOrEOS(after: generation)
+    }
+
+    return try await waitForCallbackEvent(after: generation)
+  }
+
+  private func waitForPolledEventOrEOS(after generation: UInt64) async throws -> Bool {
+    while true {
+      try Task.checkCancellation()
+
+      let immediate = packetState.withLock { state -> Result<Bool, Error>? in
+        if state.cancelled {
+          return .failure(CancellationError())
+        }
+        if let terminalError = state.terminalError {
+          return .failure(terminalError)
+        }
+        if state.stopped || state.completed || state.eos {
+          return .success(false)
+        }
+        if state.sampleGeneration != generation {
+          return .success(true)
+        }
+        return nil
+      }
+
+      if let immediate {
+        return try immediate.get()
+      }
+
+      if swift_gst_app_sink_is_eos(appSink) != 0 {
+        reportEOS()
+        return false
+      }
+
+      try await Task.sleep(for: .milliseconds(1))
+    }
+  }
+
+  private func waitForCallbackEvent(after generation: UInt64) async throws -> Bool {
     try await withCheckedThrowingContinuation { continuation in
       let immediate = packetState.withLock { state -> Result<Bool, Error>? in
         if state.cancelled {
