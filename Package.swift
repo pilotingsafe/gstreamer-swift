@@ -179,7 +179,7 @@ let package = Package(
 
         .target(
             name: "CGStreamerTestSupport",
-            dependencies: ["CGStreamer", "CGStreamerApp", "CGStreamerShim"],
+            dependencies: ["CGStreamer", "CGStreamerApp", "CGStreamerShim", "CGStreamerBaseShim"],
             path: "Tests/CGStreamerTestSupport",
             publicHeadersPath: "include",
             cSettings: [

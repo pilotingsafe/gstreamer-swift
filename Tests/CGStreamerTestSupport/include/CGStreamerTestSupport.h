@@ -27,6 +27,35 @@ typedef struct {
     guint release_count;
 } SwiftGstTestCallbackRegistrationRaceResult;
 
+typedef struct {
+    guint retain_count;
+    guint release_count;
+    guint create_count;
+    guint destroy_count;
+    guint start_count;
+    guint stop_count;
+    guint set_caps_count;
+    guint render_count;
+} SwiftGstTestBaseSinkCallbackCounts;
+
+typedef struct {
+    gboolean success_registration_succeeded;
+    gboolean duplicate_factory_registration_failed;
+    gboolean duplicate_type_registration_failed;
+    SwiftGstTestBaseSinkCallbackCounts success_context;
+    SwiftGstTestBaseSinkCallbackCounts duplicate_factory_context;
+    SwiftGstTestBaseSinkCallbackCounts duplicate_type_context;
+} SwiftGstTestBaseSinkOwnershipProbeResult;
+
+typedef struct {
+    gboolean registration_succeeded;
+    gboolean element_created;
+    gboolean start_returned_false;
+    gboolean render_returned_flow_error;
+    gboolean stop_returned_true;
+    SwiftGstTestBaseSinkCallbackCounts callback_counts;
+} SwiftGstTestBaseSinkMissingInstanceProbeResult;
+
 gboolean swift_gst_test_element_factory_exists(const gchar* factory_name);
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
@@ -73,6 +102,18 @@ gchar* swift_gst_test_appsink_first_sample_caps_string(GstAppSink* appsink, GstC
 gboolean swift_gst_test_bus_pop_marker(GstBus* bus, const gchar* marker, GstClockTime timeout);
 
 SwiftGstTestCallbackRegistrationRaceResult swift_gst_test_callback_registration_disconnect_while_in_flight(void);
+
+SwiftGstTestBaseSinkOwnershipProbeResult swift_gst_test_base_sink_class_context_ownership_probe(
+    const gchar* success_factory_name,
+    const gchar* success_type_name,
+    const gchar* duplicate_factory_type_name,
+    const gchar* duplicate_type_factory_name
+);
+
+SwiftGstTestBaseSinkMissingInstanceProbeResult swift_gst_test_base_sink_missing_instance_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+);
 
 #ifdef __cplusplus
 }

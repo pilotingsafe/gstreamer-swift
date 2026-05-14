@@ -1,5 +1,6 @@
 #include "include/CGStreamerTestSupport.h"
 #include "GStreamerAppShim.h"
+#include "GStreamerBaseShim.h"
 
 #define SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_TIMEOUT_US (5 * G_TIME_SPAN_SECOND)
 #define SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_EXPECTED_RETAIN_COUNT 2
@@ -36,6 +37,213 @@ typedef struct {
     guint release_count;
     GstFlowReturn flow_return;
 } SwiftGstTestCallbackRegistrationRaceContext;
+
+typedef struct {
+    GMutex mutex;
+    guint retain_count;
+    guint release_count;
+    guint create_count;
+    guint destroy_count;
+    guint start_count;
+    guint stop_count;
+    guint set_caps_count;
+    guint render_count;
+} SwiftGstTestBaseSinkContext;
+
+static GMutex swift_gst_test_base_sink_missing_probe_mutex;
+static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_missing_probe_context = NULL;
+
+static void swift_gst_test_base_sink_context_init(SwiftGstTestBaseSinkContext* context) {
+    if (!context) {
+        return;
+    }
+
+    g_mutex_init(&context->mutex);
+}
+
+static void swift_gst_test_base_sink_increment(
+    SwiftGstTestBaseSinkContext* context,
+    guint* field
+) {
+    if (!context || !field) {
+        return;
+    }
+
+    g_mutex_lock(&context->mutex);
+    *field += 1;
+    g_mutex_unlock(&context->mutex);
+}
+
+static SwiftGstTestBaseSinkCallbackCounts swift_gst_test_base_sink_counts(
+    SwiftGstTestBaseSinkContext* context
+) {
+    SwiftGstTestBaseSinkCallbackCounts counts = {0};
+
+    if (!context) {
+        return counts;
+    }
+
+    g_mutex_lock(&context->mutex);
+    counts.retain_count = context->retain_count;
+    counts.release_count = context->release_count;
+    counts.create_count = context->create_count;
+    counts.destroy_count = context->destroy_count;
+    counts.start_count = context->start_count;
+    counts.stop_count = context->stop_count;
+    counts.set_caps_count = context->set_caps_count;
+    counts.render_count = context->render_count;
+    g_mutex_unlock(&context->mutex);
+
+    return counts;
+}
+
+static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_current_missing_probe_context(void) {
+    g_mutex_lock(&swift_gst_test_base_sink_missing_probe_mutex);
+    SwiftGstTestBaseSinkContext* context = swift_gst_test_base_sink_missing_probe_context;
+    g_mutex_unlock(&swift_gst_test_base_sink_missing_probe_mutex);
+    return context;
+}
+
+static void swift_gst_test_base_sink_set_missing_probe_context(
+    SwiftGstTestBaseSinkContext* context
+) {
+    g_mutex_lock(&swift_gst_test_base_sink_missing_probe_mutex);
+    swift_gst_test_base_sink_missing_probe_context = context;
+    g_mutex_unlock(&swift_gst_test_base_sink_missing_probe_mutex);
+}
+
+static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_callback_context(
+    void* instance_context
+) {
+    if (instance_context) {
+        return (SwiftGstTestBaseSinkContext*)instance_context;
+    }
+
+    return swift_gst_test_base_sink_current_missing_probe_context();
+}
+
+static void swift_gst_test_base_sink_retain(void* data) {
+    SwiftGstTestBaseSinkContext* context = (SwiftGstTestBaseSinkContext*)data;
+    if (!context) {
+        return;
+    }
+    swift_gst_test_base_sink_increment(context, &context->retain_count);
+}
+
+static void swift_gst_test_base_sink_release(void* data) {
+    SwiftGstTestBaseSinkContext* context = (SwiftGstTestBaseSinkContext*)data;
+    if (!context) {
+        return;
+    }
+    swift_gst_test_base_sink_increment(context, &context->release_count);
+}
+
+static void* swift_gst_test_base_sink_create_instance(void* class_context) {
+    SwiftGstTestBaseSinkContext* context = (SwiftGstTestBaseSinkContext*)class_context;
+    if (!context) {
+        return NULL;
+    }
+    swift_gst_test_base_sink_increment(context, &context->create_count);
+    return context;
+}
+
+static void swift_gst_test_base_sink_destroy_instance(void* instance_context) {
+    SwiftGstTestBaseSinkContext* context = swift_gst_test_base_sink_callback_context(instance_context);
+    if (!context) {
+        return;
+    }
+    swift_gst_test_base_sink_increment(context, &context->destroy_count);
+}
+
+static gboolean swift_gst_test_base_sink_start(void* instance_context) {
+    SwiftGstTestBaseSinkContext* context = swift_gst_test_base_sink_callback_context(instance_context);
+    if (!context) {
+        return FALSE;
+    }
+    swift_gst_test_base_sink_increment(context, &context->start_count);
+    return TRUE;
+}
+
+static gboolean swift_gst_test_base_sink_stop(void* instance_context) {
+    SwiftGstTestBaseSinkContext* context = swift_gst_test_base_sink_callback_context(instance_context);
+    if (!context) {
+        return TRUE;
+    }
+    swift_gst_test_base_sink_increment(context, &context->stop_count);
+    return TRUE;
+}
+
+static gboolean swift_gst_test_base_sink_set_caps(void* instance_context, GstCaps* caps) {
+    (void)caps;
+
+    SwiftGstTestBaseSinkContext* context = swift_gst_test_base_sink_callback_context(instance_context);
+    if (!context) {
+        return FALSE;
+    }
+    swift_gst_test_base_sink_increment(context, &context->set_caps_count);
+    return TRUE;
+}
+
+static GstFlowReturn swift_gst_test_base_sink_render(void* instance_context, GstBuffer* buffer) {
+    (void)buffer;
+
+    SwiftGstTestBaseSinkContext* context = swift_gst_test_base_sink_callback_context(instance_context);
+    if (!context) {
+        return GST_FLOW_ERROR;
+    }
+    swift_gst_test_base_sink_increment(context, &context->render_count);
+    return GST_FLOW_OK;
+}
+
+static SwiftGstBaseSinkInfo swift_gst_test_base_sink_info(
+    const gchar* factory_name,
+    const gchar* type_name
+) {
+    SwiftGstBaseSinkInfo info = {
+        .factory_name = factory_name,
+        .type_name = type_name,
+        .klass = "Sink/Video",
+        .long_name = "Swift test BaseSink",
+        .description = "Swift test BaseSink registered through the C ABI",
+        .author = "gstreamer-swift-tests",
+        .rank = 0,
+        .sink_caps = "video/x-raw",
+    };
+    return info;
+}
+
+static SwiftGstBaseSinkCallbacks swift_gst_test_base_sink_callbacks(void) {
+    SwiftGstBaseSinkCallbacks callbacks = {
+        .create_instance = swift_gst_test_base_sink_create_instance,
+        .destroy_instance = swift_gst_test_base_sink_destroy_instance,
+        .start = swift_gst_test_base_sink_start,
+        .stop = swift_gst_test_base_sink_stop,
+        .set_caps = swift_gst_test_base_sink_set_caps,
+        .render = swift_gst_test_base_sink_render,
+    };
+    return callbacks;
+}
+
+static gboolean swift_gst_test_base_sink_register(
+    const gchar* factory_name,
+    const gchar* type_name,
+    SwiftGstTestBaseSinkContext* context,
+    const SwiftGstBaseSinkCallbacks* callbacks
+) {
+    SwiftGstBaseSinkInfo info = swift_gst_test_base_sink_info(factory_name, type_name);
+    gchar* error_message = NULL;
+    gboolean registered = swift_gst_register_base_sink(
+        &info,
+        callbacks,
+        context,
+        swift_gst_test_base_sink_retain,
+        swift_gst_test_base_sink_release,
+        &error_message
+    );
+
+    g_free(error_message);
+    return registered;
+}
 
 static SwiftGstTestCallbackRegistrationRaceResult swift_gst_test_callback_registration_race_result(
     SwiftGstTestCallbackRegistrationRaceStatus status,
@@ -347,6 +555,106 @@ SwiftGstTestCallbackRegistrationRaceResult swift_gst_test_callback_registration_
     g_cond_clear(&context.cond);
     g_mutex_clear(&context.mutex);
     gst_object_unref(element);
+    return result;
+}
+
+SwiftGstTestBaseSinkOwnershipProbeResult swift_gst_test_base_sink_class_context_ownership_probe(
+    const gchar* success_factory_name,
+    const gchar* success_type_name,
+    const gchar* duplicate_factory_type_name,
+    const gchar* duplicate_type_factory_name
+) {
+    SwiftGstTestBaseSinkOwnershipProbeResult result = {0};
+
+    SwiftGstBaseSinkCallbacks callbacks = swift_gst_test_base_sink_callbacks();
+
+    SwiftGstTestBaseSinkContext* success_context = g_new0(SwiftGstTestBaseSinkContext, 1);
+    swift_gst_test_base_sink_context_init(success_context);
+    result.success_registration_succeeded = swift_gst_test_base_sink_register(
+        success_factory_name,
+        success_type_name,
+        success_context,
+        &callbacks
+    );
+    result.success_context = swift_gst_test_base_sink_counts(success_context);
+
+    SwiftGstTestBaseSinkContext* duplicate_factory_context = g_new0(SwiftGstTestBaseSinkContext, 1);
+    swift_gst_test_base_sink_context_init(duplicate_factory_context);
+    result.duplicate_factory_registration_failed = !swift_gst_test_base_sink_register(
+        success_factory_name,
+        duplicate_factory_type_name,
+        duplicate_factory_context,
+        &callbacks
+    );
+    result.duplicate_factory_context = swift_gst_test_base_sink_counts(duplicate_factory_context);
+
+    SwiftGstTestBaseSinkContext* duplicate_type_context = g_new0(SwiftGstTestBaseSinkContext, 1);
+    swift_gst_test_base_sink_context_init(duplicate_type_context);
+    result.duplicate_type_registration_failed = !swift_gst_test_base_sink_register(
+        duplicate_type_factory_name,
+        success_type_name,
+        duplicate_type_context,
+        &callbacks
+    );
+    result.duplicate_type_context = swift_gst_test_base_sink_counts(duplicate_type_context);
+
+    return result;
+}
+
+SwiftGstTestBaseSinkMissingInstanceProbeResult swift_gst_test_base_sink_missing_instance_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+) {
+    SwiftGstTestBaseSinkMissingInstanceProbeResult result = {0};
+
+    SwiftGstBaseSinkCallbacks callbacks = swift_gst_test_base_sink_callbacks();
+    callbacks.create_instance = NULL;
+
+    SwiftGstTestBaseSinkContext* context = g_new0(SwiftGstTestBaseSinkContext, 1);
+    swift_gst_test_base_sink_context_init(context);
+    result.registration_succeeded = swift_gst_test_base_sink_register(
+        factory_name,
+        type_name,
+        context,
+        &callbacks
+    );
+
+    if (!result.registration_succeeded) {
+        result.callback_counts = swift_gst_test_base_sink_counts(context);
+        return result;
+    }
+
+    GstElement* element = gst_element_factory_make(factory_name, NULL);
+    if (!element) {
+        result.callback_counts = swift_gst_test_base_sink_counts(context);
+        return result;
+    }
+
+    result.element_created = TRUE;
+
+    GstBaseSink* sink = GST_BASE_SINK(element);
+    GstBaseSinkClass* sink_class = GST_BASE_SINK_GET_CLASS(sink);
+    GstBuffer* buffer = gst_buffer_new_allocate(NULL, 1, NULL);
+
+    swift_gst_test_base_sink_set_missing_probe_context(context);
+
+    gboolean start_result = sink_class && sink_class->start ? sink_class->start(sink) : FALSE;
+    GstFlowReturn render_result = sink_class && sink_class->render && buffer
+        ? sink_class->render(sink, buffer)
+        : GST_FLOW_ERROR;
+    gboolean stop_result = sink_class && sink_class->stop ? sink_class->stop(sink) : FALSE;
+
+    swift_gst_test_base_sink_set_missing_probe_context(NULL);
+
+    if (buffer) {
+        gst_buffer_unref(buffer);
+    }
+    gst_object_unref(element);
+
+    result.start_returned_false = !start_result;
+    result.render_returned_flow_error = render_result == GST_FLOW_ERROR;
+    result.stop_returned_true = stop_result;
+    result.callback_counts = swift_gst_test_base_sink_counts(context);
     return result;
 }
 
