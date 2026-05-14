@@ -264,7 +264,6 @@ struct APISafetyStaticTests {
             "README.md",
             "CHANGELOG.md",
             "Sources/GStreamer/Documentation.docc/APIContract.md",
-            "tasks/prd-bus-message-delivery-model.md",
         ].map { path in
             try Self.contents(of: root.appendingPathComponent(path))
         }.joined(separator: "\n")

@@ -34,8 +34,8 @@ hide messages from the others.
 
 `messageSequence(filter:)` is the pull-based bus API. It returns EOS and ERROR
 as values, so the caller decides when to break from the loop. It uses a bounded
-parsed-message buffer with best-effort overflow handling that prefers keeping
-ERROR and EOS observable over older noncritical messages.
+parsed-message buffer limit with best-effort overflow handling that prefers
+keeping ERROR and EOS observable over older noncritical messages.
 
 `messages(filter:)` is the compatibility `AsyncStream` API. It finishes after
 delivering EOS. The helper streams built on top of it share the same destructive
