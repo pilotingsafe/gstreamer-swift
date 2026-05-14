@@ -1,6 +1,16 @@
 import Testing
+import Foundation
 
 @testable import GStreamer
+
+private let hostedMacOSGitHubActions = {
+#if os(macOS)
+  let environment = ProcessInfo.processInfo.environment
+  return environment["GITHUB_ACTIONS"] == "true" && environment["RUNNER_OS"] == "macOS"
+#else
+  return false
+#endif
+}()
 
 @Suite("Device Monitor Tests")
 struct DeviceMonitorTests {
@@ -15,7 +25,13 @@ struct DeviceMonitorTests {
     _ = monitor  // Just verify creation doesn't crash
   }
 
-  @Test("List video sources")
+  @Test(
+    "List video sources",
+    .disabled(
+      if: hostedMacOSGitHubActions,
+      "Hosted macOS runners can crash inside GStreamer device-provider discovery."
+    )
+  )
   func listVideoSources() {
     let monitor = DeviceMonitor()
     let cameras = monitor.videoSources()
@@ -28,7 +44,13 @@ struct DeviceMonitorTests {
     }
   }
 
-  @Test("List audio sources")
+  @Test(
+    "List audio sources",
+    .disabled(
+      if: hostedMacOSGitHubActions,
+      "Hosted macOS runners can crash inside GStreamer device-provider discovery."
+    )
+  )
   func listAudioSources() {
     let monitor = DeviceMonitor()
     let mics = monitor.audioSources()
@@ -40,7 +62,13 @@ struct DeviceMonitorTests {
     }
   }
 
-  @Test("List audio sinks")
+  @Test(
+    "List audio sinks",
+    .disabled(
+      if: hostedMacOSGitHubActions,
+      "Hosted macOS runners can crash inside GStreamer device-provider discovery."
+    )
+  )
   func listAudioSinks() {
     let monitor = DeviceMonitor()
     let speakers = monitor.audioSinks()
@@ -52,7 +80,13 @@ struct DeviceMonitorTests {
     }
   }
 
-  @Test("List all devices")
+  @Test(
+    "List all devices",
+    .disabled(
+      if: hostedMacOSGitHubActions,
+      "Hosted macOS runners can crash inside GStreamer device-provider discovery."
+    )
+  )
   func listAllDevices() {
     let monitor = DeviceMonitor()
     let devices = monitor.allDevices()
@@ -62,7 +96,13 @@ struct DeviceMonitorTests {
     }
   }
 
-  @Test("Device has caps")
+  @Test(
+    "Device has caps",
+    .disabled(
+      if: hostedMacOSGitHubActions,
+      "Hosted macOS runners can crash inside GStreamer device-provider discovery."
+    )
+  )
   func deviceHasCaps() {
     let monitor = DeviceMonitor()
     let devices = monitor.allDevices()
@@ -74,7 +114,13 @@ struct DeviceMonitorTests {
     }
   }
 
-  @Test("Create element from device")
+  @Test(
+    "Create element from device",
+    .disabled(
+      if: hostedMacOSGitHubActions,
+      "Hosted macOS runners can crash inside GStreamer device-provider discovery."
+    )
+  )
   func createElementFromDevice() {
     let monitor = DeviceMonitor()
     let devices = monitor.videoSources()
