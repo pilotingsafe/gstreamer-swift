@@ -62,6 +62,16 @@ typedef struct {
     guint transform_ip_count;
 } SwiftGstTestBaseTransformContext;
 
+typedef struct {
+    GstBaseSink parent_instance;
+    void* instance_context;
+} SwiftGstTestNativeBaseSinkView;
+
+typedef struct {
+    GstBaseTransform parent_instance;
+    void* instance_context;
+} SwiftGstTestNativeBaseTransformView;
+
 static GMutex swift_gst_test_base_sink_missing_probe_mutex;
 static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_missing_probe_context = NULL;
 static GMutex swift_gst_test_base_transform_missing_probe_mutex;
@@ -693,6 +703,104 @@ GLogLevelFlags swift_gst_test_enable_fatal_criticals(void) {
 
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous) {
     g_log_set_always_fatal(previous);
+}
+
+GParamFlags swift_gst_test_param_mutable_playing(void) {
+    return GST_PARAM_MUTABLE_PLAYING;
+}
+
+guint swift_gst_test_element_property_id(GstElement* element, const gchar* property_name) {
+    if (!element || !property_name) {
+        return 0;
+    }
+
+    GObjectClass* object_class = G_OBJECT_GET_CLASS(element);
+    if (!object_class) {
+        return 0;
+    }
+
+    GParamSpec* spec = g_object_class_find_property(object_class, property_name);
+    return spec ? spec->param_id : 0;
+}
+
+static void** swift_gst_test_native_instance_context_slot(
+    GstElement* element,
+    gboolean is_base_transform
+) {
+    if (!element) {
+        return NULL;
+    }
+
+    if (is_base_transform) {
+        if (!GST_IS_BASE_TRANSFORM(element)) {
+            return NULL;
+        }
+
+        SwiftGstTestNativeBaseTransformView* view = (SwiftGstTestNativeBaseTransformView*)element;
+        return &view->instance_context;
+    }
+
+    if (!GST_IS_BASE_SINK(element)) {
+        return NULL;
+    }
+
+    SwiftGstTestNativeBaseSinkView* view = (SwiftGstTestNativeBaseSinkView*)element;
+    return &view->instance_context;
+}
+
+SwiftGstTestNativePropertyDefaultsProbeResult swift_gst_test_native_property_missing_instance_defaults_probe(
+    GstElement* element,
+    gboolean is_base_transform,
+    const gchar* bool_name,
+    const gchar* int_name,
+    const gchar* double_name,
+    const gchar* string_name,
+    const gchar* enum_name
+) {
+    SwiftGstTestNativePropertyDefaultsProbeResult result = {0};
+    void** instance_context_slot =
+        swift_gst_test_native_instance_context_slot(element, is_base_transform);
+    if (!instance_context_slot
+        || !bool_name
+        || !int_name
+        || !double_name
+        || !string_name
+        || !enum_name) {
+        return result;
+    }
+
+    void* saved_instance_context = *instance_context_slot;
+    *instance_context_slot = NULL;
+
+    g_object_get(
+        G_OBJECT(element),
+        bool_name,
+        &result.bool_value,
+        int_name,
+        &result.int_value,
+        double_name,
+        &result.double_value,
+        string_name,
+        &result.string_value,
+        enum_name,
+        &result.enum_value,
+        NULL
+    );
+
+    *instance_context_slot = saved_instance_context;
+    result.success = TRUE;
+    return result;
+}
+
+void swift_gst_test_native_property_defaults_probe_result_clear(
+    SwiftGstTestNativePropertyDefaultsProbeResult* result
+) {
+    if (!result) {
+        return;
+    }
+
+    g_clear_pointer(&result->string_value, g_free);
+    g_clear_pointer(&result->enum_value, g_free);
 }
 
 SwiftGstTestCallbackRegistrationRaceResult swift_gst_test_callback_registration_disconnect_while_in_flight(void) {

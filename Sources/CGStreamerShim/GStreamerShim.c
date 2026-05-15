@@ -43,10 +43,26 @@ guint swift_gst_version_nano(void) {
 }
 
 GstElement* swift_gst_parse_launch(const gchar* pipeline_description, gchar** error_message) {
+    return swift_gst_parse_launch_with_property_error(pipeline_description, error_message, NULL);
+}
+
+GstElement* swift_gst_parse_launch_with_property_error(
+    const gchar* pipeline_description,
+    gchar** error_message,
+    gboolean* error_is_property_failure
+) {
     GError* error = NULL;
     GstElement* pipeline = gst_parse_launch(pipeline_description, &error);
 
+    if (error_is_property_failure) {
+        *error_is_property_failure = FALSE;
+    }
     if (error) {
+        if (error_is_property_failure && error->domain == GST_PARSE_ERROR) {
+            *error_is_property_failure =
+                error->code == GST_PARSE_ERROR_NO_SUCH_PROPERTY ||
+                error->code == GST_PARSE_ERROR_COULD_NOT_SET_PROPERTY;
+        }
         if (error_message) {
             *error_message = g_strdup(error->message);
         }

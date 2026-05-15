@@ -33,6 +33,14 @@ guint swift_gst_version_nano(void);
 /// Returns NULL on error, error_message will be set (caller must g_free)
 GstElement* swift_gst_parse_launch(const gchar* pipeline_description, gchar** error_message);
 
+/// Parse a pipeline description and report whether any parse error was a
+/// property lookup or property set failure.
+GstElement* swift_gst_parse_launch_with_property_error(
+    const gchar* pipeline_description,
+    gchar** error_message,
+    gboolean* error_is_property_failure
+);
+
 /// Get element by name from a bin/pipeline
 GstElement* swift_gst_bin_get_by_name(GstElement* bin, const gchar* name);
 

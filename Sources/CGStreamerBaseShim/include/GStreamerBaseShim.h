@@ -22,6 +22,72 @@ typedef gboolean (*SwiftGstBaseTransformSetCapsFunc)(
     GstCaps* output_caps
 );
 typedef GstFlowReturn (*SwiftGstBaseTransformIPFunc)(void* instance_context, GstBuffer* buffer);
+typedef void (*SwiftGstNativeSetBoolPropertyFunc)(
+    void* instance_context,
+    guint property_index,
+    gboolean value
+);
+typedef void (*SwiftGstNativeSetIntPropertyFunc)(
+    void* instance_context,
+    guint property_index,
+    gint value
+);
+typedef void (*SwiftGstNativeSetDoublePropertyFunc)(
+    void* instance_context,
+    guint property_index,
+    gdouble value
+);
+typedef void (*SwiftGstNativeSetStringPropertyFunc)(
+    void* instance_context,
+    guint property_index,
+    const gchar* value
+);
+typedef gboolean (*SwiftGstNativeGetBoolPropertyFunc)(
+    void* instance_context,
+    guint property_index
+);
+typedef gint (*SwiftGstNativeGetIntPropertyFunc)(
+    void* instance_context,
+    guint property_index
+);
+typedef gdouble (*SwiftGstNativeGetDoublePropertyFunc)(
+    void* instance_context,
+    guint property_index
+);
+typedef gchar* (*SwiftGstNativeGetStringPropertyFunc)(
+    void* instance_context,
+    guint property_index
+);
+
+typedef enum {
+    SWIFT_GST_NATIVE_PROPERTY_KIND_BOOL,
+    SWIFT_GST_NATIVE_PROPERTY_KIND_INT,
+    SWIFT_GST_NATIVE_PROPERTY_KIND_DOUBLE,
+    SWIFT_GST_NATIVE_PROPERTY_KIND_STRING,
+    SWIFT_GST_NATIVE_PROPERTY_KIND_STRING_ENUM,
+} SwiftGstNativePropertyKind;
+
+typedef struct {
+    const gchar* name;
+    const gchar* nick;
+    const gchar* blurb;
+} SwiftGstNativeEnumCaseDescriptor;
+
+typedef struct {
+    const gchar* name;
+    const gchar* blurb;
+    SwiftGstNativePropertyKind kind;
+    gboolean bool_default;
+    gint int_default;
+    gint int_min;
+    gint int_max;
+    gdouble double_default;
+    gdouble double_min;
+    gdouble double_max;
+    const gchar* string_default;
+    const SwiftGstNativeEnumCaseDescriptor* enum_cases;
+    guint enum_case_count;
+} SwiftGstNativePropertyDescriptor;
 
 typedef struct {
     const gchar* factory_name;
@@ -32,6 +98,8 @@ typedef struct {
     const gchar* author;
     guint rank;
     const gchar* sink_caps;
+    const SwiftGstNativePropertyDescriptor* properties;
+    guint property_count;
 } SwiftGstBaseSinkInfo;
 
 typedef struct {
@@ -46,6 +114,8 @@ typedef struct {
     const gchar* src_caps;
     gboolean passthrough_on_same_caps;
     gboolean transform_ip_on_passthrough;
+    const SwiftGstNativePropertyDescriptor* properties;
+    guint property_count;
 } SwiftGstBaseTransformInfo;
 
 typedef struct {
@@ -55,6 +125,14 @@ typedef struct {
     SwiftGstBaseLifecycleFunc stop;
     SwiftGstBaseSinkSetCapsFunc set_caps;
     SwiftGstBaseSinkRenderFunc render;
+    SwiftGstNativeSetBoolPropertyFunc set_bool_property;
+    SwiftGstNativeSetIntPropertyFunc set_int_property;
+    SwiftGstNativeSetDoublePropertyFunc set_double_property;
+    SwiftGstNativeSetStringPropertyFunc set_string_property;
+    SwiftGstNativeGetBoolPropertyFunc get_bool_property;
+    SwiftGstNativeGetIntPropertyFunc get_int_property;
+    SwiftGstNativeGetDoublePropertyFunc get_double_property;
+    SwiftGstNativeGetStringPropertyFunc get_string_property;
 } SwiftGstBaseSinkCallbacks;
 
 typedef struct {
@@ -64,6 +142,14 @@ typedef struct {
     SwiftGstBaseLifecycleFunc stop;
     SwiftGstBaseTransformSetCapsFunc set_caps;
     SwiftGstBaseTransformIPFunc transform_ip;
+    SwiftGstNativeSetBoolPropertyFunc set_bool_property;
+    SwiftGstNativeSetIntPropertyFunc set_int_property;
+    SwiftGstNativeSetDoublePropertyFunc set_double_property;
+    SwiftGstNativeSetStringPropertyFunc set_string_property;
+    SwiftGstNativeGetBoolPropertyFunc get_bool_property;
+    SwiftGstNativeGetIntPropertyFunc get_int_property;
+    SwiftGstNativeGetDoublePropertyFunc get_double_property;
+    SwiftGstNativeGetStringPropertyFunc get_string_property;
 } SwiftGstBaseTransformCallbacks;
 
 gboolean swift_gst_register_base_sink(

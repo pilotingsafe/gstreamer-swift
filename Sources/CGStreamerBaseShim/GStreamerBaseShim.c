@@ -22,6 +22,8 @@ typedef struct SwiftGstBaseSinkRegistration {
     gchar* author;
     gchar* sink_caps;
     guint rank;
+    SwiftGstNativePropertyDescriptor* properties;
+    guint property_count;
     SwiftGstBaseSinkCallbacks callbacks;
     void* class_context;
     SwiftGstContextReleaseFunc release_class_context;
@@ -49,6 +51,8 @@ typedef struct SwiftGstBaseTransformRegistration {
     guint rank;
     gboolean passthrough_on_same_caps;
     gboolean transform_ip_on_passthrough;
+    SwiftGstNativePropertyDescriptor* properties;
+    guint property_count;
     SwiftGstBaseTransformCallbacks callbacks;
     void* class_context;
     SwiftGstContextReleaseFunc release_class_context;
@@ -100,6 +104,444 @@ static gboolean swift_gst_base_sink_is_valid_type_name(const gchar* name) {
     return TRUE;
 }
 
+static gboolean swift_gst_native_property_fail(gchar** error_message, const gchar* format, ...) {
+    if (error_message != NULL) {
+        va_list args;
+        va_start(args, format);
+        *error_message = g_strdup_vprintf(format, args);
+        va_end(args);
+    }
+
+    return FALSE;
+}
+
+static gboolean swift_gst_native_property_kind_is_valid(SwiftGstNativePropertyKind kind) {
+    switch (kind) {
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_BOOL:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_INT:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_DOUBLE:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING_ENUM:
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void swift_gst_native_enum_cases_free(
+    const SwiftGstNativeEnumCaseDescriptor* enum_cases,
+    guint enum_case_count
+) {
+    SwiftGstNativeEnumCaseDescriptor* mutable_cases =
+        (SwiftGstNativeEnumCaseDescriptor*)enum_cases;
+    if (mutable_cases == NULL) {
+        return;
+    }
+
+    for (guint index = 0; index < enum_case_count; index++) {
+        g_free((gpointer)mutable_cases[index].name);
+        g_free((gpointer)mutable_cases[index].nick);
+        g_free((gpointer)mutable_cases[index].blurb);
+    }
+    g_free(mutable_cases);
+}
+
+static void swift_gst_native_property_descriptors_free(
+    SwiftGstNativePropertyDescriptor* properties,
+    guint property_count
+) {
+    if (properties == NULL) {
+        return;
+    }
+
+    for (guint index = 0; index < property_count; index++) {
+        g_free((gpointer)properties[index].name);
+        g_free((gpointer)properties[index].blurb);
+        g_free((gpointer)properties[index].string_default);
+        swift_gst_native_enum_cases_free(
+            properties[index].enum_cases,
+            properties[index].enum_case_count
+        );
+    }
+    g_free(properties);
+}
+
+static gboolean swift_gst_native_property_descriptors_copy(
+    const SwiftGstNativePropertyDescriptor* source_properties,
+    guint property_count,
+    const gchar* registration_kind,
+    SwiftGstNativePropertyDescriptor** copied_properties,
+    gchar** error_message
+) {
+    if (copied_properties == NULL) {
+        return swift_gst_native_property_fail(
+            error_message,
+            "%s property descriptor destination is NULL",
+            registration_kind
+        );
+    }
+    *copied_properties = NULL;
+
+    if (property_count == 0) {
+        return TRUE;
+    }
+    if (source_properties == NULL) {
+        return swift_gst_native_property_fail(
+            error_message,
+            "%s property descriptors are NULL",
+            registration_kind
+        );
+    }
+    if (property_count > G_MAXUINT - 1) {
+        return swift_gst_native_property_fail(
+            error_message,
+            "%s property count is too large",
+            registration_kind
+        );
+    }
+
+    SwiftGstNativePropertyDescriptor* properties =
+        g_new0(SwiftGstNativePropertyDescriptor, property_count);
+    for (guint index = 0; index < property_count; index++) {
+        const SwiftGstNativePropertyDescriptor* source = &source_properties[index];
+        SwiftGstNativePropertyDescriptor* copy = &properties[index];
+
+        if (!swift_gst_base_sink_is_non_empty(source->name)) {
+            swift_gst_native_property_descriptors_free(properties, property_count);
+            return swift_gst_native_property_fail(
+                error_message,
+                "%s property descriptor %u has an invalid name",
+                registration_kind,
+                index
+            );
+        }
+        if (!swift_gst_native_property_kind_is_valid(source->kind)) {
+            swift_gst_native_property_descriptors_free(properties, property_count);
+            return swift_gst_native_property_fail(
+                error_message,
+                "%s property descriptor '%s' has an invalid kind",
+                registration_kind,
+                source->name
+            );
+        }
+        if (source->enum_case_count > 0 && source->enum_cases == NULL) {
+            swift_gst_native_property_descriptors_free(properties, property_count);
+            return swift_gst_native_property_fail(
+                error_message,
+                "%s property descriptor '%s' has NULL enum cases",
+                registration_kind,
+                source->name
+            );
+        }
+
+        copy->name = g_strdup(source->name);
+        copy->blurb = g_strdup(source->blurb);
+        copy->kind = source->kind;
+        copy->bool_default = source->bool_default;
+        copy->int_default = source->int_default;
+        copy->int_min = source->int_min;
+        copy->int_max = source->int_max;
+        copy->double_default = source->double_default;
+        copy->double_min = source->double_min;
+        copy->double_max = source->double_max;
+        copy->string_default = g_strdup(source->string_default);
+        copy->enum_case_count = source->enum_case_count;
+
+        if (source->enum_case_count == 0) {
+            continue;
+        }
+
+        SwiftGstNativeEnumCaseDescriptor* enum_cases =
+            g_new0(SwiftGstNativeEnumCaseDescriptor, source->enum_case_count);
+        copy->enum_cases = enum_cases;
+        for (guint case_index = 0; case_index < source->enum_case_count; case_index++) {
+            const SwiftGstNativeEnumCaseDescriptor* source_case =
+                &source->enum_cases[case_index];
+            SwiftGstNativeEnumCaseDescriptor* copied_case = &enum_cases[case_index];
+
+            if (!swift_gst_base_sink_is_non_empty(source_case->name)) {
+                swift_gst_native_property_descriptors_free(properties, property_count);
+                return swift_gst_native_property_fail(
+                    error_message,
+                    "%s property descriptor '%s' has an invalid enum case name",
+                    registration_kind,
+                    source->name
+                );
+            }
+
+            copied_case->name = g_strdup(source_case->name);
+            copied_case->nick = g_strdup(source_case->nick);
+            copied_case->blurb = g_strdup(source_case->blurb);
+        }
+    }
+
+    *copied_properties = properties;
+    return TRUE;
+}
+
+static GParamSpec* swift_gst_native_property_param_spec(
+    const SwiftGstNativePropertyDescriptor* descriptor
+) {
+    if (descriptor == NULL || descriptor->name == NULL) {
+        return NULL;
+    }
+
+    const gchar* blurb = descriptor->blurb != NULL ? descriptor->blurb : descriptor->name;
+    GParamFlags flags = (GParamFlags)(G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING);
+
+    switch (descriptor->kind) {
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_BOOL:
+        return g_param_spec_boolean(
+            descriptor->name,
+            descriptor->name,
+            blurb,
+            descriptor->bool_default,
+            flags
+        );
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_INT:
+        return g_param_spec_int(
+            descriptor->name,
+            descriptor->name,
+            blurb,
+            G_MININT,
+            G_MAXINT,
+            descriptor->int_default,
+            flags
+        );
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_DOUBLE:
+        return g_param_spec_double(
+            descriptor->name,
+            descriptor->name,
+            blurb,
+            -G_MAXDOUBLE,
+            G_MAXDOUBLE,
+            descriptor->double_default,
+            flags
+        );
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING_ENUM:
+        return g_param_spec_string(
+            descriptor->name,
+            descriptor->name,
+            blurb,
+            descriptor->string_default,
+            flags
+        );
+    }
+
+    return NULL;
+}
+
+static void swift_gst_native_properties_install(
+    GObjectClass* object_class,
+    const SwiftGstNativePropertyDescriptor* properties,
+    guint property_count,
+    const gchar* registration_kind
+) {
+    if (object_class == NULL || properties == NULL || property_count == 0) {
+        return;
+    }
+
+    for (guint index = 0; index < property_count; index++) {
+        GParamSpec* param_spec = swift_gst_native_property_param_spec(&properties[index]);
+        if (param_spec == NULL) {
+            g_warning(
+                "%s property '%s' could not create a GParamSpec",
+                registration_kind,
+                properties[index].name != NULL ? properties[index].name : "<unnamed>"
+            );
+            continue;
+        }
+
+        g_object_class_install_property(object_class, index + 1, param_spec);
+    }
+}
+
+static const SwiftGstNativePropertyDescriptor* swift_gst_native_property_for_id(
+    GObject* object,
+    guint property_id,
+    GParamSpec* param_spec,
+    const SwiftGstNativePropertyDescriptor* properties,
+    guint property_count,
+    guint* property_index
+) {
+    if (property_id == 0 || property_id > property_count || properties == NULL) {
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+        return NULL;
+    }
+
+    guint index = property_id - 1;
+    if (property_index != NULL) {
+        *property_index = index;
+    }
+    return &properties[index];
+}
+
+static void swift_gst_native_property_warn_missing_setter(
+    const gchar* registration_kind,
+    const SwiftGstNativePropertyDescriptor* descriptor
+) {
+    g_warning(
+        "%s property '%s' set ignored because instance context or setter callback is missing",
+        registration_kind,
+        descriptor != NULL && descriptor->name != NULL ? descriptor->name : "<unnamed>"
+    );
+}
+
+static void swift_gst_native_property_set(
+    const gchar* registration_kind,
+    GObject* object,
+    guint property_id,
+    const GValue* value,
+    GParamSpec* param_spec,
+    const SwiftGstNativePropertyDescriptor* properties,
+    guint property_count,
+    void* instance_context,
+    SwiftGstNativeSetBoolPropertyFunc set_bool_property,
+    SwiftGstNativeSetIntPropertyFunc set_int_property,
+    SwiftGstNativeSetDoublePropertyFunc set_double_property,
+    SwiftGstNativeSetStringPropertyFunc set_string_property
+) {
+    guint property_index = 0;
+    const SwiftGstNativePropertyDescriptor* descriptor =
+        swift_gst_native_property_for_id(
+            object,
+            property_id,
+            param_spec,
+            properties,
+            property_count,
+            &property_index
+        );
+    if (descriptor == NULL) {
+        return;
+    }
+    if (instance_context == NULL) {
+        swift_gst_native_property_warn_missing_setter(registration_kind, descriptor);
+        return;
+    }
+
+    switch (descriptor->kind) {
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_BOOL:
+        if (set_bool_property == NULL) {
+            swift_gst_native_property_warn_missing_setter(registration_kind, descriptor);
+            return;
+        }
+        set_bool_property(instance_context, property_index, g_value_get_boolean(value));
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_INT:
+        if (set_int_property == NULL) {
+            swift_gst_native_property_warn_missing_setter(registration_kind, descriptor);
+            return;
+        }
+        set_int_property(instance_context, property_index, g_value_get_int(value));
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_DOUBLE:
+        if (set_double_property == NULL) {
+            swift_gst_native_property_warn_missing_setter(registration_kind, descriptor);
+            return;
+        }
+        set_double_property(instance_context, property_index, g_value_get_double(value));
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING_ENUM:
+        if (set_string_property == NULL) {
+            swift_gst_native_property_warn_missing_setter(registration_kind, descriptor);
+            return;
+        }
+        set_string_property(instance_context, property_index, g_value_get_string(value));
+        return;
+    }
+
+    G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+}
+
+static void swift_gst_native_property_set_default_value(
+    const SwiftGstNativePropertyDescriptor* descriptor,
+    GValue* value
+) {
+    if (descriptor == NULL || value == NULL) {
+        return;
+    }
+
+    switch (descriptor->kind) {
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_BOOL:
+        g_value_set_boolean(value, descriptor->bool_default);
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_INT:
+        g_value_set_int(value, descriptor->int_default);
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_DOUBLE:
+        g_value_set_double(value, descriptor->double_default);
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING_ENUM:
+        g_value_set_string(value, descriptor->string_default);
+        return;
+    }
+}
+
+static void swift_gst_native_property_get(
+    GObject* object,
+    guint property_id,
+    GValue* value,
+    GParamSpec* param_spec,
+    const SwiftGstNativePropertyDescriptor* properties,
+    guint property_count,
+    void* instance_context,
+    SwiftGstNativeGetBoolPropertyFunc get_bool_property,
+    SwiftGstNativeGetIntPropertyFunc get_int_property,
+    SwiftGstNativeGetDoublePropertyFunc get_double_property,
+    SwiftGstNativeGetStringPropertyFunc get_string_property
+) {
+    guint property_index = 0;
+    const SwiftGstNativePropertyDescriptor* descriptor =
+        swift_gst_native_property_for_id(
+            object,
+            property_id,
+            param_spec,
+            properties,
+            property_count,
+            &property_index
+        );
+    if (descriptor == NULL) {
+        return;
+    }
+
+    switch (descriptor->kind) {
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_BOOL:
+        if (instance_context != NULL && get_bool_property != NULL) {
+            g_value_set_boolean(value, get_bool_property(instance_context, property_index));
+        } else {
+            swift_gst_native_property_set_default_value(descriptor, value);
+        }
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_INT:
+        if (instance_context != NULL && get_int_property != NULL) {
+            g_value_set_int(value, get_int_property(instance_context, property_index));
+        } else {
+            swift_gst_native_property_set_default_value(descriptor, value);
+        }
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_DOUBLE:
+        if (instance_context != NULL && get_double_property != NULL) {
+            g_value_set_double(value, get_double_property(instance_context, property_index));
+        } else {
+            swift_gst_native_property_set_default_value(descriptor, value);
+        }
+        return;
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING:
+    case SWIFT_GST_NATIVE_PROPERTY_KIND_STRING_ENUM:
+        if (instance_context != NULL && get_string_property != NULL) {
+            g_value_take_string(value, get_string_property(instance_context, property_index));
+        } else {
+            swift_gst_native_property_set_default_value(descriptor, value);
+        }
+        return;
+    }
+
+    G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+}
+
 static void swift_gst_base_sink_release_class_context(SwiftGstBaseSinkRegistration* registration) {
     if (registration == NULL) {
         return;
@@ -134,6 +576,10 @@ static void swift_gst_base_sink_free_registration(SwiftGstBaseSinkRegistration* 
     g_free(registration->description);
     g_free(registration->author);
     g_free(registration->sink_caps);
+    swift_gst_native_property_descriptors_free(
+        registration->properties,
+        registration->property_count
+    );
     g_free(registration);
 }
 
@@ -153,6 +599,63 @@ static void* swift_gst_base_sink_instance_context(GstBaseSink* sink) {
     }
 
     return ((SwiftGstNativeBaseSink*)sink)->instance_context;
+}
+
+static void swift_gst_base_sink_set_property(
+    GObject* object,
+    guint property_id,
+    const GValue* value,
+    GParamSpec* param_spec
+) {
+    GstBaseSink* sink = GST_BASE_SINK(object);
+    SwiftGstBaseSinkRegistration* registration = swift_gst_base_sink_class_registration(sink);
+    if (registration == NULL) {
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+        return;
+    }
+
+    swift_gst_native_property_set(
+        "BaseSink",
+        object,
+        property_id,
+        value,
+        param_spec,
+        registration->properties,
+        registration->property_count,
+        swift_gst_base_sink_instance_context(sink),
+        registration->callbacks.set_bool_property,
+        registration->callbacks.set_int_property,
+        registration->callbacks.set_double_property,
+        registration->callbacks.set_string_property
+    );
+}
+
+static void swift_gst_base_sink_get_property(
+    GObject* object,
+    guint property_id,
+    GValue* value,
+    GParamSpec* param_spec
+) {
+    GstBaseSink* sink = GST_BASE_SINK(object);
+    SwiftGstBaseSinkRegistration* registration = swift_gst_base_sink_class_registration(sink);
+    if (registration == NULL) {
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+        return;
+    }
+
+    swift_gst_native_property_get(
+        object,
+        property_id,
+        value,
+        param_spec,
+        registration->properties,
+        registration->property_count,
+        swift_gst_base_sink_instance_context(sink),
+        registration->callbacks.get_bool_property,
+        registration->callbacks.get_int_property,
+        registration->callbacks.get_double_property,
+        registration->callbacks.get_string_property
+    );
 }
 
 static gboolean swift_gst_base_sink_start(GstBaseSink* sink) {
@@ -240,6 +743,16 @@ static void swift_gst_base_sink_class_init(gpointer g_class, gpointer class_data
 
     GObjectClass* object_class = G_OBJECT_CLASS(g_class);
     object_class->finalize = swift_gst_base_sink_finalize;
+    if (registration != NULL && registration->property_count > 0) {
+        object_class->set_property = swift_gst_base_sink_set_property;
+        object_class->get_property = swift_gst_base_sink_get_property;
+        swift_gst_native_properties_install(
+            object_class,
+            registration->properties,
+            registration->property_count,
+            "BaseSink"
+        );
+    }
 
     GstBaseSinkClass* sink_class = GST_BASE_SINK_CLASS(g_class);
     sink_class->start = swift_gst_base_sink_start;
@@ -401,6 +914,17 @@ gboolean swift_gst_register_base_sink(
     registration->author = g_strdup(info->author);
     registration->sink_caps = g_strdup(info->sink_caps);
     registration->rank = info->rank;
+    registration->property_count = info->property_count;
+    if (!swift_gst_native_property_descriptors_copy(
+        info->properties,
+        info->property_count,
+        "BaseSink",
+        &registration->properties,
+        error_message
+    )) {
+        swift_gst_base_sink_free_registration(registration);
+        return FALSE;
+    }
     registration->callbacks = *callbacks;
     registration->release_class_context = release_class_context;
 
@@ -542,6 +1066,10 @@ static void swift_gst_base_transform_free_registration(
     g_free(registration->author);
     g_free(registration->sink_caps);
     g_free(registration->src_caps);
+    swift_gst_native_property_descriptors_free(
+        registration->properties,
+        registration->property_count
+    );
     g_free(registration);
 }
 
@@ -563,6 +1091,65 @@ static void* swift_gst_base_transform_instance_context(GstBaseTransform* transfo
     }
 
     return ((SwiftGstNativeBaseTransform*)transform)->instance_context;
+}
+
+static void swift_gst_base_transform_set_property(
+    GObject* object,
+    guint property_id,
+    const GValue* value,
+    GParamSpec* param_spec
+) {
+    GstBaseTransform* transform = GST_BASE_TRANSFORM(object);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (registration == NULL) {
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+        return;
+    }
+
+    swift_gst_native_property_set(
+        "BaseTransform",
+        object,
+        property_id,
+        value,
+        param_spec,
+        registration->properties,
+        registration->property_count,
+        swift_gst_base_transform_instance_context(transform),
+        registration->callbacks.set_bool_property,
+        registration->callbacks.set_int_property,
+        registration->callbacks.set_double_property,
+        registration->callbacks.set_string_property
+    );
+}
+
+static void swift_gst_base_transform_get_property(
+    GObject* object,
+    guint property_id,
+    GValue* value,
+    GParamSpec* param_spec
+) {
+    GstBaseTransform* transform = GST_BASE_TRANSFORM(object);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (registration == NULL) {
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, param_spec);
+        return;
+    }
+
+    swift_gst_native_property_get(
+        object,
+        property_id,
+        value,
+        param_spec,
+        registration->properties,
+        registration->property_count,
+        swift_gst_base_transform_instance_context(transform),
+        registration->callbacks.get_bool_property,
+        registration->callbacks.get_int_property,
+        registration->callbacks.get_double_property,
+        registration->callbacks.get_string_property
+    );
 }
 
 static gboolean swift_gst_base_transform_start(GstBaseTransform* transform) {
@@ -691,6 +1278,16 @@ static void swift_gst_base_transform_class_init(gpointer g_class, gpointer class
 
     GObjectClass* object_class = G_OBJECT_CLASS(g_class);
     object_class->finalize = swift_gst_base_transform_finalize;
+    if (registration != NULL && registration->property_count > 0) {
+        object_class->set_property = swift_gst_base_transform_set_property;
+        object_class->get_property = swift_gst_base_transform_get_property;
+        swift_gst_native_properties_install(
+            object_class,
+            registration->properties,
+            registration->property_count,
+            "BaseTransform"
+        );
+    }
 
     GstBaseTransformClass* transform_class = GST_BASE_TRANSFORM_CLASS(g_class);
     transform_class->start = swift_gst_base_transform_start;
@@ -890,6 +1487,17 @@ gboolean swift_gst_register_base_transform(
     registration->rank = info->rank;
     registration->passthrough_on_same_caps = info->passthrough_on_same_caps;
     registration->transform_ip_on_passthrough = info->transform_ip_on_passthrough;
+    registration->property_count = info->property_count;
+    if (!swift_gst_native_property_descriptors_copy(
+        info->properties,
+        info->property_count,
+        "BaseTransform",
+        &registration->properties,
+        error_message
+    )) {
+        swift_gst_base_transform_free_registration(registration);
+        return FALSE;
+    }
     registration->callbacks = *callbacks;
     registration->release_class_context = release_class_context;
 

@@ -94,10 +94,35 @@ typedef struct {
     SwiftGstTestBaseTransformCallbackCounts callback_counts;
 } SwiftGstTestBaseTransformMissingInstanceProbeResult;
 
+typedef struct {
+    gboolean success;
+    gboolean bool_value;
+    gint int_value;
+    gdouble double_value;
+    gchar* string_value;
+    gchar* enum_value;
+} SwiftGstTestNativePropertyDefaultsProbeResult;
+
 gboolean swift_gst_test_element_factory_exists(const gchar* factory_name);
 guint swift_gst_test_element_factory_rank(const gchar* factory_name);
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
+GParamFlags swift_gst_test_param_mutable_playing(void);
+guint swift_gst_test_element_property_id(GstElement* element, const gchar* property_name);
+
+SwiftGstTestNativePropertyDefaultsProbeResult swift_gst_test_native_property_missing_instance_defaults_probe(
+    GstElement* element,
+    gboolean is_base_transform,
+    const gchar* bool_name,
+    const gchar* int_name,
+    const gchar* double_name,
+    const gchar* string_name,
+    const gchar* enum_name
+);
+
+void swift_gst_test_native_property_defaults_probe_result_clear(
+    SwiftGstTestNativePropertyDefaultsProbeResult* result
+);
 
 SwiftGstTestProbe* swift_gst_test_install_bus_error_after_buffers(
     GstElement* pipeline,
