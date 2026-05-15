@@ -463,6 +463,46 @@ void swift_gst_caps_unref(GstCaps* caps) {
     gst_caps_unref(caps);
 }
 
+GstVideoInfo* swift_gst_video_info_new_from_caps(GstCaps* caps) {
+    if (caps == NULL) {
+        return NULL;
+    }
+
+    GstVideoInfo* info = g_new0(GstVideoInfo, 1);
+    gst_video_info_init(info);
+    if (!gst_video_info_from_caps(info, caps)) {
+        g_free(info);
+        return NULL;
+    }
+    return info;
+}
+
+void swift_gst_video_info_free(GstVideoInfo* info) {
+    g_free(info);
+}
+
+gint swift_gst_video_info_width(GstVideoInfo* info) {
+    return info != NULL ? GST_VIDEO_INFO_WIDTH(info) : 0;
+}
+
+gint swift_gst_video_info_height(GstVideoInfo* info) {
+    return info != NULL ? GST_VIDEO_INFO_HEIGHT(info) : 0;
+}
+
+gsize swift_gst_video_info_size(GstVideoInfo* info) {
+    return info != NULL ? GST_VIDEO_INFO_SIZE(info) : 0;
+}
+
+const gchar* swift_gst_video_info_format_name(GstVideoInfo* info) {
+    return info != NULL
+        ? gst_video_format_to_string(GST_VIDEO_INFO_FORMAT(info))
+        : NULL;
+}
+
+GstCaps* swift_gst_video_info_to_caps_copy(GstVideoInfo* info) {
+    return info != NULL ? gst_video_info_to_caps(info) : NULL;
+}
+
 void swift_gst_element_set_bool(GstElement* element, const gchar* name, gboolean value) {
     g_object_set(G_OBJECT(element), name, value, NULL);
 }

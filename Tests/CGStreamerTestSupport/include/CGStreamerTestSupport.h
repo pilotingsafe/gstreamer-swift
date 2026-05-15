@@ -95,6 +95,124 @@ typedef struct {
 } SwiftGstTestBaseTransformMissingInstanceProbeResult;
 
 typedef struct {
+    guint retain_count;
+    guint release_count;
+    guint create_count;
+    guint destroy_count;
+    guint start_count;
+    guint stop_count;
+    guint set_caps_count;
+    guint transform_count;
+} SwiftGstTestBaseTransformOutOfPlaceCallbackCounts;
+
+typedef struct {
+    gboolean success_registration_succeeded;
+    gboolean duplicate_factory_registration_failed;
+    gboolean duplicate_type_registration_failed;
+    SwiftGstTestBaseTransformOutOfPlaceCallbackCounts success_context;
+    SwiftGstTestBaseTransformOutOfPlaceCallbackCounts duplicate_factory_context;
+    SwiftGstTestBaseTransformOutOfPlaceCallbackCounts duplicate_type_context;
+} SwiftGstTestBaseTransformOutOfPlaceOwnershipProbeResult;
+
+typedef struct {
+    gboolean registration_succeeded;
+    gboolean element_created;
+    gboolean start_returned_false;
+    gboolean set_caps_returned_false;
+    gboolean transform_returned_flow_error;
+    gboolean stop_returned_true;
+    SwiftGstTestBaseTransformOutOfPlaceCallbackCounts callback_counts;
+} SwiftGstTestBaseTransformOutOfPlaceMissingInstanceProbeResult;
+
+typedef struct {
+    gboolean registration_succeeded;
+    gboolean element_created;
+    gboolean prepare_output_returned_ok;
+    gboolean transform_returned_ok;
+    gboolean output_is_distinct_from_input;
+    gboolean output_is_writable;
+    gboolean pts_preserved;
+    gboolean duration_preserved;
+    gsize input_size;
+    gsize output_size;
+    SwiftGstTestBaseTransformOutOfPlaceCallbackCounts callback_counts;
+} SwiftGstTestBaseTransformOutOfPlaceOutputAllocationProbeResult;
+
+typedef struct {
+    gboolean registration_succeeded;
+    gboolean element_created;
+    gboolean prepare_output_returned_flow_error;
+    gboolean transform_not_called;
+    SwiftGstTestBaseTransformOutOfPlaceCallbackCounts callback_counts;
+} SwiftGstTestBaseTransformOutOfPlaceAllocationFailureProbeResult;
+
+typedef struct {
+    gboolean unknown_mode_registration_failed;
+    gboolean in_place_without_transform_registration_succeeded;
+    gboolean in_place_without_transform_ip_registration_failed;
+    gboolean out_of_place_without_transform_ip_registration_succeeded;
+    gboolean out_of_place_without_transform_registration_failed;
+    gboolean missing_common_callback_registration_failed;
+} SwiftGstTestBaseTransformModeValidationProbeResult;
+
+typedef struct {
+    gboolean in_place_registration_succeeded;
+    gboolean fixed_size_registration_succeeded;
+    gboolean general_registration_succeeded;
+    gboolean in_place_element_created;
+    gboolean fixed_size_element_created;
+    gboolean general_element_created;
+    gboolean in_place_installs_transform_ip;
+    gboolean in_place_omits_transform;
+    gboolean in_place_omits_prepare_output_buffer;
+    gboolean fixed_size_installs_transform;
+    gboolean fixed_size_omits_transform_ip;
+    gboolean fixed_size_installs_prepare_output_buffer;
+    gboolean general_installs_transform;
+    gboolean general_omits_transform_ip;
+    gboolean general_omits_prepare_output_buffer;
+    gboolean general_without_transform_registration_failed;
+} SwiftGstTestBaseTransformGeneralModeProbeResult;
+
+typedef struct {
+    gboolean registration_succeeded;
+    gboolean element_created;
+    gboolean decide_value_true_returned_true;
+    gboolean decide_value_false_returned_false;
+    gboolean decide_failure_returned_false;
+    gboolean decide_query_caps_observed;
+    gboolean decide_query_needs_pool_observed;
+    guint decide_pools_before;
+    guint decide_pools_after;
+    guint decide_params_before;
+    guint decide_params_after;
+    guint decide_metas_before;
+    guint decide_metas_after;
+    gboolean propose_value_true_returned_true;
+    gboolean propose_value_false_returned_false;
+    gboolean propose_failure_returned_false;
+    gboolean propose_decide_query_caps_observed;
+    gboolean propose_query_caps_observed;
+    gboolean filter_value_true_returned_true;
+    gboolean filter_value_false_returned_false;
+    gboolean filter_failure_returned_false;
+    gboolean filter_api_observed;
+    gboolean copy_value_false_returned_false;
+    gboolean copy_failure_returned_false;
+    gboolean transform_meta_value_false_returned_false;
+    gboolean transform_meta_failure_returned_false;
+    gboolean transform_meta_api_observed;
+} SwiftGstTestBaseTransformGeneralHookProbeResult;
+
+typedef struct {
+    gboolean element_created;
+    gboolean decide_allocation_returned_true;
+    gboolean propose_allocation_returned_true;
+    gboolean filter_meta_returned_true;
+    gboolean transform_meta_returned_true;
+} SwiftGstTestBaseTransformSwiftHookInvocationResult;
+
+typedef struct {
     gboolean success;
     gboolean bool_value;
     gint int_value;
@@ -194,6 +312,50 @@ SwiftGstTestBaseTransformBufferRejectionProbeResult swift_gst_test_base_transfor
 SwiftGstTestBaseTransformMissingInstanceProbeResult swift_gst_test_base_transform_missing_instance_probe(
     const gchar* factory_name,
     const gchar* type_name
+);
+
+SwiftGstTestBaseTransformOutOfPlaceOwnershipProbeResult swift_gst_test_base_transform_out_of_place_class_context_ownership_probe(
+    const gchar* success_factory_name,
+    const gchar* success_type_name,
+    const gchar* duplicate_factory_type_name,
+    const gchar* duplicate_type_factory_name
+);
+
+SwiftGstTestBaseTransformOutOfPlaceMissingInstanceProbeResult swift_gst_test_base_transform_out_of_place_missing_instance_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+);
+
+SwiftGstTestBaseTransformOutOfPlaceOutputAllocationProbeResult swift_gst_test_base_transform_out_of_place_output_allocation_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+);
+
+SwiftGstTestBaseTransformOutOfPlaceAllocationFailureProbeResult swift_gst_test_base_transform_out_of_place_allocation_failure_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+);
+
+SwiftGstTestBaseTransformModeValidationProbeResult swift_gst_test_base_transform_mode_validation_probe(void);
+
+SwiftGstTestBaseTransformGeneralModeProbeResult swift_gst_test_base_transform_general_mode_probe(
+    const gchar* in_place_factory_name,
+    const gchar* in_place_type_name,
+    const gchar* fixed_size_factory_name,
+    const gchar* fixed_size_type_name,
+    const gchar* general_factory_name,
+    const gchar* general_type_name,
+    const gchar* general_without_transform_factory_name,
+    const gchar* general_without_transform_type_name
+);
+
+SwiftGstTestBaseTransformGeneralHookProbeResult swift_gst_test_base_transform_general_hook_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+);
+
+SwiftGstTestBaseTransformSwiftHookInvocationResult swift_gst_test_base_transform_invoke_general_hooks(
+    const gchar* factory_name
 );
 
 #ifdef __cplusplus

@@ -353,6 +353,249 @@ public struct MutableBorrowedBuffer: ~Copyable {
     }
 }
 
+/// Result returned by optional general out-of-place BaseTransform hooks.
+///
+/// The Swift bridge maps this enum to the C `SwiftGstBaseTransformHookStatus`
+/// ABI values `SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT`,
+/// `SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE`, and
+/// `SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE`.
+public enum BaseTransformHookResult<Value: Sendable>: Sendable {
+    case useDefault
+    case value(Value)
+    case failure
+}
+
+/// Out-of-place BaseTransform allocation behavior.
+public struct SwiftBaseTransformOutOfPlaceOptions: Sendable, Equatable {
+    internal enum Mode: Sendable {
+        case fixedSize
+        case general
+    }
+
+    internal var mode: Mode
+
+    /// Preserve the fixed-size Phase 4 behavior.
+    public static let fixedSize = SwiftBaseTransformOutOfPlaceOptions(mode: .fixedSize)
+
+    /// Use GStreamer's negotiated output allocation and general negotiation hooks.
+    public static let general = SwiftBaseTransformOutOfPlaceOptions(mode: .general)
+}
+
+/// Snapshot of allocation parameters from a GStreamer allocation query.
+public struct AllocationParams: Sendable {
+    public var flags: UInt32
+    public var align: Int
+    public var prefix: Int
+    public var padding: Int
+
+    public init(flags: UInt32 = 0, align: Int = 0, prefix: Int = 0, padding: Int = 0) {
+        self.flags = flags
+        self.align = align
+        self.prefix = prefix
+        self.padding = padding
+    }
+
+    internal init(_ params: GstAllocationParams) {
+        self.flags = UInt32(params.flags.rawValue)
+        self.align = Int(params.align)
+        self.prefix = Int(params.prefix)
+        self.padding = Int(params.padding)
+    }
+
+    internal func withGstAllocationParams<R>(
+        _ body: (UnsafePointer<GstAllocationParams>) throws -> R
+    ) rethrows -> R? {
+        guard align >= 0, prefix >= 0, padding >= 0 else {
+            return nil
+        }
+
+        var params = GstAllocationParams()
+        gst_allocation_params_init(&params)
+        params.flags = GstMemoryFlags(rawValue: flags)
+        params.align = gsize(align)
+        params.prefix = gsize(prefix)
+        params.padding = gsize(padding)
+        return try withUnsafePointer(to: params, body)
+    }
+}
+
+/// Snapshot of allocation metadata advertised by an allocation query.
+public struct AllocationMetadata: Sendable {
+    public var apiName: String
+    public var paramsDescription: String?
+
+    public init(apiName: String, paramsDescription: String? = nil) {
+        self.apiName = apiName
+        self.paramsDescription = paramsDescription
+    }
+
+    internal init(api: GType, params: UnsafePointer<GstStructure>?) {
+        self.apiName = GLibString.borrow(swift_gst_g_type_name(api)) ?? ""
+        self.paramsDescription = GLibString.takeOwnership(swift_gst_structure_to_string_nullable(params))
+    }
+}
+
+public struct AllocationPoolConfiguration: Sendable {
+    public var pool: AllocationPool?
+    public var size: Int
+    public var minimumBuffers: Int
+    public var maximumBuffers: Int
+}
+
+/// Owned reference to a GStreamer buffer pool returned from an allocation query.
+public final class AllocationPool: @unchecked Sendable {
+    internal let pool: UnsafeMutablePointer<GstBufferPool>
+
+    internal init(pool: UnsafeMutablePointer<GstBufferPool>) {
+        self.pool = pool
+    }
+
+    deinit {
+        swift_gst_object_unref(pool)
+    }
+}
+
+/// Owned reference to a GStreamer allocator returned from an allocation query.
+public final class BufferAllocator: @unchecked Sendable {
+    internal let allocator: UnsafeMutablePointer<GstAllocator>
+
+    internal init(allocator: UnsafeMutablePointer<GstAllocator>) {
+        self.allocator = allocator
+    }
+
+    deinit {
+        swift_gst_object_unref(allocator)
+    }
+}
+
+public struct AllocationParamConfiguration: Sendable {
+    public var allocator: BufferAllocator?
+    public var params: AllocationParams
+}
+
+/// Borrowed allocation query wrapper scoped to a general-mode callback.
+public struct AllocationQuery: ~Copyable {
+    private let rawQuery: UnsafeMutablePointer<GstQuery>
+
+    internal init(query: UnsafeMutablePointer<GstQuery>) {
+        self.rawQuery = query
+    }
+
+    public var caps: Caps? {
+        guard let caps = swift_gst_allocation_query_get_caps(rawQuery) else {
+            return nil
+        }
+        return Caps(caps: caps, ownsReference: true)
+    }
+
+    public var needsPool: Bool {
+        swift_gst_allocation_query_get_needs_pool(rawQuery) != 0
+    }
+
+    public var allocationPools: [AllocationPoolConfiguration] {
+        (0..<Int(swift_gst_allocation_query_pool_count(rawQuery))).map { index in
+            var size: guint = 0
+            var minBuffers: guint = 0
+            var maxBuffers: guint = 0
+            let pool = swift_gst_allocation_query_pool_at(
+                rawQuery,
+                guint(index),
+                &size,
+                &minBuffers,
+                &maxBuffers
+            ).map { AllocationPool(pool: $0) }
+            return AllocationPoolConfiguration(
+                pool: pool,
+                size: Int(size),
+                minimumBuffers: Int(minBuffers),
+                maximumBuffers: Int(maxBuffers)
+            )
+        }
+    }
+
+    public var allocationParams: [AllocationParamConfiguration] {
+        (0..<Int(swift_gst_allocation_query_param_count(rawQuery))).map { index in
+            var params = GstAllocationParams()
+            gst_allocation_params_init(&params)
+            let allocator = swift_gst_allocation_query_param_at(rawQuery, guint(index), &params)
+                .map { BufferAllocator(allocator: $0) }
+            return AllocationParamConfiguration(
+                allocator: allocator,
+                params: AllocationParams(params)
+            )
+        }
+    }
+
+    public var allocationMetadata: [AllocationMetadata] {
+        (0..<Int(swift_gst_allocation_query_meta_count(rawQuery))).map { index in
+            let api = swift_gst_allocation_query_meta_api_at(rawQuery, guint(index))
+            return AllocationMetadata(
+                apiName: GLibString.borrow(swift_gst_g_type_name(api)) ?? "",
+                paramsDescription: GLibString.takeOwnership(
+                    swift_gst_allocation_query_meta_params_string_at(rawQuery, guint(index))
+                )
+            )
+        }
+    }
+
+    public func addPool(
+        _ pool: AllocationPool?,
+        size: Int,
+        minimumBuffers: Int,
+        maximumBuffers: Int
+    ) {
+        guard let gstSize = guint(exactly: size),
+              let gstMinimumBuffers = guint(exactly: minimumBuffers),
+              let gstMaximumBuffers = guint(exactly: maximumBuffers)
+        else {
+            return
+        }
+
+        swift_gst_allocation_query_add_pool(
+            rawQuery,
+            pool?.pool,
+            gstSize,
+            gstMinimumBuffers,
+            gstMaximumBuffers
+        )
+    }
+
+    public func addAllocationParam(_ allocator: BufferAllocator?, params: AllocationParams) {
+        _ = params.withGstAllocationParams { gstParams in
+            swift_gst_allocation_query_add_param(rawQuery, allocator?.allocator, gstParams)
+        }
+    }
+
+    public func addAllocationMetadata(_ metadata: AllocationMetadata) {
+        let type = g_type_from_name(metadata.apiName)
+        guard type != 0 else {
+            return
+        }
+        swift_gst_allocation_query_add_meta(rawQuery, type)
+    }
+}
+
+/// Borrowed metadata wrapper scoped to a general-mode metadata callback.
+public struct BufferMetadata: ~Copyable {
+    private let rawMetadata: UnsafeMutablePointer<GstMeta>
+
+    internal init(metadata: UnsafeMutablePointer<GstMeta>) {
+        self.rawMetadata = metadata
+    }
+
+    public var apiName: String {
+        GLibString.borrow(swift_gst_buffer_meta_api_name(rawMetadata)) ?? ""
+    }
+
+    public var implementationName: String {
+        GLibString.borrow(swift_gst_buffer_meta_implementation_name(rawMetadata)) ?? ""
+    }
+
+    public var flags: UInt32 {
+        UInt32(swift_gst_buffer_meta_flags(rawMetadata).rawValue)
+    }
+}
+
 /// Per-instance callbacks for a Swift-backed in-place BaseTransform element.
 public protocol SwiftBaseTransformInstance: AnyObject, Sendable {
     func start() throws
@@ -365,6 +608,132 @@ public extension SwiftBaseTransformInstance {
     func start() throws {}
     func stop() {}
     func setCaps(input: Caps, output: Caps) throws -> Bool { true }
+}
+
+/// Per-instance callbacks for a Swift-backed out-of-place BaseTransform element.
+public protocol SwiftBaseTransformOutOfPlaceInstance: AnyObject, Sendable {
+    func start() throws
+    func stop()
+    func setCaps(input: Caps, output: Caps) throws -> Bool
+
+    /// Transform caps for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default transform_caps,
+    /// `.value` with owned caps to handle the callback, or `.failure` to fail.
+    func transformCaps(direction: Pad.Direction, caps: Caps, filter: Caps?) throws -> BaseTransformHookResult<Caps>
+
+    /// Fixate caps for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default fixate_caps,
+    /// `.value` with owned caps to handle the callback, or `.failure` to fail.
+    func fixateCaps(direction: Pad.Direction, caps: Caps, otherCaps: Caps) throws -> BaseTransformHookResult<Caps>
+
+    /// Report a unit size for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default get_unit_size,
+    /// `.value` with a positive byte size, or `.failure` to fail.
+    func getUnitSize(for caps: Caps) throws -> BaseTransformHookResult<Int>
+
+    /// Transform a buffer size for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default transform_size,
+    /// `.value` with a positive byte size, or `.failure` to fail.
+    func transformSize(
+        direction: Pad.Direction,
+        caps: Caps,
+        size: Int,
+        otherCaps: Caps
+    ) throws -> BaseTransformHookResult<Int>
+
+    /// Decide output allocation for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default decide_allocation,
+    /// `.value` with true or false to handle it, or `.failure` to fail.
+    func decideAllocation(_ query: borrowing AllocationQuery) throws -> BaseTransformHookResult<Bool>
+
+    /// Propose input allocation for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default propose_allocation,
+    /// `.value` with true or false to handle it, or `.failure` to fail.
+    func proposeAllocation(
+        decideQuery: borrowing AllocationQuery,
+        query: borrowing AllocationQuery
+    ) throws -> BaseTransformHookResult<Bool>
+
+    /// Filter allocation metadata for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default filter_meta,
+    /// `.value` with true or false to handle it, or `.failure` to fail.
+    func filterAllocationMetadata(
+        _ metadata: AllocationMetadata,
+        query: borrowing AllocationQuery
+    ) throws -> BaseTransformHookResult<Bool>
+
+    /// Copy buffer metadata for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default copy_metadata,
+    /// `.value` with true or false to handle it, or `.failure` to fail.
+    func copyMetadata(
+        from input: borrowing BorrowedBuffer,
+        to output: borrowing MutableBorrowedBuffer
+    ) throws -> BaseTransformHookResult<Bool>
+
+    /// Transform one metadata item for general mode.
+    /// Return `.useDefault` to delegate to GStreamer's default transform_meta,
+    /// `.value` with true or false to handle it, or `.failure` to fail.
+    func transformMetadata(
+        _ metadata: borrowing BufferMetadata,
+        from input: borrowing BorrowedBuffer,
+        to output: borrowing MutableBorrowedBuffer
+    ) throws -> BaseTransformHookResult<Bool>
+
+    func transform(
+        _ input: borrowing BorrowedBuffer,
+        into output: borrowing MutableBorrowedBuffer
+    ) throws -> FlowReturn
+}
+
+public extension SwiftBaseTransformOutOfPlaceInstance {
+    func start() throws {}
+    func stop() {}
+    func setCaps(input: Caps, output: Caps) throws -> Bool { true }
+    func transformCaps(direction: Pad.Direction, caps: Caps, filter: Caps?) throws -> BaseTransformHookResult<Caps> {
+        .useDefault
+    }
+    func fixateCaps(direction: Pad.Direction, caps: Caps, otherCaps: Caps) throws -> BaseTransformHookResult<Caps> {
+        .useDefault
+    }
+    func getUnitSize(for caps: Caps) throws -> BaseTransformHookResult<Int> {
+        .useDefault
+    }
+    func transformSize(
+        direction: Pad.Direction,
+        caps: Caps,
+        size: Int,
+        otherCaps: Caps
+    ) throws -> BaseTransformHookResult<Int> {
+        .useDefault
+    }
+    func decideAllocation(_ query: borrowing AllocationQuery) throws -> BaseTransformHookResult<Bool> {
+        .useDefault
+    }
+    func proposeAllocation(
+        decideQuery: borrowing AllocationQuery,
+        query: borrowing AllocationQuery
+    ) throws -> BaseTransformHookResult<Bool> {
+        .useDefault
+    }
+    func filterAllocationMetadata(
+        _ metadata: AllocationMetadata,
+        query: borrowing AllocationQuery
+    ) throws -> BaseTransformHookResult<Bool> {
+        .useDefault
+    }
+    func copyMetadata(
+        from input: borrowing BorrowedBuffer,
+        to output: borrowing MutableBorrowedBuffer
+    ) throws -> BaseTransformHookResult<Bool> {
+        .useDefault
+    }
+    func transformMetadata(
+        _ metadata: borrowing BufferMetadata,
+        from input: borrowing BorrowedBuffer,
+        to output: borrowing MutableBorrowedBuffer
+    ) throws -> BaseTransformHookResult<Bool> {
+        .useDefault
+    }
 }
 
 /// Registration description for a Swift-backed in-place BaseTransform element.
@@ -445,6 +814,61 @@ public struct SwiftBaseTransformElement: Sendable {
             makeInstance: { makeInstance(.empty) },
             makeInstanceWithProperties: makeInstance
         )
+    }
+}
+
+/// Registration description for a Swift-backed out-of-place BaseTransform element.
+public struct SwiftBaseTransformOutOfPlaceElement: Sendable {
+    public let factoryName: String
+    public let typeName: String?
+    public let metadata: NativeElementMetadata
+    public let sinkCaps: String
+    public let srcCaps: String
+    public let options: SwiftBaseTransformOutOfPlaceOptions
+    public let properties: [NativeElementProperty]
+    public let makeInstance: @Sendable () -> any SwiftBaseTransformOutOfPlaceInstance
+    internal let makeInstanceWithProperties: @Sendable (NativeElementPropertyReader) -> any SwiftBaseTransformOutOfPlaceInstance
+
+    public init(
+        factoryName: String,
+        typeName: String? = nil,
+        metadata: NativeElementMetadata,
+        sinkCaps: String,
+        srcCaps: String,
+        properties: [NativeElementProperty] = [],
+        options: SwiftBaseTransformOutOfPlaceOptions = .fixedSize,
+        makeInstance: @escaping @Sendable () -> any SwiftBaseTransformOutOfPlaceInstance
+    ) {
+        self.factoryName = factoryName
+        self.typeName = typeName
+        self.metadata = metadata
+        self.sinkCaps = sinkCaps
+        self.srcCaps = srcCaps
+        self.options = options
+        self.properties = properties
+        self.makeInstance = makeInstance
+        self.makeInstanceWithProperties = { _ in makeInstance() }
+    }
+
+    public init(
+        factoryName: String,
+        typeName: String? = nil,
+        metadata: NativeElementMetadata,
+        sinkCaps: String,
+        srcCaps: String,
+        properties: [NativeElementProperty] = [],
+        options: SwiftBaseTransformOutOfPlaceOptions = .fixedSize,
+        makeInstance: @escaping @Sendable (NativeElementPropertyReader) -> any SwiftBaseTransformOutOfPlaceInstance
+    ) {
+        self.factoryName = factoryName
+        self.typeName = typeName
+        self.metadata = metadata
+        self.sinkCaps = sinkCaps
+        self.srcCaps = srcCaps
+        self.options = options
+        self.properties = properties
+        self.makeInstance = { makeInstance(.empty) }
+        self.makeInstanceWithProperties = makeInstance
     }
 }
 
@@ -561,6 +985,7 @@ extension GStreamer {
                                             rank: registration.metadata.rank.rawValue,
                                             sink_caps: sinkCaps,
                                             src_caps: srcCaps,
+                                            mode: SWIFT_GST_BASE_TRANSFORM_MODE_IN_PLACE,
                                             passthrough_on_same_caps: registration
                                                 .passthroughOptions
                                                 .passthroughOnSameCaps ? 1 : 0,
@@ -579,6 +1004,98 @@ extension GStreamer {
                                             Unmanaged.passUnretained(classContext).toOpaque(),
                                             swiftGstBaseTransformRetainClassContext,
                                             swiftGstBaseTransformReleaseClassContext,
+                                            &errorMessage
+                                        ) != 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        guard registered else {
+            let message = GLibString.takeOwnership(errorMessage) ?? "Unknown BaseTransform registration failure"
+            throw GStreamerError.initializationFailed(message)
+        }
+
+        _ = GLibString.takeOwnership(errorMessage)
+    }
+
+    public static func register(_ element: SwiftBaseTransformOutOfPlaceElement) throws {
+        try ensureInitialized()
+
+        let registration = try NativeElementRegistration.validateBaseTransformOutOfPlace(element)
+        let classContext = SwiftBaseTransformOutOfPlaceClassContext(
+            element: element,
+            properties: registration.properties
+        )
+        let propertyDescriptors = NativePropertyCDescriptorStorage(properties: registration.properties)
+
+        var callbacks = SwiftGstBaseTransformCallbacks()
+        callbacks.create_instance = swiftGstBaseTransformOutOfPlaceCreateInstance
+        callbacks.destroy_instance = swiftGstBaseTransformOutOfPlaceDestroyInstance
+        callbacks.start = swiftGstBaseTransformOutOfPlaceStart
+        callbacks.stop = swiftGstBaseTransformOutOfPlaceStop
+        callbacks.set_caps = swiftGstBaseTransformOutOfPlaceSetCaps
+        callbacks.transform = swiftGstBaseTransformOutOfPlaceTransform
+        if registration.options == .general {
+            callbacks.transform_caps = swiftGstBaseTransformOutOfPlaceTransformCaps
+            callbacks.fixate_caps = swiftGstBaseTransformOutOfPlaceFixateCaps
+            callbacks.get_unit_size = swiftGstBaseTransformOutOfPlaceGetUnitSize
+            callbacks.transform_size = swiftGstBaseTransformOutOfPlaceTransformSize
+            callbacks.decide_allocation = swiftGstBaseTransformOutOfPlaceDecideAllocation
+            callbacks.propose_allocation = swiftGstBaseTransformOutOfPlaceProposeAllocation
+            callbacks.filter_meta = swiftGstBaseTransformOutOfPlaceFilterMeta
+            callbacks.copy_metadata = swiftGstBaseTransformOutOfPlaceCopyMetadata
+            callbacks.transform_meta = swiftGstBaseTransformOutOfPlaceTransformMetadata
+        }
+        callbacks.set_bool_property = swiftGstBaseTransformOutOfPlaceSetBoolProperty
+        callbacks.set_int_property = swiftGstBaseTransformOutOfPlaceSetIntProperty
+        callbacks.set_double_property = swiftGstBaseTransformOutOfPlaceSetDoubleProperty
+        callbacks.set_string_property = swiftGstBaseTransformOutOfPlaceSetStringProperty
+        callbacks.get_bool_property = swiftGstBaseTransformOutOfPlaceGetBoolProperty
+        callbacks.get_int_property = swiftGstBaseTransformOutOfPlaceGetIntProperty
+        callbacks.get_double_property = swiftGstBaseTransformOutOfPlaceGetDoubleProperty
+        callbacks.get_string_property = swiftGstBaseTransformOutOfPlaceGetStringProperty
+
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let registered = registration.factoryName.withCString { factoryName in
+            registration.typeName.withCString { typeName in
+                registration.metadata.klass.withCString { klass in
+                    registration.metadata.longName.withCString { longName in
+                        registration.metadata.description.withCString { description in
+                            registration.metadata.author.withCString { author in
+                                registration.sinkCaps.withCString { sinkCaps in
+                                    registration.srcCaps.withCString { srcCaps in
+                                        var info = SwiftGstBaseTransformInfo(
+                                            factory_name: factoryName,
+                                            type_name: typeName,
+                                            klass: klass,
+                                            long_name: longName,
+                                            description: description,
+                                            author: author,
+                                            rank: registration.metadata.rank.rawValue,
+                                            sink_caps: sinkCaps,
+                                            src_caps: srcCaps,
+                                            mode: registration.options == .general
+                                                ? SWIFT_GST_BASE_TRANSFORM_MODE_OUT_OF_PLACE_GENERAL
+                                                : SWIFT_GST_BASE_TRANSFORM_MODE_OUT_OF_PLACE,
+                                            passthrough_on_same_caps: 0,
+                                            transform_ip_on_passthrough: 0,
+                                            properties: propertyDescriptors.descriptors,
+                                            property_count: propertyDescriptors.count
+                                        )
+
+                                        NativeElementRegistrationTestHooks
+                                            .recordBaseTransformOutOfPlaceCRegistrationAttempt()
+                                        return swift_gst_register_base_transform(
+                                            &info,
+                                            &callbacks,
+                                            Unmanaged.passUnretained(classContext).toOpaque(),
+                                            swiftGstBaseTransformOutOfPlaceRetainClassContext,
+                                            swiftGstBaseTransformOutOfPlaceReleaseClassContext,
                                             &errorMessage
                                         ) != 0
                                     }
@@ -626,6 +1143,10 @@ internal enum NativeElementTypeName {
         "SwiftGstNativeBaseTransform_\(sanitizedFactoryNameComponent(factoryName))_\(fnv1a64Hex(factoryName))"
     }
 
+    static func generatedBaseTransformOutOfPlaceTypeName(factoryName: String) -> String {
+        "SwiftGstNativeBaseTransformOutOfPlace_\(sanitizedFactoryNameComponent(factoryName))_\(fnv1a64Hex(factoryName))"
+    }
+
     static func isValidDynamicGTypeName(_ typeName: String) -> Bool {
         guard let first = typeName.unicodeScalars.first, first.isASCIILetter else {
             return false
@@ -644,6 +1165,7 @@ internal enum NativeElementRegistrationTestHooks {
 
     private static let baseSinkCRegistrationAttempts = Mutex(0)
     private static let baseTransformCRegistrationAttempts = Mutex(0)
+    private static let baseTransformOutOfPlaceCRegistrationAttempts = Mutex(0)
 
     static func captureBaseSinkCRegistrationAttempts(
         _ body: () throws -> Void
@@ -680,6 +1202,24 @@ internal enum NativeElementRegistrationTestHooks {
     fileprivate static func recordBaseTransformCRegistrationAttempt() {
         baseTransformCRegistrationAttempts.withLock { $0 += 1 }
     }
+
+    static func captureBaseTransformOutOfPlaceCRegistrationAttempts(
+        _ body: () throws -> Void
+    ) -> CRegistrationCapture {
+        let before = baseTransformOutOfPlaceCRegistrationAttempts.withLock { $0 }
+        do {
+            try body()
+            let after = baseTransformOutOfPlaceCRegistrationAttempts.withLock { $0 }
+            return CRegistrationCapture(attemptCount: after - before, error: nil)
+        } catch {
+            let after = baseTransformOutOfPlaceCRegistrationAttempts.withLock { $0 }
+            return CRegistrationCapture(attemptCount: after - before, error: error)
+        }
+    }
+
+    fileprivate static func recordBaseTransformOutOfPlaceCRegistrationAttempt() {
+        baseTransformOutOfPlaceCRegistrationAttempts.withLock { $0 += 1 }
+    }
 }
 
 private struct ValidatedBaseSinkRegistration {
@@ -697,6 +1237,16 @@ private struct ValidatedBaseTransformRegistration {
     var sinkCaps: String
     var srcCaps: String
     var passthroughOptions: SwiftBaseTransformPassthroughOptions
+    var properties: [ValidatedNativeElementProperty]
+}
+
+private struct ValidatedBaseTransformOutOfPlaceRegistration {
+    var factoryName: String
+    var typeName: String
+    var metadata: NativeElementMetadata
+    var sinkCaps: String
+    var srcCaps: String
+    var options: SwiftBaseTransformOutOfPlaceOptions
     var properties: [ValidatedNativeElementProperty]
 }
 
@@ -1038,6 +1588,45 @@ private enum NativeElementRegistration {
             sinkCaps: element.sinkCaps,
             srcCaps: element.srcCaps,
             passthroughOptions: element.passthroughOptions,
+            properties: properties
+        )
+    }
+
+    static func validateBaseTransformOutOfPlace(
+        _ element: SwiftBaseTransformOutOfPlaceElement
+    ) throws -> ValidatedBaseTransformOutOfPlaceRegistration {
+        try validateFactoryName(element.factoryName)
+
+        let typeName: String
+        if let explicitTypeName = element.typeName {
+            guard !explicitTypeName.isEmpty else {
+                throw GStreamerError.invalidArgument(
+                    parameter: "typeName",
+                    reason: "typeName must not be empty"
+                )
+            }
+            try validateTypeName(explicitTypeName)
+            typeName = explicitTypeName
+        } else {
+            let generated = NativeElementTypeName.generatedBaseTransformOutOfPlaceTypeName(
+                factoryName: element.factoryName
+            )
+            try validateTypeName(generated)
+            typeName = generated
+        }
+
+        try validateMetadata(element.metadata)
+        try validateCaps(element.sinkCaps, parameter: "sinkCaps")
+        try validateCaps(element.srcCaps, parameter: "srcCaps")
+        let properties = try validateProperties(element.properties, baseClass: .baseTransform)
+
+        return ValidatedBaseTransformOutOfPlaceRegistration(
+            factoryName: element.factoryName,
+            typeName: typeName,
+            metadata: element.metadata,
+            sinkCaps: element.sinkCaps,
+            srcCaps: element.srcCaps,
+            options: element.options,
             properties: properties
         )
     }
@@ -1453,6 +2042,26 @@ private final class SwiftBaseTransformInstanceContext: @unchecked Sendable {
     }
 }
 
+private final class SwiftBaseTransformOutOfPlaceClassContext: @unchecked Sendable {
+    let element: SwiftBaseTransformOutOfPlaceElement
+    let properties: [ValidatedNativeElementProperty]
+
+    init(element: SwiftBaseTransformOutOfPlaceElement, properties: [ValidatedNativeElementProperty]) {
+        self.element = element
+        self.properties = properties
+    }
+}
+
+private final class SwiftBaseTransformOutOfPlaceInstanceContext: @unchecked Sendable {
+    let instance: any SwiftBaseTransformOutOfPlaceInstance
+    let propertyStore: NativeElementPropertyStore
+
+    init(instance: any SwiftBaseTransformOutOfPlaceInstance, propertyStore: NativeElementPropertyStore) {
+        self.instance = instance
+        self.propertyStore = propertyStore
+    }
+}
+
 private final class NativePropertyCDescriptorStorage {
     let descriptors: UnsafeMutablePointer<SwiftGstNativePropertyDescriptor>?
     let count: guint
@@ -1856,6 +2465,529 @@ private func swiftGstBaseTransformGetStringProperty(
     guard let instanceContext else { return nil }
     let context = Unmanaged<SwiftBaseTransformInstanceContext>.fromOpaque(instanceContext).takeUnretainedValue()
     return context.propertyStore.stringForC(index: Int(propertyIndex))
+}
+
+private func swiftGstBaseTransformOutOfPlaceRetainClassContext(_ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    _ = Unmanaged<SwiftBaseTransformOutOfPlaceClassContext>.fromOpaque(context).retain()
+}
+
+private func swiftGstBaseTransformOutOfPlaceReleaseClassContext(_ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    Unmanaged<SwiftBaseTransformOutOfPlaceClassContext>.fromOpaque(context).release()
+}
+
+private func swiftGstBaseTransformOutOfPlaceCreateInstance(
+    _ classContext: UnsafeMutableRawPointer?
+) -> UnsafeMutableRawPointer? {
+    guard let classContext else { return nil }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceClassContext>
+        .fromOpaque(classContext)
+        .takeUnretainedValue()
+    let propertyStore = NativeElementPropertyStore(descriptors: context.properties)
+    let reader = NativeElementPropertyReader(store: propertyStore)
+    let instanceContext = SwiftBaseTransformOutOfPlaceInstanceContext(
+        instance: context.element.makeInstanceWithProperties(reader),
+        propertyStore: propertyStore
+    )
+    return Unmanaged.passRetained(instanceContext).toOpaque()
+}
+
+private func swiftGstBaseTransformOutOfPlaceDestroyInstance(_ instanceContext: UnsafeMutableRawPointer?) {
+    guard let instanceContext else { return }
+    Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>.fromOpaque(instanceContext).release()
+}
+
+private func swiftGstBaseTransformOutOfPlaceStart(_ instanceContext: UnsafeMutableRawPointer?) -> gboolean {
+    guard let instanceContext else { return 0 }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    do {
+        try context.instance.start()
+        return 1
+    } catch {
+        return 0
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceStop(_ instanceContext: UnsafeMutableRawPointer?) -> gboolean {
+    guard let instanceContext else { return 1 }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    context.instance.stop()
+    return 1
+}
+
+private func swiftGstBaseTransformOutOfPlaceSetCaps(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ inputCaps: UnsafeMutablePointer<GstCaps>?,
+    _ outputCaps: UnsafeMutablePointer<GstCaps>?
+) -> gboolean {
+    guard let instanceContext, let inputCaps, let outputCaps else { return 0 }
+    guard let retainedInputCaps = swift_gst_caps_ref(inputCaps) else { return 0 }
+    guard let retainedOutputCaps = swift_gst_caps_ref(outputCaps) else {
+        swift_gst_caps_unref(retainedInputCaps)
+        return 0
+    }
+
+    let input = Caps(caps: retainedInputCaps, ownsReference: true)
+    let output = Caps(caps: retainedOutputCaps, ownsReference: true)
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+
+    do {
+        return try context.instance.setCaps(input: input, output: output) ? 1 : 0
+    } catch {
+        return 0
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceTransform(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ inputBuffer: UnsafeMutablePointer<GstBuffer>?,
+    _ outputBuffer: UnsafeMutablePointer<GstBuffer>?
+) -> GstFlowReturn {
+    guard let instanceContext, let inputBuffer, let outputBuffer else { return GST_FLOW_ERROR }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    let input = BorrowedBuffer(buffer: inputBuffer)
+    let output = MutableBorrowedBuffer(buffer: outputBuffer)
+
+    do {
+        return try context.instance.transform(input, into: output).gstFlowReturn
+    } catch {
+        return GST_FLOW_ERROR
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceTransformCaps(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ direction: GstPadDirection,
+    _ caps: UnsafeMutablePointer<GstCaps>?,
+    _ filter: UnsafeMutablePointer<GstCaps>?
+) -> SwiftGstBaseTransformCapsResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let caps,
+          let retainedCaps = swift_gst_caps_ref(caps)
+    else {
+        return swiftGstBaseTransformCapsFailure()
+    }
+
+    let retainedFilter = filter.flatMap { swift_gst_caps_ref($0) }
+    let wrappedCaps = Caps(caps: retainedCaps, ownsReference: true)
+    let wrappedFilter = retainedFilter.map { Caps(caps: $0, ownsReference: true) }
+
+    do {
+        return swiftGstBaseTransformCapsResult(
+            try context.instance.transformCaps(
+                direction: Pad.Direction(gstPadDirection: direction),
+                caps: wrappedCaps,
+                filter: wrappedFilter
+            )
+        )
+    } catch {
+        return swiftGstBaseTransformCapsFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceFixateCaps(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ direction: GstPadDirection,
+    _ caps: UnsafeMutablePointer<GstCaps>?,
+    _ otherCaps: UnsafeMutablePointer<GstCaps>?
+) -> SwiftGstBaseTransformCapsResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let caps,
+          let otherCaps,
+          let retainedCaps = swift_gst_caps_ref(caps),
+          let retainedOtherCaps = swift_gst_caps_ref(otherCaps)
+    else {
+        return swiftGstBaseTransformCapsFailure()
+    }
+
+    let wrappedCaps = Caps(caps: retainedCaps, ownsReference: true)
+    let wrappedOtherCaps = Caps(caps: retainedOtherCaps, ownsReference: true)
+
+    do {
+        return swiftGstBaseTransformCapsResult(
+            try context.instance.fixateCaps(
+                direction: Pad.Direction(gstPadDirection: direction),
+                caps: wrappedCaps,
+                otherCaps: wrappedOtherCaps
+            )
+        )
+    } catch {
+        return swiftGstBaseTransformCapsFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceGetUnitSize(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ caps: UnsafeMutablePointer<GstCaps>?
+) -> SwiftGstBaseTransformSizeResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let caps,
+          let retainedCaps = swift_gst_caps_ref(caps)
+    else {
+        return swiftGstBaseTransformSizeFailure()
+    }
+
+    let wrappedCaps = Caps(caps: retainedCaps, ownsReference: true)
+    do {
+        return swiftGstBaseTransformSizeResult(
+            try context.instance.getUnitSize(for: wrappedCaps)
+        )
+    } catch {
+        return swiftGstBaseTransformSizeFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceTransformSize(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ direction: GstPadDirection,
+    _ caps: UnsafeMutablePointer<GstCaps>?,
+    _ size: gsize,
+    _ otherCaps: UnsafeMutablePointer<GstCaps>?
+) -> SwiftGstBaseTransformSizeResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let caps,
+          let otherCaps,
+          size <= gsize(Int.max),
+          let retainedCaps = swift_gst_caps_ref(caps),
+          let retainedOtherCaps = swift_gst_caps_ref(otherCaps)
+    else {
+        return swiftGstBaseTransformSizeFailure()
+    }
+
+    let wrappedCaps = Caps(caps: retainedCaps, ownsReference: true)
+    let wrappedOtherCaps = Caps(caps: retainedOtherCaps, ownsReference: true)
+
+    do {
+        return swiftGstBaseTransformSizeResult(
+            try context.instance.transformSize(
+                direction: Pad.Direction(gstPadDirection: direction),
+                caps: wrappedCaps,
+                size: Int(size),
+                otherCaps: wrappedOtherCaps
+            )
+        )
+    } catch {
+        return swiftGstBaseTransformSizeFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceDecideAllocation(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ query: UnsafeMutablePointer<GstQuery>?
+) -> SwiftGstBaseTransformBoolResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext), let query else {
+        return swiftGstBaseTransformBoolFailure()
+    }
+
+    let wrappedQuery = AllocationQuery(query: query)
+    do {
+        return swiftGstBaseTransformBoolResult(try context.instance.decideAllocation(wrappedQuery))
+    } catch {
+        return swiftGstBaseTransformBoolFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceProposeAllocation(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ decideQuery: UnsafeMutablePointer<GstQuery>?,
+    _ query: UnsafeMutablePointer<GstQuery>?
+) -> SwiftGstBaseTransformBoolResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let decideQuery,
+          let query
+    else {
+        return SwiftGstBaseTransformBoolResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT,
+            value: 0
+        )
+    }
+
+    let wrappedDecideQuery = AllocationQuery(query: decideQuery)
+    let wrappedQuery = AllocationQuery(query: query)
+    do {
+        return swiftGstBaseTransformBoolResult(
+            try context.instance.proposeAllocation(decideQuery: wrappedDecideQuery, query: wrappedQuery)
+        )
+    } catch {
+        return swiftGstBaseTransformBoolFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceFilterMeta(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ query: UnsafeMutablePointer<GstQuery>?,
+    _ api: GType,
+    _ params: UnsafePointer<GstStructure>?
+) -> SwiftGstBaseTransformBoolResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext), let query else {
+        return swiftGstBaseTransformBoolFailure()
+    }
+
+    let wrappedQuery = AllocationQuery(query: query)
+    do {
+        return swiftGstBaseTransformBoolResult(
+            try context.instance.filterAllocationMetadata(
+                AllocationMetadata(api: api, params: params),
+                query: wrappedQuery
+            )
+        )
+    } catch {
+        return swiftGstBaseTransformBoolFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceCopyMetadata(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ inputBuffer: UnsafeMutablePointer<GstBuffer>?,
+    _ outputBuffer: UnsafeMutablePointer<GstBuffer>?
+) -> SwiftGstBaseTransformBoolResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let inputBuffer,
+          let outputBuffer
+    else {
+        return swiftGstBaseTransformBoolFailure()
+    }
+
+    let input = BorrowedBuffer(buffer: inputBuffer)
+    let output = MutableBorrowedBuffer(buffer: outputBuffer)
+    do {
+        return swiftGstBaseTransformBoolResult(try context.instance.copyMetadata(from: input, to: output))
+    } catch {
+        return swiftGstBaseTransformBoolFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceTransformMetadata(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ outputBuffer: UnsafeMutablePointer<GstBuffer>?,
+    _ metadata: UnsafeMutablePointer<GstMeta>?,
+    _ inputBuffer: UnsafeMutablePointer<GstBuffer>?
+) -> SwiftGstBaseTransformBoolResult {
+    guard let context = swiftGstBaseTransformOutOfPlaceContext(instanceContext),
+          let inputBuffer,
+          let outputBuffer,
+          let metadata
+    else {
+        return swiftGstBaseTransformBoolFailure()
+    }
+
+    let input = BorrowedBuffer(buffer: inputBuffer)
+    let output = MutableBorrowedBuffer(buffer: outputBuffer)
+    let wrappedMetadata = BufferMetadata(metadata: metadata)
+    do {
+        return swiftGstBaseTransformBoolResult(
+            try context.instance.transformMetadata(wrappedMetadata, from: input, to: output)
+        )
+    } catch {
+        return swiftGstBaseTransformBoolFailure()
+    }
+}
+
+private func swiftGstBaseTransformOutOfPlaceSetBoolProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint,
+    _ value: gboolean
+) {
+    guard let instanceContext else { return }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    context.propertyStore.setBool(index: Int(propertyIndex), value: value != 0)
+}
+
+private func swiftGstBaseTransformOutOfPlaceSetIntProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint,
+    _ value: gint
+) {
+    guard let instanceContext else { return }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    context.propertyStore.setInt(index: Int(propertyIndex), value: Int32(value))
+}
+
+private func swiftGstBaseTransformOutOfPlaceSetDoubleProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint,
+    _ value: gdouble
+) {
+    guard let instanceContext else { return }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    context.propertyStore.setDouble(index: Int(propertyIndex), value: Double(value))
+}
+
+private func swiftGstBaseTransformOutOfPlaceSetStringProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint,
+    _ value: UnsafePointer<CChar>?
+) {
+    guard let instanceContext else { return }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    context.propertyStore.setString(index: Int(propertyIndex), value: GLibString.borrow(value))
+}
+
+private func swiftGstBaseTransformOutOfPlaceGetBoolProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint
+) -> gboolean {
+    guard let instanceContext else { return 0 }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    return context.propertyStore.bool(index: Int(propertyIndex)) ? 1 : 0
+}
+
+private func swiftGstBaseTransformOutOfPlaceGetIntProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint
+) -> gint {
+    guard let instanceContext else { return 0 }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    return gint(context.propertyStore.int(index: Int(propertyIndex)))
+}
+
+private func swiftGstBaseTransformOutOfPlaceGetDoubleProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint
+) -> gdouble {
+    guard let instanceContext else { return 0 }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    return gdouble(context.propertyStore.double(index: Int(propertyIndex)))
+}
+
+private func swiftGstBaseTransformOutOfPlaceGetStringProperty(
+    _ instanceContext: UnsafeMutableRawPointer?,
+    _ propertyIndex: guint
+) -> UnsafeMutablePointer<CChar>? {
+    guard let instanceContext else { return nil }
+    let context = Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+    return context.propertyStore.stringForC(index: Int(propertyIndex))
+}
+
+private func swiftGstBaseTransformOutOfPlaceContext(
+    _ instanceContext: UnsafeMutableRawPointer?
+) -> SwiftBaseTransformOutOfPlaceInstanceContext? {
+    guard let instanceContext else { return nil }
+    return Unmanaged<SwiftBaseTransformOutOfPlaceInstanceContext>
+        .fromOpaque(instanceContext)
+        .takeUnretainedValue()
+}
+
+private func swiftGstBaseTransformCapsResult(
+    _ result: BaseTransformHookResult<Caps>
+) -> SwiftGstBaseTransformCapsResult {
+    switch result {
+    case .useDefault:
+        return SwiftGstBaseTransformCapsResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT,
+            caps: nil
+        )
+    case .value(let caps):
+        guard let retainedCaps = swift_gst_caps_ref(caps.caps) else {
+            return swiftGstBaseTransformCapsFailure()
+        }
+        return SwiftGstBaseTransformCapsResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE,
+            caps: retainedCaps
+        )
+    case .failure:
+        return swiftGstBaseTransformCapsFailure()
+    }
+}
+
+private func swiftGstBaseTransformCapsFailure() -> SwiftGstBaseTransformCapsResult {
+    SwiftGstBaseTransformCapsResult(
+        status: SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE,
+        caps: nil
+    )
+}
+
+private func swiftGstBaseTransformSizeResult(
+    _ result: BaseTransformHookResult<Int>
+) -> SwiftGstBaseTransformSizeResult {
+    switch result {
+    case .useDefault:
+        return SwiftGstBaseTransformSizeResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT,
+            size: 0
+        )
+    case .value(let size):
+        guard size > 0, size < Int.max else {
+            return swiftGstBaseTransformSizeFailure()
+        }
+        return SwiftGstBaseTransformSizeResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE,
+            size: gsize(size)
+        )
+    case .failure:
+        return swiftGstBaseTransformSizeFailure()
+    }
+}
+
+private func swiftGstBaseTransformSizeFailure() -> SwiftGstBaseTransformSizeResult {
+    SwiftGstBaseTransformSizeResult(
+        status: SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE,
+        size: 0
+    )
+}
+
+private func swiftGstBaseTransformBoolResult(
+    _ result: BaseTransformHookResult<Bool>
+) -> SwiftGstBaseTransformBoolResult {
+    switch result {
+    case .useDefault:
+        return SwiftGstBaseTransformBoolResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT,
+            value: 0
+        )
+    case .value(let value):
+        return SwiftGstBaseTransformBoolResult(
+            status: SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE,
+            value: value ? 1 : 0
+        )
+    case .failure:
+        return swiftGstBaseTransformBoolFailure()
+    }
+}
+
+private func swiftGstBaseTransformBoolFailure() -> SwiftGstBaseTransformBoolResult {
+    SwiftGstBaseTransformBoolResult(
+        status: SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE,
+        value: 0
+    )
+}
+
+private extension Pad.Direction {
+    init(gstPadDirection: GstPadDirection) {
+        switch gstPadDirection {
+        case GST_PAD_SRC:
+            self = .source
+        case GST_PAD_SINK:
+            self = .sink
+        default:
+            self = .unknown
+        }
+    }
 }
 
 private extension Unicode.Scalar {

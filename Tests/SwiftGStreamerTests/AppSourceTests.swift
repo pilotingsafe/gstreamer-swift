@@ -51,9 +51,9 @@ struct AppSourceTests {
         defer { pipeline.stop() }
 
         // Create a small 4x4 BGRA frame
-        let width = 4
-        let height = 4
-        let pixels = [UInt8](repeating: 255, count: width * height * 4)
+        let capsString = "video/x-raw,format=BGRA,width=4,height=4,framerate=30/1"
+        let frameSize = try RawVideoInfo(caps: Caps(capsString)).byteSize
+        let pixels = [UInt8](repeating: 255, count: frameSize)
 
         // Push a few frames
         for i in 0..<3 {
@@ -128,7 +128,10 @@ struct AppSourceTests {
 
         // Verify we can access the data
         let byteCount = try frame.withUnsafeBytes { $0.count }
-        #expect(byteCount == 16)  // 2x2x4 bytes
+        let frameSize = try RawVideoInfo(
+            caps: Caps("video/x-raw,format=BGRA,width=2,height=2,framerate=30/1")
+        ).byteSize
+        #expect(byteCount == frameSize)
     }
 
     @Test("pushVideoFrame overloads reject too-small data")

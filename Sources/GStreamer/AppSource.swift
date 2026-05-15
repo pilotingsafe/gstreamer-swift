@@ -422,7 +422,9 @@ public final class AppSource: @unchecked Sendable {
     /// // Generate a red frame
     /// let width = 640
     /// let height = 480
-    /// var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    /// let caps = try Caps("video/x-raw,format=BGRA,width=\(width),height=\(height)")
+    /// let frameSize = try RawVideoInfo(caps: caps).byteSize
+    /// var pixels = [UInt8](repeating: 0, count: frameSize)
     ///
     /// // Fill with red (BGRA format)
     /// for i in stride(from: 0, to: pixels.count, by: 4) {

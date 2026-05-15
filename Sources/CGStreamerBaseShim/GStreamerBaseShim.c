@@ -49,6 +49,7 @@ typedef struct SwiftGstBaseTransformRegistration {
     gchar* sink_caps;
     gchar* src_caps;
     guint rank;
+    SwiftGstBaseTransformMode mode;
     gboolean passthrough_on_same_caps;
     gboolean transform_ip_on_passthrough;
     SwiftGstNativePropertyDescriptor* properties;
@@ -60,6 +61,167 @@ typedef struct SwiftGstBaseTransformRegistration {
 
 static GMutex swift_gst_base_sink_registration_mutex;
 static GMutex swift_gst_base_transform_registration_mutex;
+static GMutex swift_gst_base_transform_allocator_mutex;
+
+typedef GstBuffer* (*SwiftGstBaseTransformOutputAllocatorFunc)(GstBuffer* input, gsize size);
+
+static SwiftGstBaseTransformOutputAllocatorFunc swift_gst_base_transform_output_allocator = NULL;
+
+static GstBuffer* swift_gst_base_transform_default_output_allocator(GstBuffer* input, gsize size) {
+    (void)input;
+    return gst_buffer_new_allocate(NULL, size, NULL);
+}
+
+static GstBuffer* swift_gst_base_transform_allocate_output(GstBuffer* input, gsize size) {
+    g_mutex_lock(&swift_gst_base_transform_allocator_mutex);
+    SwiftGstBaseTransformOutputAllocatorFunc allocator =
+        swift_gst_base_transform_output_allocator != NULL
+            ? swift_gst_base_transform_output_allocator
+            : swift_gst_base_transform_default_output_allocator;
+    g_mutex_unlock(&swift_gst_base_transform_allocator_mutex);
+
+    return allocator(input, size);
+}
+
+void swift_gst_base_transform_test_set_output_allocator(
+    SwiftGstBaseTransformOutputAllocatorFunc allocator
+) {
+    g_mutex_lock(&swift_gst_base_transform_allocator_mutex);
+    swift_gst_base_transform_output_allocator = allocator;
+    g_mutex_unlock(&swift_gst_base_transform_allocator_mutex);
+}
+
+GstCaps* swift_gst_allocation_query_get_caps(GstQuery* query) {
+    if (query == NULL) {
+        return NULL;
+    }
+
+    GstCaps* caps = NULL;
+    gst_query_parse_allocation(query, &caps, NULL);
+    return caps != NULL ? gst_caps_ref(caps) : NULL;
+}
+
+gboolean swift_gst_allocation_query_get_needs_pool(GstQuery* query) {
+    if (query == NULL) {
+        return FALSE;
+    }
+
+    gboolean needs_pool = FALSE;
+    gst_query_parse_allocation(query, NULL, &needs_pool);
+    return needs_pool;
+}
+
+guint swift_gst_allocation_query_pool_count(GstQuery* query) {
+    return query != NULL ? gst_query_get_n_allocation_pools(query) : 0;
+}
+
+GstBufferPool* swift_gst_allocation_query_pool_at(
+    GstQuery* query,
+    guint index,
+    guint* size,
+    guint* min_buffers,
+    guint* max_buffers
+) {
+    if (query == NULL || index >= gst_query_get_n_allocation_pools(query)) {
+        return NULL;
+    }
+
+    GstBufferPool* pool = NULL;
+    gst_query_parse_nth_allocation_pool(query, index, &pool, size, min_buffers, max_buffers);
+    return pool;
+}
+
+void swift_gst_allocation_query_add_pool(
+    GstQuery* query,
+    GstBufferPool* pool,
+    guint size,
+    guint min_buffers,
+    guint max_buffers
+) {
+    if (query != NULL) {
+        gst_query_add_allocation_pool(query, pool, size, min_buffers, max_buffers);
+    }
+}
+
+guint swift_gst_allocation_query_param_count(GstQuery* query) {
+    return query != NULL ? gst_query_get_n_allocation_params(query) : 0;
+}
+
+GstAllocator* swift_gst_allocation_query_param_at(
+    GstQuery* query,
+    guint index,
+    GstAllocationParams* params
+) {
+    if (query == NULL || index >= gst_query_get_n_allocation_params(query)) {
+        return NULL;
+    }
+
+    GstAllocator* allocator = NULL;
+    gst_query_parse_nth_allocation_param(query, index, &allocator, params);
+    return allocator;
+}
+
+void swift_gst_allocation_query_add_param(
+    GstQuery* query,
+    GstAllocator* allocator,
+    const GstAllocationParams* params
+) {
+    if (query != NULL) {
+        gst_query_add_allocation_param(query, allocator, params);
+    }
+}
+
+guint swift_gst_allocation_query_meta_count(GstQuery* query) {
+    return query != NULL ? gst_query_get_n_allocation_metas(query) : 0;
+}
+
+GType swift_gst_allocation_query_meta_api_at(GstQuery* query, guint index) {
+    if (query == NULL || index >= gst_query_get_n_allocation_metas(query)) {
+        return 0;
+    }
+
+    return gst_query_parse_nth_allocation_meta(query, index, NULL);
+}
+
+gchar* swift_gst_allocation_query_meta_params_string_at(GstQuery* query, guint index) {
+    if (query == NULL || index >= gst_query_get_n_allocation_metas(query)) {
+        return NULL;
+    }
+
+    const GstStructure* params = NULL;
+    gst_query_parse_nth_allocation_meta(query, index, &params);
+    return params != NULL ? gst_structure_to_string(params) : NULL;
+}
+
+void swift_gst_allocation_query_add_meta(GstQuery* query, GType api) {
+    if (query != NULL && api != 0) {
+        gst_query_add_allocation_meta(query, api, NULL);
+    }
+}
+
+const gchar* swift_gst_g_type_name(GType type) {
+    return type != 0 ? g_type_name(type) : NULL;
+}
+
+gchar* swift_gst_structure_to_string_nullable(const GstStructure* structure) {
+    return structure != NULL ? gst_structure_to_string(structure) : NULL;
+}
+
+const gchar* swift_gst_buffer_meta_api_name(GstMeta* metadata) {
+    return metadata != NULL && metadata->info != NULL
+        ? g_type_name(metadata->info->api)
+        : NULL;
+}
+
+const gchar* swift_gst_buffer_meta_implementation_name(GstMeta* metadata) {
+    return metadata != NULL && metadata->info != NULL
+        ? g_type_name(metadata->info->type)
+        : NULL;
+}
+
+GstMetaFlags swift_gst_buffer_meta_flags(GstMeta* metadata) {
+    return metadata != NULL ? metadata->flags : 0;
+}
 
 static gboolean swift_gst_base_sink_fail(gchar** error_message, const gchar* format, ...) {
     if (error_message != NULL) {
@@ -1223,6 +1385,409 @@ static GstFlowReturn swift_gst_base_transform_transform_ip(
     return registration->callbacks.transform_ip(instance_context, buffer);
 }
 
+static GstFlowReturn swift_gst_base_transform_prepare_output_buffer(
+    GstBaseTransform* transform,
+    GstBuffer* input,
+    GstBuffer** output
+) {
+    (void)transform;
+
+    if (input == NULL || output == NULL) {
+        return GST_FLOW_ERROR;
+    }
+
+    gsize size = gst_buffer_get_size(input);
+    GstBuffer* allocated = swift_gst_base_transform_allocate_output(input, size);
+    if (allocated == NULL) {
+        *output = NULL;
+        return GST_FLOW_ERROR;
+    }
+
+    GST_BUFFER_PTS(allocated) = GST_BUFFER_PTS(input);
+    GST_BUFFER_DURATION(allocated) = GST_BUFFER_DURATION(input);
+    *output = allocated;
+    return GST_FLOW_OK;
+}
+
+static GstFlowReturn swift_gst_base_transform_transform(
+    GstBaseTransform* transform,
+    GstBuffer* input,
+    GstBuffer* output
+) {
+    if (input == NULL || output == NULL || !gst_buffer_is_writable(output)) {
+        return GST_FLOW_ERROR;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    if (instance_context == NULL) {
+        return GST_FLOW_ERROR;
+    }
+
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (registration == NULL || registration->callbacks.transform == NULL) {
+        return GST_FLOW_ERROR;
+    }
+
+    return registration->callbacks.transform(instance_context, input, output);
+}
+
+static GstBaseTransformClass* swift_gst_base_transform_parent_class(GstBaseTransform* transform) {
+    if (transform == NULL) {
+        return NULL;
+    }
+
+    return GST_BASE_TRANSFORM_CLASS(g_type_class_peek_parent(G_OBJECT_GET_CLASS(transform)));
+}
+
+static GstCaps* swift_gst_base_transform_transform_caps(
+    GstBaseTransform* transform,
+    GstPadDirection direction,
+    GstCaps* caps,
+    GstCaps* filter
+) {
+    if (transform == NULL || caps == NULL) {
+        return NULL;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.transform_caps == NULL) {
+        return NULL;
+    }
+
+    SwiftGstBaseTransformCapsResult result =
+        registration->callbacks.transform_caps(instance_context, direction, caps, filter);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        return result.caps;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->transform_caps != NULL
+            ? parent_class->transform_caps(transform, direction, caps, filter)
+            : NULL;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        if (result.caps != NULL) {
+            gst_caps_unref(result.caps);
+        }
+        return NULL;
+    }
+}
+
+static GstCaps* swift_gst_base_transform_fixate_caps(
+    GstBaseTransform* transform,
+    GstPadDirection direction,
+    GstCaps* caps,
+    GstCaps* othercaps
+) {
+    if (transform == NULL || caps == NULL || othercaps == NULL) {
+        if (othercaps != NULL) {
+            gst_caps_unref(othercaps);
+        }
+        return NULL;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.fixate_caps == NULL) {
+        gst_caps_unref(othercaps);
+        return NULL;
+    }
+
+    SwiftGstBaseTransformCapsResult result =
+        registration->callbacks.fixate_caps(instance_context, direction, caps, othercaps);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        gst_caps_unref(othercaps);
+        return result.caps;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        if (parent_class != NULL && parent_class->fixate_caps != NULL) {
+            return parent_class->fixate_caps(transform, direction, caps, othercaps);
+        }
+        gst_caps_unref(othercaps);
+        return NULL;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        gst_caps_unref(othercaps);
+        if (result.caps != NULL) {
+            gst_caps_unref(result.caps);
+        }
+        return NULL;
+    }
+}
+
+static gboolean swift_gst_base_transform_get_unit_size(
+    GstBaseTransform* transform,
+    GstCaps* caps,
+    gsize* size
+) {
+    if (transform == NULL || caps == NULL || size == NULL) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.get_unit_size == NULL) {
+        return FALSE;
+    }
+
+    SwiftGstBaseTransformSizeResult result =
+        registration->callbacks.get_unit_size(instance_context, caps);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        if (result.size == 0) {
+            return FALSE;
+        }
+        *size = result.size;
+        return TRUE;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->get_unit_size != NULL
+            ? parent_class->get_unit_size(transform, caps, size)
+            : FALSE;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean swift_gst_base_transform_transform_size(
+    GstBaseTransform* transform,
+    GstPadDirection direction,
+    GstCaps* caps,
+    gsize size,
+    GstCaps* othercaps,
+    gsize* othersize
+) {
+    if (transform == NULL || caps == NULL || othercaps == NULL || othersize == NULL) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.transform_size == NULL) {
+        return FALSE;
+    }
+
+    SwiftGstBaseTransformSizeResult result =
+        registration->callbacks.transform_size(instance_context, direction, caps, size, othercaps);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        if (result.size == 0) {
+            return FALSE;
+        }
+        *othersize = result.size;
+        return TRUE;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->transform_size != NULL
+            ? parent_class->transform_size(transform, direction, caps, size, othercaps, othersize)
+            : FALSE;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean swift_gst_base_transform_decide_allocation(
+    GstBaseTransform* transform,
+    GstQuery* query
+) {
+    if (transform == NULL || query == NULL) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.decide_allocation == NULL) {
+        return FALSE;
+    }
+
+    SwiftGstBaseTransformBoolResult result =
+        registration->callbacks.decide_allocation(instance_context, query);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        return result.value;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->decide_allocation != NULL
+            ? parent_class->decide_allocation(transform, query)
+            : TRUE;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean swift_gst_base_transform_propose_allocation(
+    GstBaseTransform* transform,
+    GstQuery* decide_query,
+    GstQuery* query
+) {
+    if (transform == NULL || query == NULL) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.propose_allocation == NULL
+        || decide_query == NULL) {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->propose_allocation != NULL
+            ? parent_class->propose_allocation(transform, decide_query, query)
+            : TRUE;
+    }
+
+    SwiftGstBaseTransformBoolResult result =
+        registration->callbacks.propose_allocation(instance_context, decide_query, query);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        return result.value;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->propose_allocation != NULL
+            ? parent_class->propose_allocation(transform, decide_query, query)
+            : TRUE;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean swift_gst_base_transform_filter_meta(
+    GstBaseTransform* transform,
+    GstQuery* query,
+    GType api,
+    const GstStructure* params
+) {
+    if (transform == NULL || query == NULL || api == 0) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.filter_meta == NULL) {
+        return FALSE;
+    }
+
+    SwiftGstBaseTransformBoolResult result =
+        registration->callbacks.filter_meta(instance_context, query, api, params);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        return result.value;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->filter_meta != NULL
+            ? parent_class->filter_meta(transform, query, api, params)
+            : FALSE;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean swift_gst_base_transform_copy_metadata(
+    GstBaseTransform* transform,
+    GstBuffer* input,
+    GstBuffer* output
+) {
+    if (transform == NULL || input == NULL || output == NULL) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.copy_metadata == NULL) {
+        return FALSE;
+    }
+
+    SwiftGstBaseTransformBoolResult result =
+        registration->callbacks.copy_metadata(instance_context, input, output);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        return result.value;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        if (parent_class != NULL && parent_class->copy_metadata != NULL) {
+            return parent_class->copy_metadata(transform, input, output);
+        }
+        return gst_buffer_copy_into(output, input, GST_BUFFER_COPY_METADATA, 0, -1);
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
+static gboolean swift_gst_base_transform_transform_meta(
+    GstBaseTransform* transform,
+    GstBuffer* output,
+    GstMeta* metadata,
+    GstBuffer* input
+) {
+    if (transform == NULL || output == NULL || metadata == NULL || input == NULL) {
+        return FALSE;
+    }
+
+    void* instance_context = swift_gst_base_transform_instance_context(transform);
+    SwiftGstBaseTransformRegistration* registration =
+        swift_gst_base_transform_class_registration(transform);
+    if (instance_context == NULL
+        || registration == NULL
+        || registration->callbacks.transform_meta == NULL) {
+        return FALSE;
+    }
+
+    SwiftGstBaseTransformBoolResult result =
+        registration->callbacks.transform_meta(instance_context, output, metadata, input);
+    switch (result.status) {
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE:
+        return result.value;
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT: {
+        GstBaseTransformClass* parent_class = swift_gst_base_transform_parent_class(transform);
+        return parent_class != NULL && parent_class->transform_meta != NULL
+            ? parent_class->transform_meta(transform, output, metadata, input)
+            : TRUE;
+    }
+    case SWIFT_GST_BASE_TRANSFORM_HOOK_FAILURE:
+    default:
+        return FALSE;
+    }
+}
+
 static void swift_gst_base_transform_finalize(GObject* object) {
     SwiftGstNativeBaseTransform* transform = (SwiftGstNativeBaseTransform*)object;
     SwiftGstBaseTransformRegistration* registration =
@@ -1293,14 +1858,34 @@ static void swift_gst_base_transform_class_init(gpointer g_class, gpointer class
     transform_class->start = swift_gst_base_transform_start;
     transform_class->stop = swift_gst_base_transform_stop;
     transform_class->set_caps = swift_gst_base_transform_set_caps;
-    transform_class->transform_ip = swift_gst_base_transform_transform_ip;
 
     if (registration == NULL) {
         return;
     }
 
-    transform_class->passthrough_on_same_caps = registration->passthrough_on_same_caps;
-    transform_class->transform_ip_on_passthrough = registration->transform_ip_on_passthrough;
+    if (registration->mode == SWIFT_GST_BASE_TRANSFORM_MODE_OUT_OF_PLACE) {
+        transform_class->transform = swift_gst_base_transform_transform;
+        transform_class->prepare_output_buffer = swift_gst_base_transform_prepare_output_buffer;
+        transform_class->passthrough_on_same_caps = FALSE;
+        transform_class->transform_ip_on_passthrough = FALSE;
+    } else if (registration->mode == SWIFT_GST_BASE_TRANSFORM_MODE_OUT_OF_PLACE_GENERAL) {
+        transform_class->transform = swift_gst_base_transform_transform;
+        transform_class->transform_caps = swift_gst_base_transform_transform_caps;
+        transform_class->fixate_caps = swift_gst_base_transform_fixate_caps;
+        transform_class->get_unit_size = swift_gst_base_transform_get_unit_size;
+        transform_class->transform_size = swift_gst_base_transform_transform_size;
+        transform_class->decide_allocation = swift_gst_base_transform_decide_allocation;
+        transform_class->propose_allocation = swift_gst_base_transform_propose_allocation;
+        transform_class->filter_meta = swift_gst_base_transform_filter_meta;
+        transform_class->copy_metadata = swift_gst_base_transform_copy_metadata;
+        transform_class->transform_meta = swift_gst_base_transform_transform_meta;
+        transform_class->passthrough_on_same_caps = FALSE;
+        transform_class->transform_ip_on_passthrough = FALSE;
+    } else {
+        transform_class->transform_ip = swift_gst_base_transform_transform_ip;
+        transform_class->passthrough_on_same_caps = registration->passthrough_on_same_caps;
+        transform_class->transform_ip_on_passthrough = registration->transform_ip_on_passthrough;
+    }
 
     GstElementClass* element_class = GST_ELEMENT_CLASS(g_class);
     gst_element_class_set_static_metadata(
@@ -1331,7 +1916,9 @@ static void swift_gst_base_transform_instance_init(GTypeInstance* instance, gpoi
     SwiftGstBaseTransformRegistration* registration =
         klass != NULL ? klass->registration : NULL;
 
-    gst_base_transform_set_in_place(GST_BASE_TRANSFORM(instance), TRUE);
+    gboolean in_place = registration == NULL
+        || registration->mode == SWIFT_GST_BASE_TRANSFORM_MODE_IN_PLACE;
+    gst_base_transform_set_in_place(GST_BASE_TRANSFORM(instance), in_place);
     transform->instance_context = NULL;
     if (registration == NULL
         || registration->class_context == NULL
@@ -1437,8 +2024,39 @@ static gboolean swift_gst_base_transform_validate_info(
     if (callbacks->set_caps == NULL) {
         return swift_gst_base_transform_fail(error_message, "BaseTransform set_caps callback is NULL");
     }
-    if (callbacks->transform_ip == NULL) {
-        return swift_gst_base_transform_fail(error_message, "BaseTransform transform_ip callback is NULL");
+
+    switch (info->mode) {
+    case SWIFT_GST_BASE_TRANSFORM_MODE_IN_PLACE:
+        if (callbacks->transform_ip == NULL) {
+            return swift_gst_base_transform_fail(error_message, "BaseTransform transform_ip callback is NULL");
+        }
+        break;
+    case SWIFT_GST_BASE_TRANSFORM_MODE_OUT_OF_PLACE:
+        if (callbacks->transform == NULL) {
+            return swift_gst_base_transform_fail(error_message, "BaseTransform transform callback is NULL");
+        }
+        break;
+    case SWIFT_GST_BASE_TRANSFORM_MODE_OUT_OF_PLACE_GENERAL:
+        if (callbacks->transform == NULL) {
+            return swift_gst_base_transform_fail(error_message, "BaseTransform transform callback is NULL");
+        }
+        if (callbacks->transform_caps == NULL
+            || callbacks->fixate_caps == NULL
+            || callbacks->get_unit_size == NULL
+            || callbacks->transform_size == NULL
+            || callbacks->decide_allocation == NULL
+            || callbacks->propose_allocation == NULL
+            || callbacks->filter_meta == NULL
+            || callbacks->copy_metadata == NULL
+            || callbacks->transform_meta == NULL) {
+            return swift_gst_base_transform_fail(
+                error_message,
+                "BaseTransform general-mode callbacks are incomplete"
+            );
+        }
+        break;
+    default:
+        return swift_gst_base_transform_fail(error_message, "BaseTransform mode is invalid");
     }
     if (!swift_gst_base_transform_validate_caps(info->sink_caps, "sink", error_message)) {
         return FALSE;
@@ -1485,6 +2103,7 @@ gboolean swift_gst_register_base_transform(
     registration->sink_caps = g_strdup(info->sink_caps);
     registration->src_caps = g_strdup(info->src_caps);
     registration->rank = info->rank;
+    registration->mode = info->mode;
     registration->passthrough_on_same_caps = info->passthrough_on_same_caps;
     registration->transform_ip_on_passthrough = info->transform_ip_on_passthrough;
     registration->property_count = info->property_count;

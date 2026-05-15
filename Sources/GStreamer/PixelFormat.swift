@@ -202,9 +202,8 @@ public enum PixelFormat: Sendable, Hashable, CustomStringConvertible {
     /// ## Example
     ///
     /// ```swift
-    /// let format = PixelFormat.bgra
-    /// let bufferSize = width * height * format.bytesPerPixel
-    /// // For 1920x1080 BGRA: 1920 * 1080 * 4 = 8,294,400 bytes
+    /// let caps = try Caps("video/x-raw,format=BGRA,width=\(width),height=\(height)")
+    /// let bufferSize = try RawVideoInfo(caps: caps).byteSize
     /// ```
     public var bytesPerPixel: Int {
         switch self {

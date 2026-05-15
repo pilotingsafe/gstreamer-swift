@@ -227,6 +227,9 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
     /// ```
     case capsParseFailed(String)
 
+    /// Failed to derive structured raw-video information from caps.
+    case rawVideoInfoFailed(String)
+
     /// Failed to seek to a position.
     ///
     /// The pipeline couldn't seek to the requested position. This can occur
@@ -294,6 +297,8 @@ public enum GStreamerError: Error, Sendable, CustomStringConvertible {
             return "Failed to map buffer"
         case .capsParseFailed(let caps):
             return "Failed to parse caps: \(caps)"
+        case .rawVideoInfoFailed(let caps):
+            return "Failed to parse raw video caps: \(caps)"
         case .seekFailed(let position):
             let seconds = Double(position) / 1_000_000_000.0
             let intPart = Int(seconds)

@@ -10,7 +10,10 @@ import CGStreamerShim
 ///
 /// ```swift
 /// // Create an empty buffer
-/// var buffer = try Buffer(size: 1920 * 1080 * 4)
+/// let videoInfo = try RawVideoInfo(
+///     caps: Caps("video/x-raw,format=BGRA,width=1920,height=1080")
+/// )
+/// var buffer = try Buffer(size: videoInfo.byteSize)
 ///
 /// // Create a buffer from data
 /// let data: [UInt8] = ...
@@ -251,7 +254,10 @@ public struct Buffer: @unchecked Sendable {
     /// ## Example
     ///
     /// ```swift
-    /// var buffer = try Buffer(size: 1920 * 1080 * 4)
+    /// let videoInfo = try RawVideoInfo(
+    ///     caps: Caps("video/x-raw,format=BGRA,width=1920,height=1080")
+    /// )
+    /// var buffer = try Buffer(size: videoInfo.byteSize)
     /// // Fill with red pixels (BGRA)
     /// for i in stride(from: 0, to: buffer.mutableBytes.byteCount, by: 4) {
     ///     buffer.mutableBytes[i] = 0       // Blue

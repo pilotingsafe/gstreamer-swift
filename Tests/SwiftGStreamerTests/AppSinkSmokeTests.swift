@@ -81,7 +81,10 @@ struct AppSinkSmokeTests {
 
         let frame = try #require(firstFrame, "Expected videotestsrc to yield one BGRA frame")
         let byteCount = try frame.withUnsafeBytes { $0.count }
-        #expect(byteCount == 4 * 4 * 4) // width * height * bytesPerPixel
+        let frameSize = try RawVideoInfo(
+            caps: Caps("video/x-raw,format=BGRA,width=4,height=4")
+        ).byteSize
+        #expect(byteCount == frameSize)
     }
 
     @Test("Pipeline convenience method for AppSink")

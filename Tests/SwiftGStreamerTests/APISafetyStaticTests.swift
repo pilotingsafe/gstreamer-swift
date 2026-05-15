@@ -1210,7 +1210,8 @@ struct APISafetyStaticTests {
                 [
                     "#require(firstFrame",
                     "let byteCount = try frame.withUnsafeBytes",
-                    "#expect(byteCount == 4 * 4 * 4)",
+                    "RawVideoInfo",
+                    "#expect(byteCount == frameSize)",
                 ]
             ),
             (

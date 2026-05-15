@@ -2,6 +2,7 @@
 #define GSTREAMER_SHIM_H
 
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -126,6 +127,16 @@ gboolean swift_gst_caps_is_equal(const GstCaps* first, const GstCaps* second);
 
 /// Unref caps
 void swift_gst_caps_unref(GstCaps* caps);
+
+// MARK: - Raw Video Info
+
+GstVideoInfo* swift_gst_video_info_new_from_caps(GstCaps* caps);
+void swift_gst_video_info_free(GstVideoInfo* info);
+gint swift_gst_video_info_width(GstVideoInfo* info);
+gint swift_gst_video_info_height(GstVideoInfo* info);
+gsize swift_gst_video_info_size(GstVideoInfo* info);
+const gchar* swift_gst_video_info_format_name(GstVideoInfo* info);
+GstCaps* swift_gst_video_info_to_caps_copy(GstVideoInfo* info);
 
 /// Set element property (boolean)
 void swift_gst_element_set_bool(GstElement* element, const gchar* name, gboolean value);
