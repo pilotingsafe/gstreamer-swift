@@ -35,9 +35,9 @@ struct CGStreamerBaseIntroductionBDDTests {
         #expect(gstreamerTarget.contains(#""CGStreamerBaseShim""#))
     }
 
-    @Test("Native elements implementer gets a sink-only Base shim target")
-    func nativeElementsImplementerGetsASinkOnlyBaseShimTarget() throws {
-        // Given native element Phase 1 needs BaseSink registration without BaseTransform ABI
+    @Test("Native elements implementer gets BaseSink and BaseTransform shim ABI")
+    func nativeElementsImplementerGetsBaseSinkAndBaseTransformShimABI() throws {
+        // Given native element phases need BaseSink and in-place BaseTransform registration ABI
         let manifest = try Self.contents(of: "Package.swift")
         let shimTarget = try Self.packageTarget(named: "CGStreamerBaseShim", in: manifest)
         let gstreamerTarget = try Self.packageTarget(named: "GStreamer", in: manifest)
@@ -56,6 +56,7 @@ struct CGStreamerBaseIntroductionBDDTests {
         #expect(Self.containsIncludeGuard(named: "GSTREAMER_BASE_SHIM_H", in: shimHeader))
         #expect(shimHeader.contains("#include <gst/gst.h>"))
         #expect(shimHeader.contains("#include <gst/base/gstbasesink.h>"))
+        #expect(shimHeader.contains("#include <gst/base/gstbasetransform.h>"))
         #expect(shimSource.contains(#"#include "include/GStreamerBaseShim.h""#))
 
         // And the shim exports the Phase 1 sink ABI
@@ -69,17 +70,24 @@ struct CGStreamerBaseIntroductionBDDTests {
         #expect(shimSource.contains("gst_element_class_set_static_metadata"))
         #expect(shimSource.contains("gst_element_class_add_pad_template"))
 
-        // And the Phase 1 shim exports no BaseTransform behavior
-        for disallowed in [
+        // And the shim exports the Phase 2 in-place BaseTransform ABI
+        for required in [
             "gstbasetransform",
             "GstBaseTransform",
             "SwiftGstBaseTransform",
             "swift_gst_register_base_transform",
             "transform_ip",
         ] {
-            #expect(!shimHeader.contains(disallowed))
-            #expect(!shimSource.contains(disallowed))
+            #expect(shimHeader.contains(required) || shimSource.contains(required))
         }
+        #expect(shimHeader.contains("SwiftGstBaseTransformSetCapsFunc"))
+        #expect(shimHeader.contains("SwiftGstBaseTransformIPFunc"))
+        #expect(shimHeader.contains("SwiftGstBaseTransformInfo"))
+        #expect(shimHeader.contains("SwiftGstBaseTransformCallbacks"))
+        #expect(shimHeader.contains("passthrough_on_same_caps"))
+        #expect(shimHeader.contains("transform_ip_on_passthrough"))
+        #expect(shimSource.contains("GST_TYPE_BASE_TRANSFORM"))
+        #expect(shimSource.contains("gst_base_transform_set_in_place"))
     }
 
     @Test("CI verifies the Native Elements dependency baseline")

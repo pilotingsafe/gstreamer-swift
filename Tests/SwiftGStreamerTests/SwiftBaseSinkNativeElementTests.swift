@@ -357,12 +357,17 @@ struct SwiftBaseSinkNativeElementTests {
         #expect(result.callback_counts.destroy_count == 0)
     }
 
-    @Test("Phase 2 transform names are placeholders only")
-    func phase2TransformNamesArePlaceholdersOnly() throws {
-        // Given Phase 1 exposes native element public symbols
+    @Test("Phase 2 transform API coexists with BaseSink API")
+    func phase2TransformAPICoexistsWithBaseSinkAPI() throws {
+        // Given Phase 2 exposes native transform public symbols
+        _ = SwiftBaseTransformPassthroughOptions.self
         _ = SwiftBaseTransformElement.self
         _ = SwiftBaseTransformInstance.self
         _ = MutableBorrowedBuffer.self
+
+        let defaults = SwiftBaseTransformPassthroughOptions.default
+        #expect(defaults.passthroughOnSameCaps)
+        #expect(!defaults.transformInPlaceOnPassthrough)
 
         let root = try Self.packageRoot()
         let swiftSources = try Self.combinedSwiftSources(in: root.appendingPathComponent("Sources/GStreamer"))
@@ -370,28 +375,30 @@ struct SwiftBaseSinkNativeElementTests {
             of: root.appendingPathComponent("Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
         )
 
+        // Then the existing BaseSink API and ABI remain available
+        #expect(swiftSources.contains("public protocol SwiftBaseSinkInstance"))
+        #expect(swiftSources.contains("public struct SwiftBaseSinkElement"))
         #expect(baseShimHeader.contains("SwiftGstBaseSinkInfo"))
         #expect(baseShimHeader.contains("SwiftGstBaseSinkCallbacks"))
         #expect(baseShimHeader.contains("swift_gst_register_base_sink"))
 
-        // When a user looks for transform-related API
-        // Then BaseTransform placeholder names are visible
+        // And BaseTransform construction and registration are available
+        #expect(swiftSources.contains("public struct SwiftBaseTransformPassthroughOptions"))
         #expect(swiftSources.contains("public protocol SwiftBaseTransformInstance"))
         #expect(swiftSources.contains("public struct MutableBorrowedBuffer"))
         #expect(swiftSources.contains("public struct SwiftBaseTransformElement"))
-
-        // And transform construction and registration are unavailable with Phase 2 messages
         #expect(Self.containsRegex(
-            #"@available\s*\(\s*\*\s*,\s*unavailable\s*,\s*message:\s*"[^"]*Phase 2[^"]*"\s*\)\s*public\s+static\s+func\s+inPlace\s*\("#,
+            #"public\s+static\s+func\s+inPlace\s*\("#,
             in: swiftSources
         ))
         #expect(Self.containsRegex(
-            #"@available\s*\(\s*\*\s*,\s*unavailable\s*,\s*message:\s*"[^"]*Phase 2[^"]*"\s*\)\s*public\s+static\s+func\s+register\s*\(\s*_\s+element:\s*SwiftBaseTransformElement\s*\)\s+throws"#,
+            #"public\s+static\s+func\s+register\s*\(\s*_\s+element:\s*SwiftBaseTransformElement\s*\)\s+throws"#,
             in: swiftSources
         ))
+        #expect(!swiftSources.contains("Swift-backed BaseTransform is planned for Phase 2"))
 
-        // And the C shim exports no BaseTransform registration or callback ABI
-        let disallowedCABI = [
+        // And the C shim exports the BaseTransform registration and callback ABI
+        let requiredCABI = [
             "gstbasetransform",
             "GstBaseTransform",
             "SwiftGstBaseTransform",
@@ -400,8 +407,8 @@ struct SwiftBaseSinkNativeElementTests {
             "BaseTransformInfo",
             "transform_ip",
         ]
-        for disallowed in disallowedCABI {
-            #expect(!baseShimHeader.contains(disallowed), "Unexpected Phase 2 C ABI in Base shim: \(disallowed)")
+        for required in requiredCABI {
+            #expect(baseShimHeader.contains(required), "Missing Phase 2 C ABI in Base shim: \(required)")
         }
     }
 

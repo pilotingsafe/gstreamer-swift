@@ -50,8 +50,22 @@ typedef struct {
     guint render_count;
 } SwiftGstTestBaseSinkContext;
 
+typedef struct {
+    GMutex mutex;
+    guint retain_count;
+    guint release_count;
+    guint create_count;
+    guint destroy_count;
+    guint start_count;
+    guint stop_count;
+    guint set_caps_count;
+    guint transform_ip_count;
+} SwiftGstTestBaseTransformContext;
+
 static GMutex swift_gst_test_base_sink_missing_probe_mutex;
 static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_missing_probe_context = NULL;
+static GMutex swift_gst_test_base_transform_missing_probe_mutex;
+static SwiftGstTestBaseTransformContext* swift_gst_test_base_transform_missing_probe_context = NULL;
 
 static void swift_gst_test_base_sink_context_init(SwiftGstTestBaseSinkContext* context) {
     if (!context) {
@@ -238,6 +252,214 @@ static gboolean swift_gst_test_base_sink_register(
         context,
         swift_gst_test_base_sink_retain,
         swift_gst_test_base_sink_release,
+        &error_message
+    );
+
+    g_free(error_message);
+    return registered;
+}
+
+static void swift_gst_test_base_transform_context_init(SwiftGstTestBaseTransformContext* context) {
+    if (!context) {
+        return;
+    }
+
+    g_mutex_init(&context->mutex);
+}
+
+static void swift_gst_test_base_transform_increment(
+    SwiftGstTestBaseTransformContext* context,
+    guint* field
+) {
+    if (!context || !field) {
+        return;
+    }
+
+    g_mutex_lock(&context->mutex);
+    *field += 1;
+    g_mutex_unlock(&context->mutex);
+}
+
+static SwiftGstTestBaseTransformCallbackCounts swift_gst_test_base_transform_counts(
+    SwiftGstTestBaseTransformContext* context
+) {
+    SwiftGstTestBaseTransformCallbackCounts counts = {0};
+
+    if (!context) {
+        return counts;
+    }
+
+    g_mutex_lock(&context->mutex);
+    counts.retain_count = context->retain_count;
+    counts.release_count = context->release_count;
+    counts.create_count = context->create_count;
+    counts.destroy_count = context->destroy_count;
+    counts.start_count = context->start_count;
+    counts.stop_count = context->stop_count;
+    counts.set_caps_count = context->set_caps_count;
+    counts.transform_ip_count = context->transform_ip_count;
+    g_mutex_unlock(&context->mutex);
+
+    return counts;
+}
+
+static SwiftGstTestBaseTransformContext* swift_gst_test_base_transform_current_missing_probe_context(void) {
+    g_mutex_lock(&swift_gst_test_base_transform_missing_probe_mutex);
+    SwiftGstTestBaseTransformContext* context = swift_gst_test_base_transform_missing_probe_context;
+    g_mutex_unlock(&swift_gst_test_base_transform_missing_probe_mutex);
+    return context;
+}
+
+static void swift_gst_test_base_transform_set_missing_probe_context(
+    SwiftGstTestBaseTransformContext* context
+) {
+    g_mutex_lock(&swift_gst_test_base_transform_missing_probe_mutex);
+    swift_gst_test_base_transform_missing_probe_context = context;
+    g_mutex_unlock(&swift_gst_test_base_transform_missing_probe_mutex);
+}
+
+static SwiftGstTestBaseTransformContext* swift_gst_test_base_transform_callback_context(
+    void* instance_context
+) {
+    if (instance_context) {
+        return (SwiftGstTestBaseTransformContext*)instance_context;
+    }
+
+    return swift_gst_test_base_transform_current_missing_probe_context();
+}
+
+static void swift_gst_test_base_transform_retain(void* data) {
+    SwiftGstTestBaseTransformContext* context = (SwiftGstTestBaseTransformContext*)data;
+    if (!context) {
+        return;
+    }
+    swift_gst_test_base_transform_increment(context, &context->retain_count);
+}
+
+static void swift_gst_test_base_transform_release(void* data) {
+    SwiftGstTestBaseTransformContext* context = (SwiftGstTestBaseTransformContext*)data;
+    if (!context) {
+        return;
+    }
+    swift_gst_test_base_transform_increment(context, &context->release_count);
+}
+
+static void* swift_gst_test_base_transform_create_instance(void* class_context) {
+    SwiftGstTestBaseTransformContext* context = (SwiftGstTestBaseTransformContext*)class_context;
+    if (!context) {
+        return NULL;
+    }
+    swift_gst_test_base_transform_increment(context, &context->create_count);
+    return context;
+}
+
+static void swift_gst_test_base_transform_destroy_instance(void* instance_context) {
+    SwiftGstTestBaseTransformContext* context =
+        swift_gst_test_base_transform_callback_context(instance_context);
+    if (!context) {
+        return;
+    }
+    swift_gst_test_base_transform_increment(context, &context->destroy_count);
+}
+
+static gboolean swift_gst_test_base_transform_start(void* instance_context) {
+    SwiftGstTestBaseTransformContext* context =
+        swift_gst_test_base_transform_callback_context(instance_context);
+    if (!context) {
+        return FALSE;
+    }
+    swift_gst_test_base_transform_increment(context, &context->start_count);
+    return TRUE;
+}
+
+static gboolean swift_gst_test_base_transform_stop(void* instance_context) {
+    SwiftGstTestBaseTransformContext* context =
+        swift_gst_test_base_transform_callback_context(instance_context);
+    if (!context) {
+        return TRUE;
+    }
+    swift_gst_test_base_transform_increment(context, &context->stop_count);
+    return TRUE;
+}
+
+static gboolean swift_gst_test_base_transform_set_caps(
+    void* instance_context,
+    GstCaps* input_caps,
+    GstCaps* output_caps
+) {
+    (void)input_caps;
+    (void)output_caps;
+
+    SwiftGstTestBaseTransformContext* context =
+        swift_gst_test_base_transform_callback_context(instance_context);
+    if (!context) {
+        return FALSE;
+    }
+    swift_gst_test_base_transform_increment(context, &context->set_caps_count);
+    return TRUE;
+}
+
+static GstFlowReturn swift_gst_test_base_transform_ip(
+    void* instance_context,
+    GstBuffer* buffer
+) {
+    (void)buffer;
+
+    SwiftGstTestBaseTransformContext* context =
+        swift_gst_test_base_transform_callback_context(instance_context);
+    if (!context) {
+        return GST_FLOW_ERROR;
+    }
+    swift_gst_test_base_transform_increment(context, &context->transform_ip_count);
+    return GST_FLOW_OK;
+}
+
+static SwiftGstBaseTransformInfo swift_gst_test_base_transform_info(
+    const gchar* factory_name,
+    const gchar* type_name
+) {
+    SwiftGstBaseTransformInfo info = {
+        .factory_name = factory_name,
+        .type_name = type_name,
+        .klass = "Filter/Effect/Video",
+        .long_name = "Swift test BaseTransform",
+        .description = "Swift test BaseTransform registered through the C ABI",
+        .author = "gstreamer-swift-tests",
+        .rank = 0,
+        .sink_caps = "video/x-raw",
+        .src_caps = "video/x-raw",
+        .passthrough_on_same_caps = TRUE,
+        .transform_ip_on_passthrough = FALSE,
+    };
+    return info;
+}
+
+static SwiftGstBaseTransformCallbacks swift_gst_test_base_transform_callbacks(void) {
+    SwiftGstBaseTransformCallbacks callbacks = {
+        .create_instance = swift_gst_test_base_transform_create_instance,
+        .destroy_instance = swift_gst_test_base_transform_destroy_instance,
+        .start = swift_gst_test_base_transform_start,
+        .stop = swift_gst_test_base_transform_stop,
+        .set_caps = swift_gst_test_base_transform_set_caps,
+        .transform_ip = swift_gst_test_base_transform_ip,
+    };
+    return callbacks;
+}
+
+static gboolean swift_gst_test_base_transform_register(
+    const gchar* factory_name,
+    const gchar* type_name,
+    SwiftGstTestBaseTransformContext* context,
+    const SwiftGstBaseTransformCallbacks* callbacks
+) {
+    SwiftGstBaseTransformInfo info = swift_gst_test_base_transform_info(factory_name, type_name);
+    gchar* error_message = NULL;
+    gboolean registered = swift_gst_register_base_transform(
+        &info,
+        callbacks,
+        context,
+        swift_gst_test_base_transform_retain,
+        swift_gst_test_base_transform_release,
         &error_message
     );
 
@@ -448,6 +670,21 @@ gboolean swift_gst_test_element_factory_exists(const gchar* factory_name) {
     return TRUE;
 }
 
+guint swift_gst_test_element_factory_rank(const gchar* factory_name) {
+    if (!factory_name) {
+        return G_MAXUINT;
+    }
+
+    GstElementFactory* factory = gst_element_factory_find(factory_name);
+    if (!factory) {
+        return G_MAXUINT;
+    }
+
+    guint rank = gst_plugin_feature_get_rank(GST_PLUGIN_FEATURE(factory));
+    gst_object_unref(factory);
+    return rank;
+}
+
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void) {
     GLogLevelFlags previous = g_log_set_always_fatal(G_LOG_FATAL_MASK);
     g_log_set_always_fatal(previous | G_LOG_LEVEL_CRITICAL);
@@ -655,6 +892,175 @@ SwiftGstTestBaseSinkMissingInstanceProbeResult swift_gst_test_base_sink_missing_
     result.render_returned_flow_error = render_result == GST_FLOW_ERROR;
     result.stop_returned_true = stop_result;
     result.callback_counts = swift_gst_test_base_sink_counts(context);
+    return result;
+}
+
+SwiftGstTestBaseTransformOwnershipProbeResult swift_gst_test_base_transform_class_context_ownership_probe(
+    const gchar* success_factory_name,
+    const gchar* success_type_name,
+    const gchar* duplicate_factory_type_name,
+    const gchar* duplicate_type_factory_name
+) {
+    SwiftGstTestBaseTransformOwnershipProbeResult result = {0};
+
+    SwiftGstBaseTransformCallbacks callbacks = swift_gst_test_base_transform_callbacks();
+
+    SwiftGstTestBaseTransformContext* success_context = g_new0(SwiftGstTestBaseTransformContext, 1);
+    swift_gst_test_base_transform_context_init(success_context);
+    result.success_registration_succeeded = swift_gst_test_base_transform_register(
+        success_factory_name,
+        success_type_name,
+        success_context,
+        &callbacks
+    );
+    result.success_context = swift_gst_test_base_transform_counts(success_context);
+
+    SwiftGstTestBaseTransformContext* duplicate_factory_context = g_new0(SwiftGstTestBaseTransformContext, 1);
+    swift_gst_test_base_transform_context_init(duplicate_factory_context);
+    result.duplicate_factory_registration_failed = !swift_gst_test_base_transform_register(
+        success_factory_name,
+        duplicate_factory_type_name,
+        duplicate_factory_context,
+        &callbacks
+    );
+    result.duplicate_factory_context = swift_gst_test_base_transform_counts(duplicate_factory_context);
+
+    SwiftGstTestBaseTransformContext* duplicate_type_context = g_new0(SwiftGstTestBaseTransformContext, 1);
+    swift_gst_test_base_transform_context_init(duplicate_type_context);
+    result.duplicate_type_registration_failed = !swift_gst_test_base_transform_register(
+        duplicate_type_factory_name,
+        success_type_name,
+        duplicate_type_context,
+        &callbacks
+    );
+    result.duplicate_type_context = swift_gst_test_base_transform_counts(duplicate_type_context);
+
+    return result;
+}
+
+SwiftGstTestBaseTransformBufferRejectionProbeResult swift_gst_test_base_transform_buffer_rejection_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+) {
+    SwiftGstTestBaseTransformBufferRejectionProbeResult result = {0};
+
+    SwiftGstBaseTransformCallbacks callbacks = swift_gst_test_base_transform_callbacks();
+
+    SwiftGstTestBaseTransformContext* context = g_new0(SwiftGstTestBaseTransformContext, 1);
+    swift_gst_test_base_transform_context_init(context);
+    result.registration_succeeded = swift_gst_test_base_transform_register(
+        factory_name,
+        type_name,
+        context,
+        &callbacks
+    );
+
+    if (!result.registration_succeeded) {
+        result.callback_counts = swift_gst_test_base_transform_counts(context);
+        return result;
+    }
+
+    GstElement* element = gst_element_factory_make(factory_name, NULL);
+    if (!element) {
+        result.callback_counts = swift_gst_test_base_transform_counts(context);
+        return result;
+    }
+
+    result.element_created = TRUE;
+
+    GstBaseTransform* transform = GST_BASE_TRANSFORM(element);
+    GstBaseTransformClass* transform_class = GST_BASE_TRANSFORM_GET_CLASS(transform);
+
+    GstFlowReturn nil_buffer_result = transform_class && transform_class->transform_ip
+        ? transform_class->transform_ip(transform, NULL)
+        : GST_FLOW_ERROR;
+
+    GstBuffer* buffer = gst_buffer_new_allocate(NULL, 1, NULL);
+    GstBuffer* extra_ref = buffer ? gst_buffer_ref(buffer) : NULL;
+    GstFlowReturn non_writable_result = transform_class && transform_class->transform_ip && buffer
+        ? transform_class->transform_ip(transform, buffer)
+        : GST_FLOW_ERROR;
+
+    if (extra_ref) {
+        gst_buffer_unref(extra_ref);
+    }
+    if (buffer) {
+        gst_buffer_unref(buffer);
+    }
+    gst_object_unref(element);
+
+    result.nil_buffer_returned_flow_error = nil_buffer_result == GST_FLOW_ERROR;
+    result.non_writable_buffer_returned_flow_error = non_writable_result == GST_FLOW_ERROR;
+    result.callback_counts = swift_gst_test_base_transform_counts(context);
+    return result;
+}
+
+SwiftGstTestBaseTransformMissingInstanceProbeResult swift_gst_test_base_transform_missing_instance_probe(
+    const gchar* factory_name,
+    const gchar* type_name
+) {
+    SwiftGstTestBaseTransformMissingInstanceProbeResult result = {0};
+
+    SwiftGstBaseTransformCallbacks callbacks = swift_gst_test_base_transform_callbacks();
+    callbacks.create_instance = NULL;
+
+    SwiftGstTestBaseTransformContext* context = g_new0(SwiftGstTestBaseTransformContext, 1);
+    swift_gst_test_base_transform_context_init(context);
+    result.registration_succeeded = swift_gst_test_base_transform_register(
+        factory_name,
+        type_name,
+        context,
+        &callbacks
+    );
+
+    if (!result.registration_succeeded) {
+        result.callback_counts = swift_gst_test_base_transform_counts(context);
+        return result;
+    }
+
+    GstElement* element = gst_element_factory_make(factory_name, NULL);
+    if (!element) {
+        result.callback_counts = swift_gst_test_base_transform_counts(context);
+        return result;
+    }
+
+    result.element_created = TRUE;
+
+    GstBaseTransform* transform = GST_BASE_TRANSFORM(element);
+    GstBaseTransformClass* transform_class = GST_BASE_TRANSFORM_GET_CLASS(transform);
+    GstCaps* caps = gst_caps_from_string("video/x-raw");
+    GstBuffer* buffer = gst_buffer_new_allocate(NULL, 1, NULL);
+
+    swift_gst_test_base_transform_set_missing_probe_context(context);
+
+    gboolean start_result = transform_class && transform_class->start
+        ? transform_class->start(transform)
+        : FALSE;
+    gboolean set_caps_result = transform_class && transform_class->set_caps && caps
+        ? transform_class->set_caps(transform, caps, caps)
+        : FALSE;
+    GstFlowReturn transform_ip_result = transform_class && transform_class->transform_ip && buffer
+        ? transform_class->transform_ip(transform, buffer)
+        : GST_FLOW_ERROR;
+    gboolean stop_result = transform_class && transform_class->stop
+        ? transform_class->stop(transform)
+        : FALSE;
+
+    swift_gst_test_base_transform_set_missing_probe_context(NULL);
+
+    if (buffer) {
+        gst_buffer_unref(buffer);
+    }
+    if (caps) {
+        gst_caps_unref(caps);
+    }
+    gst_object_unref(element);
+
+    result.start_returned_false = !start_result;
+    result.set_caps_returned_false = !set_caps_result;
+    result.transform_ip_returned_flow_error = transform_ip_result == GST_FLOW_ERROR;
+    result.stop_returned_true = stop_result;
+    result.callback_counts = swift_gst_test_base_transform_counts(context);
     return result;
 }
 
