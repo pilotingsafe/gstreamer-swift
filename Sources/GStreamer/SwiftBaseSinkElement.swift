@@ -33,6 +33,24 @@ extension FlowReturn {
             return GstFlowReturn(rawValue: value)
         }
     }
+
+    internal var baseSinkRenderGstFlowReturn: GstFlowReturn {
+        switch self {
+        case .dropped:
+            return swift_gst_base_sink_flow_dropped()
+        default:
+            return gstFlowReturn
+        }
+    }
+
+    internal var baseTransformGstFlowReturn: GstFlowReturn {
+        switch self {
+        case .dropped:
+            return swift_gst_base_transform_flow_dropped()
+        default:
+            return gstFlowReturn
+        }
+    }
 }
 
 /// GStreamer element factory rank.
@@ -3178,7 +3196,7 @@ private func swiftGstBaseSinkRender(
     let borrowedBuffer = BorrowedBuffer(buffer: buffer)
 
     do {
-        return try context.instance.render(borrowedBuffer).gstFlowReturn
+        return try context.instance.render(borrowedBuffer).baseSinkRenderGstFlowReturn
     } catch {
         return GST_FLOW_ERROR
     }
@@ -3338,7 +3356,7 @@ private func swiftGstBaseTransformIP(
     let borrowedBuffer = MutableBorrowedBuffer(buffer: buffer)
 
     do {
-        return try context.instance.transformInPlace(borrowedBuffer).gstFlowReturn
+        return try context.instance.transformInPlace(borrowedBuffer).baseTransformGstFlowReturn
     } catch {
         return GST_FLOW_ERROR
     }
@@ -3512,7 +3530,7 @@ private func swiftGstBaseTransformOutOfPlaceTransform(
     let output = MutableBorrowedBuffer(buffer: outputBuffer)
 
     do {
-        return try context.instance.transform(input, into: output).gstFlowReturn
+        return try context.instance.transform(input, into: output).baseTransformGstFlowReturn
     } catch {
         return GST_FLOW_ERROR
     }

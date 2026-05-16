@@ -91,6 +91,18 @@ void swift_gst_base_transform_test_set_output_allocator(
     g_mutex_unlock(&swift_gst_base_transform_allocator_mutex);
 }
 
+GstFlowReturn swift_gst_base_sink_flow_dropped(void) {
+#ifdef GST_BASE_SINK_FLOW_DROPPED
+    return GST_BASE_SINK_FLOW_DROPPED;
+#else
+    return GST_FLOW_CUSTOM_SUCCESS;
+#endif
+}
+
+GstFlowReturn swift_gst_base_transform_flow_dropped(void) {
+    return GST_BASE_TRANSFORM_FLOW_DROPPED;
+}
+
 GstCaps* swift_gst_allocation_query_get_caps(GstQuery* query) {
     if (query == NULL) {
         return NULL;
@@ -534,8 +546,8 @@ static GParamSpec* swift_gst_native_property_param_spec(
             descriptor->name,
             descriptor->name,
             blurb,
-            G_MININT,
-            G_MAXINT,
+            descriptor->int_min,
+            descriptor->int_max,
             descriptor->int_default,
             flags
         );
@@ -544,8 +556,8 @@ static GParamSpec* swift_gst_native_property_param_spec(
             descriptor->name,
             descriptor->name,
             blurb,
-            -G_MAXDOUBLE,
-            G_MAXDOUBLE,
+            descriptor->double_min,
+            descriptor->double_max,
             descriptor->double_default,
             flags
         );

@@ -8,6 +8,7 @@
 extern "C" {
 #endif
 
+typedef struct SwiftGstTestExpectedCriticals SwiftGstTestExpectedCriticals;
 typedef struct SwiftGstTestProbe SwiftGstTestProbe;
 
 typedef gboolean (*SwiftGstTestDynamicPluginInitCallback)(GstPlugin* plugin, gpointer user_data);
@@ -232,8 +233,24 @@ gboolean swift_gst_test_element_factory_plugin_name_matches(
 );
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
+void swift_gst_test_lock_glib_log_state(void);
+void swift_gst_test_unlock_glib_log_state(void);
+SwiftGstTestExpectedCriticals* swift_gst_test_expect_gobject_criticals_begin(
+    const gchar* first_fragment,
+    const gchar* second_fragment
+);
+gboolean swift_gst_test_expect_gobject_criticals_end(SwiftGstTestExpectedCriticals* expectation);
+void swift_gst_test_emit_gobject_critical(const gchar* message);
 GParamFlags swift_gst_test_param_mutable_playing(void);
 guint swift_gst_test_element_property_id(GstElement* element, const gchar* property_name);
+
+gboolean swift_gst_test_native_property_invoke_numeric_set_property_callbacks(
+    GstElement* element,
+    const gchar* int_name,
+    gint int_value,
+    const gchar* double_name,
+    gdouble double_value
+);
 
 gboolean swift_gst_test_register_static_plugin_with_init_callback(
     const gchar* name,

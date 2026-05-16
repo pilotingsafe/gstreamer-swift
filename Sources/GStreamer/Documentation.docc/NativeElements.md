@@ -99,9 +99,8 @@ try GStreamer.registerStaticPlugin(
 ## Phase 6: Dynamic Plugins
 
 Phase 6 adds a dynamic plugin workflow for Swift-backed native elements that
-must be discovered by external GStreamer tools. Dynamic plugin support requires
-GStreamer 1.28.2 or newer for native elements. The core package minimum for
-non-native-element APIs is unchanged.
+must be discovered by external GStreamer tools. The package-wide tested and
+supported GStreamer baseline is 1.28.2 or newer.
 
 Use `Examples/DynamicPluginTemplate` as the starting point. The template builds
 a SwiftPM dynamic library named for the plugin ID, with the default artifact

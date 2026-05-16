@@ -36,12 +36,12 @@ For the exact v0.1 release scope and known limitations, see
   watchOS, and visionOS 26.0; those declarations are not the same as CI-tested
   v0.1 support
 - `pkgconf`/`pkg-config` available on PATH
-- GStreamer 1.20+ development headers and libraries installed on your system
+- GStreamer 1.28.2+ development headers and libraries installed on your system
 - `pkg-config` metadata for the SwiftPM system-library targets:
   `gstreamer-1.0`, `gstreamer-app-1.0`, `gstreamer-video-1.0`, and
   `gstreamer-base-1.0`
-- CI enforces GStreamer 1.28.2+ for those four modules as the Native Elements
-  readiness baseline
+- Native Elements are part of the main GStreamer target in this branch. The
+  tested and supported baseline is GStreamer 1.28.2+.
 
 ### Installing GStreamer
 
@@ -80,7 +80,7 @@ sudo apt install gstreamer1.0-vaapi
 **Verifying Installation:**
 ```bash
 gst-inspect-1.0 --version
-# Should output: gst-inspect-1.0 version 1.x.x
+# Should output: gst-inspect-1.0 version 1.28.2 or newer
 ```
 
 **SwiftPM Preflight:**
@@ -93,6 +93,14 @@ pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreame
 Print the resolved versions with:
 ```bash
 pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0
+```
+
+Confirm the supported package baseline with:
+```bash
+pkg-config --atleast-version=1.28.2 gstreamer-1.0
+pkg-config --atleast-version=1.28.2 gstreamer-app-1.0
+pkg-config --atleast-version=1.28.2 gstreamer-video-1.0
+pkg-config --atleast-version=1.28.2 gstreamer-base-1.0
 ```
 
 ## Installation

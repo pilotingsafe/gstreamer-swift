@@ -5,6 +5,7 @@
 #define SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_TIMEOUT_US (5 * G_TIME_SPAN_SECOND)
 #define SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_EXPECTED_RETAIN_COUNT 2
 #define SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_EXPECTED_RELEASE_COUNT 2
+#define SWIFT_GST_TEST_GOBJECT_LOG_DOMAIN "GLib-GObject"
 
 typedef enum {
     SWIFT_GST_TEST_PROBE_ERROR,
@@ -23,6 +24,14 @@ struct SwiftGstTestProbe {
     gchar* message;
     gchar* debug;
     gchar* marker;
+};
+
+struct SwiftGstTestExpectedCriticals {
+    guint handler_id;
+    guint expected_count;
+    gchar* fragments[2];
+    gboolean observed[2];
+    gboolean saw_unexpected;
 };
 
 typedef struct {
@@ -101,6 +110,7 @@ static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_missing_probe_conte
 static GMutex swift_gst_test_base_transform_missing_probe_mutex;
 static GMutex swift_gst_test_base_transform_missing_probe_call_mutex;
 static SwiftGstTestBaseTransformContext* swift_gst_test_base_transform_missing_probe_context = NULL;
+static GMutex swift_gst_test_glib_log_state_mutex;
 
 typedef GstBuffer* (*SwiftGstBaseTransformTestOutputAllocatorFunc)(GstBuffer* input, gsize size);
 extern void swift_gst_base_transform_test_set_output_allocator(
@@ -1280,6 +1290,107 @@ void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous) {
     g_log_set_always_fatal(previous);
 }
 
+void swift_gst_test_lock_glib_log_state(void) {
+    g_mutex_lock(&swift_gst_test_glib_log_state_mutex);
+}
+
+void swift_gst_test_unlock_glib_log_state(void) {
+    g_mutex_unlock(&swift_gst_test_glib_log_state_mutex);
+}
+
+static gboolean swift_gst_test_message_contains_fragment(
+    const gchar* message,
+    const gchar* fragment
+) {
+    return message && fragment && g_strstr_len(message, -1, fragment) != NULL;
+}
+
+static void swift_gst_test_expected_gobject_critical_handler(
+    const gchar* log_domain,
+    GLogLevelFlags log_level,
+    const gchar* message,
+    gpointer user_data
+) {
+    SwiftGstTestExpectedCriticals* expectation = (SwiftGstTestExpectedCriticals*)user_data;
+    if (!expectation) {
+        g_log_default_handler(log_domain, log_level, message, NULL);
+        return;
+    }
+
+    for (guint index = 0; index < expectation->expected_count; index += 1) {
+        if (!expectation->observed[index]
+            && swift_gst_test_message_contains_fragment(message, expectation->fragments[index])) {
+            expectation->observed[index] = TRUE;
+            return;
+        }
+    }
+
+    expectation->saw_unexpected = TRUE;
+    g_log_default_handler(log_domain, log_level, message, NULL);
+}
+
+static void swift_gst_test_expected_criticals_add_fragment(
+    SwiftGstTestExpectedCriticals* expectation,
+    const gchar* fragment
+) {
+    if (!expectation || !fragment || fragment[0] == '\0' || expectation->expected_count >= 2) {
+        return;
+    }
+
+    expectation->fragments[expectation->expected_count] = g_strdup(fragment);
+    expectation->expected_count += 1;
+}
+
+SwiftGstTestExpectedCriticals* swift_gst_test_expect_gobject_criticals_begin(
+    const gchar* first_fragment,
+    const gchar* second_fragment
+) {
+    SwiftGstTestExpectedCriticals* expectation = g_new0(SwiftGstTestExpectedCriticals, 1);
+    swift_gst_test_expected_criticals_add_fragment(expectation, first_fragment);
+    swift_gst_test_expected_criticals_add_fragment(expectation, second_fragment);
+
+    if (expectation->expected_count == 0) {
+        g_free(expectation);
+        return NULL;
+    }
+
+    expectation->handler_id = g_log_set_handler(
+        SWIFT_GST_TEST_GOBJECT_LOG_DOMAIN,
+        G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION,
+        swift_gst_test_expected_gobject_critical_handler,
+        expectation
+    );
+    return expectation;
+}
+
+gboolean swift_gst_test_expect_gobject_criticals_end(SwiftGstTestExpectedCriticals* expectation) {
+    if (!expectation) {
+        return FALSE;
+    }
+
+    if (expectation->handler_id != 0) {
+        g_log_remove_handler(SWIFT_GST_TEST_GOBJECT_LOG_DOMAIN, expectation->handler_id);
+    }
+
+    gboolean success = !expectation->saw_unexpected;
+    for (guint index = 0; index < expectation->expected_count; index += 1) {
+        success = success && expectation->observed[index];
+        g_free(expectation->fragments[index]);
+    }
+    g_free(expectation);
+
+    return success;
+}
+
+void swift_gst_test_emit_gobject_critical(const gchar* message) {
+    g_log(
+        SWIFT_GST_TEST_GOBJECT_LOG_DOMAIN,
+        G_LOG_LEVEL_CRITICAL,
+        "%s",
+        message ? message : ""
+    );
+}
+
 GParamFlags swift_gst_test_param_mutable_playing(void) {
     return GST_PARAM_MUTABLE_PLAYING;
 }
@@ -1296,6 +1407,76 @@ guint swift_gst_test_element_property_id(GstElement* element, const gchar* prope
 
     GParamSpec* spec = g_object_class_find_property(object_class, property_name);
     return spec ? spec->param_id : 0;
+}
+
+static gboolean swift_gst_test_native_property_invoke_int_set_property_callback(
+    GObject* object,
+    GObjectClass* object_class,
+    const gchar* property_name,
+    gint value
+) {
+    GParamSpec* spec = g_object_class_find_property(object_class, property_name);
+    if (!spec || spec->param_id == 0 || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_INT) {
+        return FALSE;
+    }
+
+    GValue gvalue = G_VALUE_INIT;
+    g_value_init(&gvalue, G_TYPE_INT);
+    g_value_set_int(&gvalue, value);
+    object_class->set_property(object, spec->param_id, &gvalue, spec);
+    g_value_unset(&gvalue);
+    return TRUE;
+}
+
+static gboolean swift_gst_test_native_property_invoke_double_set_property_callback(
+    GObject* object,
+    GObjectClass* object_class,
+    const gchar* property_name,
+    gdouble value
+) {
+    GParamSpec* spec = g_object_class_find_property(object_class, property_name);
+    if (!spec || spec->param_id == 0 || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_DOUBLE) {
+        return FALSE;
+    }
+
+    GValue gvalue = G_VALUE_INIT;
+    g_value_init(&gvalue, G_TYPE_DOUBLE);
+    g_value_set_double(&gvalue, value);
+    object_class->set_property(object, spec->param_id, &gvalue, spec);
+    g_value_unset(&gvalue);
+    return TRUE;
+}
+
+gboolean swift_gst_test_native_property_invoke_numeric_set_property_callbacks(
+    GstElement* element,
+    const gchar* int_name,
+    gint int_value,
+    const gchar* double_name,
+    gdouble double_value
+) {
+    if (!element || !int_name || !double_name) {
+        return FALSE;
+    }
+
+    GObject* object = G_OBJECT(element);
+    GObjectClass* object_class = G_OBJECT_GET_CLASS(object);
+    if (!object_class || !object_class->set_property) {
+        return FALSE;
+    }
+
+    gboolean invoked_int = swift_gst_test_native_property_invoke_int_set_property_callback(
+        object,
+        object_class,
+        int_name,
+        int_value
+    );
+    gboolean invoked_double = swift_gst_test_native_property_invoke_double_set_property_callback(
+        object,
+        object_class,
+        double_name,
+        double_value
+    );
+    return invoked_int && invoked_double;
 }
 
 static void** swift_gst_test_native_instance_context_slot(

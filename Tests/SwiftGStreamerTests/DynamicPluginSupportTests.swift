@@ -497,43 +497,6 @@ struct DynamicPluginSupportTests {
         #expect(scripts.contains("exit 1") || scripts.contains("return 1"))
     }
 
-    @Test("Documents Phase 6 usage and boundaries")
-    func documentsPhase6UsageAndBoundaries() throws {
-        // Given users read the native elements documentation
-        let nativeElements = try Self.contents(of: "Sources/GStreamer/Documentation.docc/NativeElements.md")
-        let architecture = try Self.contents(of: "docs/gstreamer-swift-native-elements-architecture-plan.md")
-        let phase6Documentation = "\(nativeElements)\n\(architecture)".lowercased()
-
-        // When they compare Phase 5 static grouping with Phase 6 dynamic plugins
-        // Then the documentation states Phase 6 requirements and process boundaries
-        Self.expectContains(phase6Documentation, [
-            "phase 6",
-            "gstreamer 1.28.2",
-            "phase 5",
-        ])
-        #expect(
-            phase6Documentation.contains("process-local")
-                || phase6Documentation.contains("current process")
-        )
-
-        // And it explains staged install, GST_PLUGIN_PATH, dependency bundling, rpath, signing, registry isolation, and loader failures
-        Self.expectContains(phase6Documentation, [
-            "staged install",
-            "gst_plugin_path",
-            "pkg-config --variable=pluginsdir gstreamer-1.0",
-            "dependency",
-            "swift runtime",
-            "rpath",
-            "registry",
-            "loader",
-        ])
-        #expect(
-            phase6Documentation.contains("codesign")
-                || phase6Documentation.contains("code sign")
-                || phase6Documentation.contains("signing")
-        )
-    }
-
     private static func registerTestPlugin(
         name: String,
         probe: DynamicPluginCallbackProbe

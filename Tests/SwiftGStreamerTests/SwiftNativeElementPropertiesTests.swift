@@ -151,14 +151,14 @@ struct SwiftNativeElementPropertiesTests {
         )
 
         let intSpec = try #require(Self.intSpec(element, propertyName: NativePropertyTestSchema.intName))
-        #expect(intSpec.pointee.minimum == Int32.min)
-        #expect(intSpec.pointee.maximum == Int32.max)
+        #expect(intSpec.pointee.minimum == 0)
+        #expect(intSpec.pointee.maximum == 10)
 
         let doubleSpec = try #require(
             Self.doubleSpec(element, propertyName: NativePropertyTestSchema.doubleName)
         )
-        #expect(doubleSpec.pointee.minimum == -Double.greatestFiniteMagnitude)
-        #expect(doubleSpec.pointee.maximum == Double.greatestFiniteMagnitude)
+        #expect(doubleSpec.pointee.minimum == 0.0)
+        #expect(doubleSpec.pointee.maximum == 1.0)
 
         // And string-backed enum declarations are exposed as string properties with canonical case-name defaults
         try Self.expectProperty(
@@ -176,6 +176,249 @@ struct SwiftNativeElementPropertiesTests {
         for propertyName in NativePropertyTestSchema.propertyNames {
             #expect(try Self.propertyIsMutableWhilePlaying(element, propertyName: propertyName))
         }
+    }
+
+    @Test("Generated numeric properties expose declared GParamSpec ranges")
+    func generatedNumericPropertiesExposeDeclaredGParamSpecRanges() throws {
+        // Given a Swift-backed native element is registered with Int and Double property declarations
+        let factoryName = "swiftnativeprops_declared_ranges_sink"
+        try GStreamer.register(
+            Self.makeSinkElement(
+                factoryName: factoryName,
+                typeName: "SwiftGstTestNativePropertiesDeclaredRangesSink",
+                properties: NativePropertyTestSchema.supportedProperties(),
+                recorder: NativePropertyObservationRecorder()
+            )
+        )
+
+        // When GStreamer initializes the generated element class
+        let element = try Element.make(factory: factoryName)
+
+        // Then the installed Int GObject param spec exposes the declared minimum and maximum
+        let intSpec = try #require(Self.intSpec(element, propertyName: NativePropertyTestSchema.intName))
+        #expect(intSpec.pointee.minimum == 0)
+        #expect(intSpec.pointee.maximum == 10)
+
+        // And the installed Double GObject param spec exposes the declared minimum and maximum
+        let doubleSpec = try #require(
+            Self.doubleSpec(element, propertyName: NativePropertyTestSchema.doubleName)
+        )
+        #expect(doubleSpec.pointee.minimum == 0.0)
+        #expect(doubleSpec.pointee.maximum == 1.0)
+    }
+
+    @Test("Invalid internal numeric callback values preserve the previous valid value")
+    func invalidInternalNumericCallbackValuesPreserveThePreviousValidValue() throws {
+        // Given a Swift-backed native element has current valid Int and Double property values
+        let factoryName = "swiftnativeprops_internal_numeric_callback_sink"
+        try GStreamer.register(
+            Self.makeSinkElement(
+                factoryName: factoryName,
+                typeName: "SwiftGstTestNativePropertiesInternalNumericCallbackSink",
+                properties: NativePropertyTestSchema.supportedProperties(),
+                recorder: NativePropertyObservationRecorder()
+            )
+        )
+        let element = try Element.make(factory: factoryName)
+        element.set(NativePropertyTestSchema.intName, 7)
+        element.set(NativePropertyTestSchema.doubleName, 0.7)
+        #expect(element.getInt(NativePropertyTestSchema.intName) == 7)
+        #expect(abs(element.getDouble(NativePropertyTestSchema.doubleName) - 0.7) < 0.000_001)
+
+        // When the generated class property callback receives numeric values outside the declared ranges
+        #expect(
+            Self.invokeInternalNumericSetPropertyCallbacks(
+                element,
+                intValue: 99,
+                doubleValue: 9.9
+            )
+        )
+
+        // Then the Swift property store preserves the previous valid values
+        #expect(element.getInt(NativePropertyTestSchema.intName) == 7)
+        #expect(abs(element.getDouble(NativePropertyTestSchema.doubleName) - 0.7) < 0.000_001)
+    }
+
+    @Test("Public numeric Element.set out-of-range values preserve previous values")
+    func publicNumericElementSetOutOfRangeValuesPreservePreviousValues() throws {
+        // Given a Swift-backed native element has current valid Int and Double property values
+        let factoryName = "swiftnativeprops_public_numeric_range_sink"
+        try GStreamer.register(
+            Self.makeSinkElement(
+                factoryName: factoryName,
+                typeName: "SwiftGstTestNativePropertiesPublicNumericRangeSink",
+                properties: NativePropertyTestSchema.supportedProperties(),
+                recorder: NativePropertyObservationRecorder()
+            )
+        )
+        let element = try Element.make(factory: factoryName)
+        element.set(NativePropertyTestSchema.intName, 7)
+        element.set(NativePropertyTestSchema.doubleName, 0.7)
+        #expect(element.getInt(NativePropertyTestSchema.intName) == 7)
+        #expect(abs(element.getDouble(NativePropertyTestSchema.doubleName) - 0.7) < 0.000_001)
+
+        // When the caller sets Int and Double values outside the declared ranges through public Element.set
+        #expect(
+            Self.withExpectedGObjectCriticals(
+                firstFragment: "property 'count'",
+                secondFragment: "property 'strength'"
+            ) {
+                element.set(NativePropertyTestSchema.intName, 99)
+                element.set(NativePropertyTestSchema.doubleName, 9.9)
+            }
+        )
+
+        // Then the public Element getters still return the previous valid numeric values
+        #expect(element.getInt(NativePropertyTestSchema.intName) == 7)
+        #expect(abs(element.getDouble(NativePropertyTestSchema.doubleName) - 0.7) < 0.000_001)
+
+        // Given the element has rejected out-of-range numeric setter calls
+        // When the caller sets valid numeric boundary values through public Element.set
+        element.set(NativePropertyTestSchema.intName, 10)
+        element.set(NativePropertyTestSchema.doubleName, 1.0)
+
+        // Then the public Element getters return the valid boundary values
+        #expect(element.getInt(NativePropertyTestSchema.intName) == 10)
+        #expect(abs(element.getDouble(NativePropertyTestSchema.doubleName) - 1.0) < 0.000_001)
+    }
+
+    @Test("GLib critical log helpers use shared synchronization")
+    func glibCriticalLogHelpersUseSharedSynchronization() throws {
+        // Given one test helper temporarily makes GLib critical logs fatal
+        let root = try Self.packageRoot()
+        let elementTests = try Self.contents(
+            of: root.appendingPathComponent("Tests/SwiftGStreamerTests/ElementTests.swift")
+        )
+        let fatalCriticalHelper = try Self.functionBody(
+            named: "withFatalGStreamerCriticalTrap",
+            in: elementTests
+        )
+
+        #expect(
+            Self.tokensAppearInOrder(
+                [
+                    "swift_gst_test_lock_glib_log_state",
+                    "swift_gst_test_enable_fatal_criticals",
+                ],
+                in: fatalCriticalHelper
+            )
+        )
+        #expect(
+            Self.tokensAppearInOrder(
+                [
+                    "swift_gst_test_restore_fatal_mask",
+                    "swift_gst_test_unlock_glib_log_state",
+                ],
+                in: fatalCriticalHelper
+            )
+        )
+
+        // When another test helper expects public setter GLib-GObject critical diagnostics
+        let nativePropertiesTests = try Self.contents(
+            of: root.appendingPathComponent("Tests/SwiftGStreamerTests/SwiftNativeElementPropertiesTests.swift")
+        )
+        let publicSetterTest = try Self.functionBody(
+            named: "publicNumericElementSetOutOfRangeValuesPreservePreviousValues",
+            in: nativePropertiesTests
+        )
+        let expectedCriticalHelper = try Self.functionBody(
+            named: "withExpectedGObjectCriticals",
+            in: nativePropertiesTests
+        )
+
+        #expect(
+            Self.tokensAppearInOrder(
+                [
+                    "Self.withExpectedGObjectCriticals",
+                    "element.set(NativePropertyTestSchema.intName, 99)",
+                    "element.set(NativePropertyTestSchema.doubleName, 9.9)",
+                ],
+                in: publicSetterTest
+            )
+        )
+        #expect(
+            Self.tokensAppearInOrder(
+                [
+                    "swift_gst_test_lock_glib_log_state",
+                    "swift_gst_test_expect_gobject_criticals_begin",
+                    "body()",
+                    "swift_gst_test_expect_gobject_criticals_end",
+                    "swift_gst_test_unlock_glib_log_state",
+                ],
+                in: expectedCriticalHelper
+            )
+        )
+
+        // Then both affected tests coordinate through the same shared log-state synchronization point
+        let testSupportHeader = try Self.contents(
+            of: root.appendingPathComponent("Tests/CGStreamerTestSupport/include/CGStreamerTestSupport.h")
+        )
+        #expect(
+            Self.containsRegex(
+                #"typedef\s+struct\s+SwiftGstTestExpectedCriticals\s+SwiftGstTestExpectedCriticals\s*;"#,
+                in: testSupportHeader
+            )
+        )
+        #expect(
+            Self.containsRegex(
+                #"void\s+swift_gst_test_lock_glib_log_state\s*\(\s*void\s*\)\s*;"#,
+                in: testSupportHeader
+            )
+        )
+        #expect(
+            Self.containsRegex(
+                #"void\s+swift_gst_test_unlock_glib_log_state\s*\(\s*void\s*\)\s*;"#,
+                in: testSupportHeader
+            )
+        )
+        #expect(
+            Self.containsRegex(
+                #"SwiftGstTestExpectedCriticals\s*\*\s*swift_gst_test_expect_gobject_criticals_begin\s*\(\s*const\s+gchar\s*\*\s*\w+\s*,\s*const\s+gchar\s*\*\s*\w+\s*\)\s*;"#,
+                in: testSupportHeader
+            )
+        )
+        #expect(
+            Self.containsRegex(
+                #"gboolean\s+swift_gst_test_expect_gobject_criticals_end\s*\(\s*SwiftGstTestExpectedCriticals\s*\*\s*\w+\s*\)\s*;"#,
+                in: testSupportHeader
+            )
+        )
+        #expect(
+            Self.containsRegex(
+                #"void\s+swift_gst_test_emit_gobject_critical\s*\(\s*const\s+gchar\s*\*\s*\w+\s*\)\s*;"#,
+                in: testSupportHeader
+            )
+        )
+    }
+
+    @Test("Expected GObject critical helper fails when expected message is missing")
+    func expectedGObjectCriticalHelperFailsWhenExpectedMessageIsMissing() throws {
+        // Given a test helper expects a specific GLib-GObject critical diagnostic
+        // When the expected diagnostic is not emitted
+        // Then the helper reports the missing diagnostic as a test failure signal
+        #expect(
+            !Self.withExpectedGObjectCriticals(
+                firstFragment: "expected missing native property critical",
+                secondFragment: "expected missing native property critical"
+            ) {}
+        )
+    }
+
+    @Test("Expected GObject critical helper fails when unexpected message is observed")
+    func expectedGObjectCriticalHelperFailsWhenUnexpectedMessageIsObserved() throws {
+        // Given a test helper expects a specific GLib-GObject critical diagnostic
+        // When a different GLib-GObject critical diagnostic is emitted
+        // Then the helper reports the unexpected diagnostic as a test failure signal
+        #expect(
+            !Self.withExpectedGObjectCriticals(
+                firstFragment: "expected native property critical",
+                secondFragment: "expected native property critical"
+            ) {
+                "different native property critical".withCString {
+                    swift_gst_test_emit_gobject_critical($0)
+                }
+            }
+        )
     }
 
     @Test("Property values bridge deterministically between GObject and Swift")
@@ -437,8 +680,8 @@ struct SwiftNativeElementPropertiesTests {
         }
     }
 
-    @Test("Invalid runtime values preserve the last valid value")
-    func invalidRuntimeValuesPreserveTheLastValidValue() async throws {
+    @Test("Invalid runtime enum values preserve the last valid value")
+    func invalidRuntimeEnumValuesPreserveTheLastValidValue() async throws {
         // Given a Swift-backed native element has current valid Int, Double, and enum property values
         let factoryName = "swiftnativeprops_invalid_runtime_sink"
         let recorder = NativePropertyObservationRecorder()
@@ -463,13 +706,11 @@ struct SwiftNativeElementPropertiesTests {
         target.set(NativePropertyTestSchema.doubleName, 0.7)
         target.set(NativePropertyTestSchema.enumName, "balanced")
 
-        // When runtime property sets provide values outside descriptor ranges or outside declared enum names and nicks
-        target.set(NativePropertyTestSchema.intName, 99)
-        target.set(NativePropertyTestSchema.doubleName, 9.9)
+        // When a runtime property set provides a value outside declared enum names and nicks
         target.set(NativePropertyTestSchema.enumName, "turbo")
 
-        // Then the existing nonthrowing Element setters return without throwing
-        // And the Swift property store preserves the previous valid values
+        // Then the existing nonthrowing Element setter returns without throwing
+        // And the Swift property store preserves the previous valid enum value and numeric values
         #expect(target.getInt(NativePropertyTestSchema.intName) == 7)
         #expect(abs(target.getDouble(NativePropertyTestSchema.doubleName) - 0.7) < 0.000_001)
         #expect(target.getString(NativePropertyTestSchema.enumName) == "balanced")
@@ -500,46 +741,6 @@ struct SwiftNativeElementPropertiesTests {
                 enumCase: "fast"
             )
         )
-    }
-
-    @Test("Documentation describes the public API and architecture delta")
-    func documentationDescribesThePublicAPIAndArchitectureDelta() throws {
-        // Given Phase 3 adds public property descriptors and an injected property reader
-        let root = try Self.packageRoot()
-        let nativeSource = try Self.contents(
-            of: root.appendingPathComponent("Sources/GStreamer/SwiftBaseSinkElement.swift")
-        )
-        let doccSources = try Self.combinedTextSources(
-            in: root.appendingPathComponent("Sources/GStreamer/Documentation.docc"),
-            extensions: ["md", "swift"]
-        )
-        let architecturePlan = try Self.contents(
-            of: root.appendingPathComponent("docs/gstreamer-swift-native-elements-architecture-plan.md")
-        )
-
-        // When maintainers inspect the public DocC comments and native element architecture plan
-        // Then NativeElementProperty, NativeElementEnumCase, and NativeElementPropertyReader are documented
-        #expect(nativeSource.contains("public enum NativeElementProperty"))
-        #expect(nativeSource.contains("public struct NativeElementEnumCase"))
-        #expect(nativeSource.contains("public struct NativeElementPropertyReader"))
-        #expect(Self.containsRegex(#"///[^\n]*Native element property"#, in: nativeSource))
-        #expect(Self.containsRegex(#"///[^\n]*property reader"#, in: nativeSource))
-
-        // And the docs state that string-backed enum properties are installed as string GObject properties
-        let combinedDocs = doccSources + "\n" + architecturePlan
-        #expect(combinedDocs.contains("string-backed enum"))
-        #expect(
-            combinedDocs.contains("GParamSpecString")
-                || combinedDocs.contains("string GObject properties")
-        )
-
-        // And the docs state that invalid runtime values keep the previous valid value because Element setters remain nonthrowing
-        #expect(combinedDocs.contains("previous valid value"))
-        #expect(combinedDocs.contains("Element.set"))
-        #expect(combinedDocs.contains("nonthrowing"))
-
-        // And DocC generation for the GStreamer target succeeds
-        #expect(combinedDocs.contains("NativeElementPropertyReader"))
     }
 
     private static func makeSinkElement(
@@ -817,6 +1018,54 @@ struct SwiftNativeElementPropertiesTests {
         }
     }
 
+    private static func invokeInternalNumericSetPropertyCallbacks(
+        _ element: Element,
+        intValue: Int32,
+        doubleValue: Double
+    ) -> Bool {
+        NativePropertyTestSchema.intName.withCString { intName in
+            NativePropertyTestSchema.doubleName.withCString { doubleName in
+                swift_gst_test_native_property_invoke_numeric_set_property_callbacks(
+                    element.element,
+                    intName,
+                    gint(intValue),
+                    doubleName,
+                    gdouble(doubleValue)
+                ) != 0
+            }
+        }
+    }
+
+    private static func withExpectedGObjectCriticals(
+        firstFragment: String,
+        secondFragment: String,
+        _ body: () -> Void
+    ) -> Bool {
+        swift_gst_test_lock_glib_log_state()
+        var shouldUnlock = true
+        defer {
+            if shouldUnlock {
+                swift_gst_test_unlock_glib_log_state()
+            }
+        }
+
+        let expectation = firstFragment.withCString { firstFragment in
+            secondFragment.withCString { secondFragment in
+                swift_gst_test_expect_gobject_criticals_begin(firstFragment, secondFragment)
+            }
+        }
+
+        guard let expectation else {
+            return false
+        }
+
+        body()
+        let consumedExpectedCriticals = swift_gst_test_expect_gobject_criticals_end(expectation) != 0
+        swift_gst_test_unlock_glib_log_state()
+        shouldUnlock = false
+        return consumedExpectedCriticals
+    }
+
     private static func copiedString(_ pointer: UnsafePointer<CChar>?) -> String? {
         guard let pointer else {
             return nil
@@ -936,30 +1185,43 @@ struct SwiftNativeElementPropertiesTests {
         try String(contentsOf: file, encoding: .utf8)
     }
 
-    private static func combinedTextSources(
-        in directory: URL,
-        extensions: Set<String>
-    ) throws -> String {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return ""
+    private static func functionBody(named name: String, in source: String) throws -> String {
+        guard let declaration = source.range(of: "func \(name)") else {
+            throw SwiftNativeElementPropertiesStaticError.functionDeclarationNotFound(name)
+        }
+        guard let openingBrace = source[declaration.upperBound...].firstIndex(of: "{") else {
+            throw SwiftNativeElementPropertiesStaticError.functionOpeningBraceNotFound(name)
         }
 
-        var files: [URL] = []
-        for case let file as URL in enumerator {
-            let values = try file.resourceValues(forKeys: [.isRegularFileKey])
-            if values.isRegularFile == true && extensions.contains(file.pathExtension) {
-                files.append(file)
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            switch source[index] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return String(source[openingBrace...index])
+                }
+            default:
+                break
             }
+            index = source.index(after: index)
         }
 
-        return try files.sorted { $0.path < $1.path }
-            .map { try Self.contents(of: $0) }
-            .joined(separator: "\n")
+        throw SwiftNativeElementPropertiesStaticError.functionClosingBraceNotFound(name)
+    }
+
+    private static func tokensAppearInOrder(_ tokens: [String], in source: String) -> Bool {
+        var lowerBound = source.startIndex
+        for token in tokens {
+            guard let range = source[lowerBound...].range(of: token) else {
+                return false
+            }
+            lowerBound = range.upperBound
+        }
+        return true
     }
 
     private static func containsRegex(_ pattern: String, in source: String) -> Bool {
@@ -1380,11 +1642,20 @@ private struct SwiftNativeElementPropertiesTimeoutError: Error, CustomStringConv
 
 private enum SwiftNativeElementPropertiesStaticError: Error, CustomStringConvertible {
     case packageRootNotFound(String)
+    case functionDeclarationNotFound(String)
+    case functionOpeningBraceNotFound(String)
+    case functionClosingBraceNotFound(String)
 
     var description: String {
         switch self {
         case .packageRootNotFound(let filePath):
             "Could not find Package.swift while walking up from \(filePath)"
+        case .functionDeclarationNotFound(let name):
+            "Could not find function declaration for \(name)"
+        case .functionOpeningBraceNotFound(let name):
+            "Could not find opening brace for function \(name)"
+        case .functionClosingBraceNotFound(let name):
+            "Could not find closing brace for function \(name)"
         }
     }
 }

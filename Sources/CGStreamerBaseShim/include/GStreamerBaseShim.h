@@ -240,6 +240,9 @@ typedef struct {
     SwiftGstNativeGetStringPropertyFunc get_string_property;
 } SwiftGstBaseTransformCallbacks;
 
+GstFlowReturn swift_gst_base_sink_flow_dropped(void);
+GstFlowReturn swift_gst_base_transform_flow_dropped(void);
+
 gboolean swift_gst_register_base_sink(
     const SwiftGstBaseSinkInfo* info,
     const SwiftGstBaseSinkCallbacks* callbacks,

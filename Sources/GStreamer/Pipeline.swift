@@ -182,20 +182,13 @@ public final class Pipeline: @unchecked Sendable {
     try GStreamer.ensureInitialized()
 
     var errorMessage: UnsafeMutablePointer<CChar>?
-    var errorIsPropertyFailure: gboolean = 0
-    let parsedPipeline = swift_gst_parse_launch_with_property_error(
-      description,
-      &errorMessage,
-      &errorIsPropertyFailure
-    )
+    let parsedPipeline = swift_gst_parse_launch(description, &errorMessage)
     if let errorMessage {
       let message = GLibString.takeOwnership(errorMessage) ?? "Unknown error"
-      if parsedPipeline == nil || errorIsPropertyFailure != 0 {
-        if let parsedPipeline {
-          swift_gst_object_unref(parsedPipeline)
-        }
-        throw GStreamerError.parsePipeline(message)
+      if let parsedPipeline {
+        swift_gst_object_unref(parsedPipeline)
       }
+      throw GStreamerError.parsePipeline(message)
     }
     guard let pipeline = parsedPipeline else {
       throw GStreamerError.parsePipeline("Unknown error")
