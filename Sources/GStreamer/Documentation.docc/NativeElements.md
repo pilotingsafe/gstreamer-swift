@@ -3,6 +3,68 @@
 Use Swift-backed native elements when a pipeline needs custom element behavior
 implemented in Swift while staying inside the current application process.
 
+## In-process Swift Native Elements
+
+In-process registration is the simplest native-element workflow. Register the
+Swift-backed factory with the current process, then create a pipeline
+description that uses the factory name.
+
+### SwiftBaseSinkElement
+
+Use ``SwiftBaseSinkElement`` when Swift needs to consume buffers at the end of a
+pipeline. Implement ``SwiftBaseSinkInstance/render(_:)`` to inspect each
+callback-scoped ``BorrowedBuffer`` and return a ``FlowReturn``. Call
+`GStreamer.register(_:)` before creating pipeline descriptions that reference
+the sink factory name.
+
+```swift
+try GStreamer.register(
+    SwiftBaseSinkElement(
+        factoryName: "swiftbuffersink",
+        metadata: NativeElementMetadata(
+            klass: "Sink/Swift",
+            longName: "Swift Buffer Sink",
+            description: "Consumes buffers in Swift"
+        ),
+        sinkCaps: "video/x-raw",
+        makeInstance: { BufferSinkHandler() }
+    )
+)
+```
+
+### SwiftBaseTransformElement.inPlace
+
+Use `SwiftBaseTransformElement.inPlace` when Swift needs to mutate buffers
+without replacing them. Implement
+``SwiftBaseTransformInstance/transformInPlace(_:)`` to edit the
+callback-scoped ``MutableBorrowedBuffer`` and return a ``FlowReturn``. Provide
+sink and source caps, register the element with `GStreamer.register(_:)`, then
+use the transform factory name in pipeline descriptions created in the same
+process.
+
+### BorrowedBuffer and MutableBorrowedBuffer Lifetime
+
+``BorrowedBuffer`` and ``MutableBorrowedBuffer`` are valid only during the
+callback that receives them. Raw pointers from `withUnsafeBytes(_:)` or
+`withUnsafeMutableBytes(_:)` must not escape their closures. Use
+`retainedReference()` or `deepCopy()` when data or buffers need to outlive the
+callback.
+
+### Synchronous Callback Rule
+
+Native element callbacks run synchronously on GStreamer's streaming path. They
+are not `async`, do not run on `MainActor` by default, and should avoid long
+blocking CPU or I/O work. Hand off retained buffers to another queue when work
+must continue after the callback returns.
+
+### In-process Registration vs Static Plugin vs Dynamic Plugin
+
+| Mode | API or template | Visibility |
+|---|---|---|
+| In-process registration | `GStreamer.register(_:)` | Simplest default. Factories are current-process only, but pipeline descriptions in that process can use them after registration. |
+| Static plugin grouping | ``GStreamer/registerStaticPlugin(name:description:version:license:source:package:origin:elements:)`` | Groups multiple factories under plugin metadata. Factories are still current-process only, but pipeline descriptions in that process can use them after registration. |
+| Dynamic plugin | `Examples/DynamicPluginTemplate` | Builds a plugin artifact for external GStreamer discovery. Separate `gst-inspect-1.0` and `gst-launch-1.0` processes can discover and use the factories through `GST_PLUGIN_PATH`. |
+
 ## Phase 5: Static Plugin Grouping
 
 Static plugin grouping registers related Swift-backed native elements under one
