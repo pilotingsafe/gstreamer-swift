@@ -10,6 +10,8 @@ extern "C" {
 
 typedef struct SwiftGstTestProbe SwiftGstTestProbe;
 
+typedef gboolean (*SwiftGstTestDynamicPluginInitCallback)(GstPlugin* plugin, gpointer user_data);
+
 typedef enum {
     SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_OK,
     SWIFT_GST_TEST_CALLBACK_REGISTRATION_RACE_CREATE_APPSINK_FAILED,
@@ -232,6 +234,12 @@ GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
 GParamFlags swift_gst_test_param_mutable_playing(void);
 guint swift_gst_test_element_property_id(GstElement* element, const gchar* property_name);
+
+gboolean swift_gst_test_register_static_plugin_with_init_callback(
+    const gchar* name,
+    SwiftGstTestDynamicPluginInitCallback callback,
+    gpointer user_data
+);
 
 SwiftGstTestNativePropertyDefaultsProbeResult swift_gst_test_native_property_missing_instance_defaults_probe(
     GstElement* element,

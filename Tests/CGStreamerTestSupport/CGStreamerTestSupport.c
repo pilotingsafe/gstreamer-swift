@@ -91,6 +91,11 @@ typedef struct {
     void* instance_context;
 } SwiftGstTestNativeBaseTransformView;
 
+typedef struct {
+    SwiftGstTestDynamicPluginInitCallback callback;
+    gpointer user_data;
+} SwiftGstTestDynamicPluginInitContext;
+
 static GMutex swift_gst_test_base_sink_missing_probe_mutex;
 static SwiftGstTestBaseSinkContext* swift_gst_test_base_sink_missing_probe_context = NULL;
 static GMutex swift_gst_test_base_transform_missing_probe_mutex;
@@ -259,6 +264,44 @@ static SwiftGstBaseSinkInfo swift_gst_test_base_sink_info(
         .sink_caps = "video/x-raw",
     };
     return info;
+}
+
+static gboolean swift_gst_test_dynamic_plugin_static_init(GstPlugin* plugin, gpointer user_data) {
+    SwiftGstTestDynamicPluginInitContext* context = (SwiftGstTestDynamicPluginInitContext*)user_data;
+    if (!context || !context->callback) {
+        return FALSE;
+    }
+
+    return context->callback(plugin, context->user_data);
+}
+
+gboolean swift_gst_test_register_static_plugin_with_init_callback(
+    const gchar* name,
+    SwiftGstTestDynamicPluginInitCallback callback,
+    gpointer user_data
+) {
+    if (!name || name[0] == '\0' || !callback) {
+        return FALSE;
+    }
+
+    SwiftGstTestDynamicPluginInitContext context = {
+        .callback = callback,
+        .user_data = user_data,
+    };
+
+    return gst_plugin_register_static_full(
+        GST_VERSION_MAJOR,
+        GST_VERSION_MINOR,
+        name,
+        "Swift dynamic plugin test harness",
+        swift_gst_test_dynamic_plugin_static_init,
+        "1.0.0",
+        "MIT",
+        "gstreamer-swift-tests",
+        "gstreamer-swift-tests",
+        "https://example.invalid/gstreamer-swift-tests",
+        &context
+    );
 }
 
 static SwiftGstBaseSinkCallbacks swift_gst_test_base_sink_callbacks(void) {

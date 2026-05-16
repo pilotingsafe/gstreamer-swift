@@ -937,7 +937,33 @@ public enum NativeElementPluginBuilder {
     }
 }
 
+/// A scoped borrowed GStreamer dynamic plugin context.
+///
+/// Values of this type are valid only for the synchronous
+/// ``GStreamer/withDynamicPluginContext(rawPlugin:_:)`` body that receives
+/// them. Store native element state in element instances, not in this context.
+public struct NativeElementDynamicPluginContext: ~Copyable {
+    fileprivate let rawPlugin: OpaquePointer
+
+    init(rawPlugin: OpaquePointer) {
+        self.rawPlugin = rawPlugin
+    }
+}
+
 extension GStreamer {
+    /// Runs a synchronous dynamic plugin registration body with a borrowed plugin pointer.
+    ///
+    /// Use this from a `GST_PLUGIN_DEFINE` init callback. This helper does not
+    /// initialize GStreamer and does not register a static plugin; the supplied
+    /// pointer is borrowed from GStreamer for the duration of `body`.
+    public static func withDynamicPluginContext<R>(
+        rawPlugin: OpaquePointer,
+        _ body: (borrowing NativeElementDynamicPluginContext) throws -> R
+    ) rethrows -> R {
+        let context = NativeElementDynamicPluginContext(rawPlugin: rawPlugin)
+        return try body(context)
+    }
+
     /// Registers a process-local GStreamer static plugin containing Swift-backed native elements.
     ///
     /// The registration is private to the current process. It does not produce
@@ -1837,25 +1863,34 @@ private final class NativeStaticPluginContext: @unchecked Sendable {
 
     func registerElements(plugin: OpaquePointer) -> Bool {
         do {
-            for entry in entries {
-                if let forcedFailure = NativeElementRegistrationTestHooks
-                    .forcedStaticPluginInitFailureMessage(factoryName: entry.factoryName) {
-                    throw GStreamerError.initializationFailed(forcedFailure)
-                }
-
-                switch entry {
-                case .baseSink(let element, let registration):
-                    try registerBaseSink(element, registration: registration, plugin: plugin)
-                case .baseTransform(let element, let registration):
-                    try registerBaseTransform(element, registration: registration, plugin: plugin)
-                case .baseTransformOutOfPlace(let element, let registration):
-                    try registerBaseTransformOutOfPlace(element, registration: registration, plugin: plugin)
-                }
-            }
+            try Self.registerElements(entries, plugin: plugin, honorsForcedStaticFailures: true)
             return true
         } catch {
             record(error)
             return false
+        }
+    }
+
+    static func registerElements(
+        _ entries: [NativeStaticPluginEntry],
+        plugin: OpaquePointer,
+        honorsForcedStaticFailures: Bool = false
+    ) throws {
+        for entry in entries {
+            if honorsForcedStaticFailures,
+               let forcedFailure = NativeElementRegistrationTestHooks
+                .forcedStaticPluginInitFailureMessage(factoryName: entry.factoryName) {
+                throw GStreamerError.initializationFailed(forcedFailure)
+            }
+
+            switch entry {
+            case .baseSink(let element, let registration):
+                try registerBaseSink(element, registration: registration, plugin: plugin)
+            case .baseTransform(let element, let registration):
+                try registerBaseTransform(element, registration: registration, plugin: plugin)
+            case .baseTransformOutOfPlace(let element, let registration):
+                try registerBaseTransformOutOfPlace(element, registration: registration, plugin: plugin)
+            }
         }
     }
 
@@ -1869,7 +1904,7 @@ private final class NativeStaticPluginContext: @unchecked Sendable {
         error.withLock { $0 = message }
     }
 
-    private func registerBaseSink(
+    private static func registerBaseSink(
         _ element: SwiftBaseSinkElement,
         registration: ValidatedBaseSinkRegistration,
         plugin: OpaquePointer
@@ -1926,7 +1961,7 @@ private final class NativeStaticPluginContext: @unchecked Sendable {
         _ = GLibString.takeOwnership(errorMessage)
     }
 
-    private func registerBaseTransform(
+    private static func registerBaseTransform(
         _ element: SwiftBaseTransformElement,
         registration: ValidatedBaseTransformRegistration,
         plugin: OpaquePointer
@@ -1996,7 +2031,7 @@ private final class NativeStaticPluginContext: @unchecked Sendable {
         _ = GLibString.takeOwnership(errorMessage)
     }
 
-    private func registerBaseTransformOutOfPlace(
+    private static func registerBaseTransformOutOfPlace(
         _ element: SwiftBaseTransformOutOfPlaceElement,
         registration: ValidatedBaseTransformOutOfPlaceRegistration,
         plugin: OpaquePointer
@@ -2065,6 +2100,22 @@ private final class NativeStaticPluginContext: @unchecked Sendable {
         }
 
         _ = GLibString.takeOwnership(errorMessage)
+    }
+}
+
+extension GStreamer {
+    /// Registers Swift-backed native element factories into a borrowed dynamic plugin.
+    ///
+    /// Call this only from a synchronous dynamic plugin init callback that has
+    /// received `plugin` through ``withDynamicPluginContext(rawPlugin:_:)``.
+    /// The API validates the complete group before any factory registration
+    /// attempt and registers each entry against the borrowed non-null plugin.
+    public static func registerDynamicPluginElements(
+        into plugin: borrowing NativeElementDynamicPluginContext,
+        @NativeElementPluginBuilder elements: () -> [NativeElementPluginEntry]
+    ) throws {
+        let registrations = try NativeStaticPluginRegistration.validate(elements())
+        try NativeStaticPluginContext.registerElements(registrations, plugin: plugin.rawPlugin)
     }
 }
 
