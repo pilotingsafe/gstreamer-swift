@@ -223,6 +223,11 @@ typedef struct {
 
 gboolean swift_gst_test_element_factory_exists(const gchar* factory_name);
 guint swift_gst_test_element_factory_rank(const gchar* factory_name);
+gboolean swift_gst_test_element_factory_has_plugin_owner(const gchar* factory_name);
+gboolean swift_gst_test_element_factory_plugin_name_matches(
+    const gchar* factory_name,
+    const gchar* plugin_name
+);
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void);
 void swift_gst_test_restore_fatal_mask(GLogLevelFlags previous);
 GParamFlags swift_gst_test_param_mutable_playing(void);

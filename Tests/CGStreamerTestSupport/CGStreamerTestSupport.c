@@ -1192,6 +1192,41 @@ guint swift_gst_test_element_factory_rank(const gchar* factory_name) {
     return rank;
 }
 
+gboolean swift_gst_test_element_factory_has_plugin_owner(const gchar* factory_name) {
+    if (!factory_name) {
+        return FALSE;
+    }
+
+    GstElementFactory* factory = gst_element_factory_find(factory_name);
+    if (!factory) {
+        return FALSE;
+    }
+
+    const gchar* plugin_name = gst_plugin_feature_get_plugin_name(GST_PLUGIN_FEATURE(factory));
+    gboolean result = plugin_name != NULL && plugin_name[0] != '\0';
+    gst_object_unref(factory);
+    return result;
+}
+
+gboolean swift_gst_test_element_factory_plugin_name_matches(
+    const gchar* factory_name,
+    const gchar* expected_plugin_name
+) {
+    if (!factory_name || !expected_plugin_name) {
+        return FALSE;
+    }
+
+    GstElementFactory* factory = gst_element_factory_find(factory_name);
+    if (!factory) {
+        return FALSE;
+    }
+
+    const gchar* plugin_name = gst_plugin_feature_get_plugin_name(GST_PLUGIN_FEATURE(factory));
+    gboolean result = g_strcmp0(plugin_name, expected_plugin_name) == 0;
+    gst_object_unref(factory);
+    return result;
+}
+
 GLogLevelFlags swift_gst_test_enable_fatal_criticals(void) {
     GLogLevelFlags previous = g_log_set_always_fatal(G_LOG_FATAL_MASK);
     g_log_set_always_fatal(previous | G_LOG_LEVEL_CRITICAL);

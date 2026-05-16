@@ -11,6 +11,7 @@ extern "C" {
 
 typedef void (*SwiftGstContextRetainFunc)(void* context);
 typedef void (*SwiftGstContextReleaseFunc)(void* context);
+typedef gboolean (*SwiftGstStaticPluginInitFunc)(GstPlugin* plugin, gpointer user_data);
 typedef void* (*SwiftGstNativeCreateInstanceFunc)(void* class_context);
 typedef void (*SwiftGstNativeDestroyInstanceFunc)(void* instance_context);
 typedef gboolean (*SwiftGstBaseLifecycleFunc)(void* instance_context);
@@ -248,12 +249,45 @@ gboolean swift_gst_register_base_sink(
     gchar** error_message
 );
 
+gboolean swift_gst_register_base_sink_for_plugin(
+    GstPlugin* plugin,
+    const SwiftGstBaseSinkInfo* info,
+    const SwiftGstBaseSinkCallbacks* callbacks,
+    void* class_context,
+    SwiftGstContextRetainFunc retain_class_context,
+    SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+);
+
 gboolean swift_gst_register_base_transform(
     const SwiftGstBaseTransformInfo* info,
     const SwiftGstBaseTransformCallbacks* callbacks,
     void* class_context,
     SwiftGstContextRetainFunc retain_class_context,
     SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+);
+
+gboolean swift_gst_register_base_transform_for_plugin(
+    GstPlugin* plugin,
+    const SwiftGstBaseTransformInfo* info,
+    const SwiftGstBaseTransformCallbacks* callbacks,
+    void* class_context,
+    SwiftGstContextRetainFunc retain_class_context,
+    SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+);
+
+gboolean swift_gst_register_static_plugin(
+    const gchar* name,
+    const gchar* description,
+    const gchar* version,
+    const gchar* license,
+    const gchar* source,
+    const gchar* package,
+    const gchar* origin,
+    SwiftGstStaticPluginInitFunc init_func,
+    void* user_data,
     gchar** error_message
 );
 

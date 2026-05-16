@@ -234,6 +234,75 @@ static gboolean swift_gst_base_sink_fail(gchar** error_message, const gchar* for
     return FALSE;
 }
 
+static gboolean swift_gst_base_sink_is_non_empty(const gchar* value);
+
+gboolean swift_gst_register_static_plugin(
+    const gchar* name,
+    const gchar* description,
+    const gchar* version,
+    const gchar* license,
+    const gchar* source,
+    const gchar* package,
+    const gchar* origin,
+    SwiftGstStaticPluginInitFunc init_func,
+    void* user_data,
+    gchar** error_message
+) {
+    if (error_message == NULL) {
+        return FALSE;
+    }
+    *error_message = NULL;
+
+    if (!swift_gst_base_sink_is_non_empty(name)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin name is empty");
+    }
+    if (!swift_gst_base_sink_is_non_empty(description)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin description is empty");
+    }
+    if (!swift_gst_base_sink_is_non_empty(version)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin version is empty");
+    }
+    if (!swift_gst_base_sink_is_non_empty(license)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin license is empty");
+    }
+    if (!swift_gst_base_sink_is_non_empty(source)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin source is empty");
+    }
+    if (!swift_gst_base_sink_is_non_empty(package)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin package is empty");
+    }
+    if (!swift_gst_base_sink_is_non_empty(origin)) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin origin is empty");
+    }
+    if (init_func == NULL) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin init callback is NULL");
+    }
+
+    gboolean success = gst_plugin_register_static_full(
+        GST_VERSION_MAJOR,
+        GST_VERSION_MINOR,
+        name,
+        description,
+        init_func,
+        version,
+        license,
+        source,
+        package,
+        origin,
+        user_data
+    );
+
+    if (!success) {
+        return swift_gst_base_sink_fail(
+            error_message,
+            "Static plugin '%s' could not be registered",
+            name
+        );
+    }
+
+    return TRUE;
+}
+
 static gboolean swift_gst_base_sink_is_non_empty(const gchar* value) {
     return value != NULL && value[0] != '\0';
 }
@@ -1043,7 +1112,8 @@ static gboolean swift_gst_base_sink_validate_info(
     return TRUE;
 }
 
-gboolean swift_gst_register_base_sink(
+static gboolean swift_gst_register_base_sink_with_plugin(
+    GstPlugin* plugin,
     const SwiftGstBaseSinkInfo* info,
     const SwiftGstBaseSinkCallbacks* callbacks,
     void* class_context,
@@ -1150,12 +1220,7 @@ gboolean swift_gst_register_base_sink(
     }
     type_registered = TRUE;
 
-    success = gst_element_register(
-        NULL,
-        registration->factory_name,
-        registration->rank,
-        type
-    );
+    success = gst_element_register(plugin, registration->factory_name, registration->rank, type);
 
     g_mutex_unlock(&swift_gst_base_sink_registration_mutex);
 
@@ -1174,6 +1239,52 @@ gboolean swift_gst_register_base_sink(
 
     *error_message = NULL;
     return TRUE;
+}
+
+gboolean swift_gst_register_base_sink(
+    const SwiftGstBaseSinkInfo* info,
+    const SwiftGstBaseSinkCallbacks* callbacks,
+    void* class_context,
+    SwiftGstContextRetainFunc retain_class_context,
+    SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+) {
+    return swift_gst_register_base_sink_with_plugin(
+        NULL,
+        info,
+        callbacks,
+        class_context,
+        retain_class_context,
+        release_class_context,
+        error_message
+    );
+}
+
+gboolean swift_gst_register_base_sink_for_plugin(
+    GstPlugin* plugin,
+    const SwiftGstBaseSinkInfo* info,
+    const SwiftGstBaseSinkCallbacks* callbacks,
+    void* class_context,
+    SwiftGstContextRetainFunc retain_class_context,
+    SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+) {
+    if (error_message == NULL) {
+        return FALSE;
+    }
+    *error_message = NULL;
+    if (plugin == NULL) {
+        return swift_gst_base_sink_fail(error_message, "Static plugin BaseSink plugin is NULL");
+    }
+    return swift_gst_register_base_sink_with_plugin(
+        plugin,
+        info,
+        callbacks,
+        class_context,
+        retain_class_context,
+        release_class_context,
+        error_message
+    );
 }
 
 static gboolean swift_gst_base_transform_fail(gchar** error_message, const gchar* format, ...) {
@@ -2068,7 +2179,8 @@ static gboolean swift_gst_base_transform_validate_info(
     return TRUE;
 }
 
-gboolean swift_gst_register_base_transform(
+static gboolean swift_gst_register_base_transform_with_plugin(
+    GstPlugin* plugin,
     const SwiftGstBaseTransformInfo* info,
     const SwiftGstBaseTransformCallbacks* callbacks,
     void* class_context,
@@ -2180,12 +2292,7 @@ gboolean swift_gst_register_base_transform(
     }
     type_registered = TRUE;
 
-    success = gst_element_register(
-        NULL,
-        registration->factory_name,
-        registration->rank,
-        type
-    );
+    success = gst_element_register(plugin, registration->factory_name, registration->rank, type);
 
     g_mutex_unlock(&swift_gst_base_transform_registration_mutex);
 
@@ -2204,4 +2311,53 @@ gboolean swift_gst_register_base_transform(
 
     *error_message = NULL;
     return TRUE;
+}
+
+gboolean swift_gst_register_base_transform(
+    const SwiftGstBaseTransformInfo* info,
+    const SwiftGstBaseTransformCallbacks* callbacks,
+    void* class_context,
+    SwiftGstContextRetainFunc retain_class_context,
+    SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+) {
+    return swift_gst_register_base_transform_with_plugin(
+        NULL,
+        info,
+        callbacks,
+        class_context,
+        retain_class_context,
+        release_class_context,
+        error_message
+    );
+}
+
+gboolean swift_gst_register_base_transform_for_plugin(
+    GstPlugin* plugin,
+    const SwiftGstBaseTransformInfo* info,
+    const SwiftGstBaseTransformCallbacks* callbacks,
+    void* class_context,
+    SwiftGstContextRetainFunc retain_class_context,
+    SwiftGstContextReleaseFunc release_class_context,
+    gchar** error_message
+) {
+    if (error_message == NULL) {
+        return FALSE;
+    }
+    *error_message = NULL;
+    if (plugin == NULL) {
+        return swift_gst_base_transform_fail(
+            error_message,
+            "Static plugin BaseTransform plugin is NULL"
+        );
+    }
+    return swift_gst_register_base_transform_with_plugin(
+        plugin,
+        info,
+        callbacks,
+        class_context,
+        retain_class_context,
+        release_class_context,
+        error_message
+    );
 }
