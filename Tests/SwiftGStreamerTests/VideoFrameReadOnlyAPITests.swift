@@ -12,7 +12,9 @@ struct VideoFrameReadOnlyAPITests {
     func bgraFrameReadOnlyByteViewsExposeExpectedCount() async throws {
         let width = 4
         let height = 3
-        let expectedByteCount = width * height * 4
+        let expectedByteCount = try RawVideoInfo(
+            caps: Caps("video/x-raw,format=BGRA,width=\(width),height=\(height)")
+        ).byteSize
         let pipeline = try Pipeline(
             """
             videotestsrc num-buffers=1 pattern=white ! \

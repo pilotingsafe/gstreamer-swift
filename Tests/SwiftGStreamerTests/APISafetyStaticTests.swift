@@ -1164,7 +1164,9 @@ struct APISafetyStaticTests {
             "gstreamer-1.0",
             "gstreamer-app-1.0",
             "gstreamer-video-1.0",
-            "pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0",
+            "gstreamer-base-1.0",
+            "pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0",
+            "pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0",
             "brew install pkgconf gstreamer",
             "libgstreamer1.0-dev",
             "libgstreamer-plugins-base1.0-dev",
@@ -1208,7 +1210,8 @@ struct APISafetyStaticTests {
                 [
                     "#require(firstFrame",
                     "let byteCount = try frame.withUnsafeBytes",
-                    "#expect(byteCount == 4 * 4 * 4)",
+                    "RawVideoInfo",
+                    "#expect(byteCount == frameSize)",
                 ]
             ),
             (

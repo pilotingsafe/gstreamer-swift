@@ -13,10 +13,11 @@ struct CIEndToEndExampleTests {
     func videoTestSourceFramesReachAppSink() async throws {
         // Given the CI runner has the package's GStreamer runtime dependencies
         // And a finite synthetic BGRA video source is connected to an app sink
+        let capsString = "video/x-raw,format=BGRA,width=16,height=16,framerate=30/1"
         let pipeline = try Pipeline(
             """
             videotestsrc num-buffers=3 ! \
-            video/x-raw,format=BGRA,width=16,height=16,framerate=30/1 ! \
+            \(capsString) ! \
             appsink name=sink sync=false drop=false max-buffers=3
             """
         )
@@ -42,7 +43,7 @@ struct CIEndToEndExampleTests {
         #expect(frames.count == 3)
 
         // And each delivered frame has the expected BGRA byte size
-        let expectedByteCount = 16 * 16 * 4
+        let expectedByteCount = try RawVideoInfo(caps: Caps(capsString)).byteSize
         for frame in frames {
             let byteCount = try frame.withUnsafeBytes { $0.count }
             #expect(byteCount > 0)

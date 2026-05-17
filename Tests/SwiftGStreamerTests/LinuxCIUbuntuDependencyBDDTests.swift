@@ -4,17 +4,17 @@ import Foundation
 @Suite("Linux CI Ubuntu Dependency BDD Tests")
 struct LinuxCIUbuntuDependencyBDDTests {
 
-    @Test("Ubuntu dependency setup resolves the GStreamer libunwind dependency")
-    func ubuntuDependencySetupResolvesGStreamerLibunwindDependency() throws {
+    @Test("Ubuntu Swift support setup keeps libunwind dependency stable")
+    func ubuntuSwiftSupportSetupKeepsLibunwindDependencyStable() throws {
         // Given the Ubuntu 22.04 CI runner may have versioned LLVM libunwind development packages installed
-        // And GStreamer development headers require the unversioned libunwind development package
+        // And Swift support packages still need the unversioned libunwind development package
         let workflow = try Self.contents(of: ".github/workflows/ci.yml")
         let ubuntuStep = try Self.workflowStep(
-            named: "Install Swift and GStreamer dependencies (Ubuntu)",
+            named: "Install Swift support dependencies (Ubuntu)",
             in: workflow
         )
 
-        // When Linux CI installs Swift support and GStreamer dependencies
+        // When Linux CI installs Swift support dependencies
         // Then the workflow removes conflicting versioned libunwind development packages first
         #expect(ubuntuStep.contains("if: runner.os == 'Linux'"))
         #expect(
@@ -29,45 +29,35 @@ struct LinuxCIUbuntuDependencyBDDTests {
             "Ubuntu CI must remove versioned libunwind development packages before the apt install transaction"
         )
 
-        // And the workflow installs the unversioned libunwind development package before GStreamer development headers
+        // And the workflow installs the unversioned libunwind development package without apt GStreamer packages
         let packageList = try Self.aptInstallPackageList(in: ubuntuStep)
+        #expect(packageList.contains("libunwind-dev"))
         #expect(
-            try Self.snippetsAppearInOrder(
-                [
-                    "libunwind-dev",
-                    "libgstreamer1.0-dev",
-                ],
-                in: packageList
-            ),
-            "Ubuntu CI must install libunwind-dev before libgstreamer1.0-dev"
+            Self.ubuntuAptGStreamerPackages.filter { packageList.contains($0) }.isEmpty,
+            "Ubuntu CI must not install this package's GStreamer modules through apt"
         )
     }
 
-    @Test("Ubuntu setup keeps existing Swift and GStreamer dependencies")
-    func ubuntuSetupKeepsExistingSwiftAndGStreamerDependencies() throws {
+    @Test("Ubuntu setup keeps Swift support packages and moves GStreamer to Linuxbrew")
+    func ubuntuSetupKeepsSwiftSupportPackagesAndMovesGStreamerToLinuxbrew() throws {
         // Given the package still needs Swift support libraries and GStreamer runtime plugins on Ubuntu
         let workflow = try Self.contents(of: ".github/workflows/ci.yml")
-        let ubuntuStep = try Self.workflowStep(
-            named: "Install Swift and GStreamer dependencies (Ubuntu)",
+        let swiftSupportStep = try Self.workflowStep(
+            named: "Install Swift support dependencies (Ubuntu)",
             in: workflow
         )
-        let packageList = try Self.aptInstallPackageList(in: ubuntuStep)
+        let linuxbrewStep = try Self.workflowStep(
+            named: "Install Linuxbrew GStreamer dependencies (Ubuntu)",
+            in: workflow
+        )
+        let packageList = try Self.aptInstallPackageList(in: swiftSupportStep)
 
         // When Linux CI installs dependencies
         // Then the workflow keeps the existing Swift support packages
         let requiredPackages = [
             "libcurl4-openssl-dev",
-            "pkg-config",
             "python3-lldb-13",
             "libunwind-dev",
-            "libgstreamer1.0-dev",
-            "libgstreamer-plugins-base1.0-dev",
-            "gstreamer1.0-tools",
-            "gstreamer1.0-plugins-base",
-            "gstreamer1.0-plugins-good",
-            "gstreamer1.0-plugins-bad",
-            "gstreamer1.0-plugins-ugly",
-            "gstreamer1.0-libav",
         ]
         let missingPackages = requiredPackages.filter { !packageList.contains($0) }
         #expect(
@@ -75,17 +65,11 @@ struct LinuxCIUbuntuDependencyBDDTests {
             "Ubuntu CI dependency install is missing packages:\n\(missingPackages.joined(separator: "\n"))"
         )
 
-        // And the workflow keeps the existing GStreamer development, tool, and plugin packages
-        #expect(
-            packageList.contains("libgstreamer1.0-dev")
-                && packageList.contains("libgstreamer-plugins-base1.0-dev")
-                && packageList.contains("gstreamer1.0-tools")
-                && packageList.contains("gstreamer1.0-plugins-base")
-                && packageList.contains("gstreamer1.0-plugins-good")
-                && packageList.contains("gstreamer1.0-plugins-bad")
-                && packageList.contains("gstreamer1.0-plugins-ugly")
-                && packageList.contains("gstreamer1.0-libav")
-        )
+        // And the workflow installs GStreamer development libraries and tools through Linuxbrew
+        #expect(linuxbrewStep.contains("if: runner.os == 'Linux'"))
+        #expect(linuxbrewStep.contains(#"eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)""#))
+        #expect(Self.normalizedWhitespace(linuxbrewStep).contains("brew install pkgconf gstreamer"))
+        #expect(!linuxbrewStep.contains("apt-get"))
     }
 
     @Test("macOS dependency setup is unaffected")
@@ -163,6 +147,23 @@ struct LinuxCIUbuntuDependencyBDDTests {
 
         return true
     }
+
+    private static func normalizedWhitespace(_ source: String) -> String {
+        source
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
+    private static let ubuntuAptGStreamerPackages = [
+        "libgstreamer1.0-dev",
+        "libgstreamer-plugins-base1.0-dev",
+        "gstreamer1.0-tools",
+        "gstreamer1.0-plugins-base",
+        "gstreamer1.0-plugins-good",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-plugins-ugly",
+        "gstreamer1.0-libav",
+    ]
 }
 
 private enum LinuxCIUbuntuDependencyBDDTestError: Error, CustomStringConvertible {

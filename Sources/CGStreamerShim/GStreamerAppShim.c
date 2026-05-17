@@ -487,6 +487,9 @@ gboolean swift_gst_buffer_map_read(GstBuffer* buffer, GstMapInfo* info) {
 }
 
 gboolean swift_gst_buffer_map_write(GstBuffer* buffer, GstMapInfo* info) {
+    if (!gst_buffer_is_writable(buffer)) {
+        return FALSE;
+    }
     return gst_buffer_map(buffer, info, GST_MAP_WRITE);
 }
 

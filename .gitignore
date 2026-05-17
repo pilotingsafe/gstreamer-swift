@@ -64,3 +64,4 @@ AGENTS.md
 docs/
 tasks/
 .vscode/
+.DS_Store

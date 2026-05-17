@@ -2,6 +2,7 @@
 #define GSTREAMER_SHIM_H
 
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +33,14 @@ guint swift_gst_version_nano(void);
 /// Parse a pipeline description and return a GstElement (pipeline)
 /// Returns NULL on error, error_message will be set (caller must g_free)
 GstElement* swift_gst_parse_launch(const gchar* pipeline_description, gchar** error_message);
+
+/// Parse a pipeline description and report whether any parse error was a
+/// property lookup or property set failure.
+GstElement* swift_gst_parse_launch_with_property_error(
+    const gchar* pipeline_description,
+    gchar** error_message,
+    gboolean* error_is_property_failure
+);
 
 /// Get element by name from a bin/pipeline
 GstElement* swift_gst_bin_get_by_name(GstElement* bin, const gchar* name);
@@ -118,6 +127,16 @@ gboolean swift_gst_caps_is_equal(const GstCaps* first, const GstCaps* second);
 
 /// Unref caps
 void swift_gst_caps_unref(GstCaps* caps);
+
+// MARK: - Raw Video Info
+
+GstVideoInfo* swift_gst_video_info_new_from_caps(GstCaps* caps);
+void swift_gst_video_info_free(GstVideoInfo* info);
+gint swift_gst_video_info_width(GstVideoInfo* info);
+gint swift_gst_video_info_height(GstVideoInfo* info);
+gsize swift_gst_video_info_size(GstVideoInfo* info);
+const gchar* swift_gst_video_info_format_name(GstVideoInfo* info);
+GstCaps* swift_gst_video_info_to_caps_copy(GstVideoInfo* info);
 
 /// Set element property (boolean)
 void swift_gst_element_set_bool(GstElement* element, const gchar* name, gboolean value);

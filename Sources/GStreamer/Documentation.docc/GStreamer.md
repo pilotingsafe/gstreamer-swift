@@ -85,6 +85,7 @@ sinks, typed video composition, or reliable encoded packet delivery.
 
 ### Convenience and Experimental APIs
 
+- <doc:NativeElements>
 - <doc:TypedPipelines>
 - <doc:VideoSourceGuide>
 - <doc:EncodedPacketDelivery>

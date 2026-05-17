@@ -16,11 +16,13 @@ struct GstAppSrcExample {
         let height = 240
         let fps = 30
         let numFrames = 90 // 3 seconds
+        let capsString = "video/x-raw,format=BGRA,width=\(width),height=\(height),framerate=\(fps)/1"
+        let videoInfo = try RawVideoInfo(caps: Caps(capsString))
 
         // Create pipeline: appsrc -> videoconvert -> autovideosink
         let pipeline = try Pipeline("""
             appsrc name=src ! \
-            video/x-raw,format=BGRA,width=\(width),height=\(height),framerate=\(fps)/1 ! \
+            \(capsString) ! \
             videoconvert ! \
             autovideosink
             """)
@@ -28,15 +30,15 @@ struct GstAppSrcExample {
         let source = try pipeline.appSource(named: "src")
 
         // Set caps for BGRA video
-        source.setCaps("video/x-raw,format=BGRA,width=\(width),height=\(height),framerate=\(fps)/1")
+        source.setCaps(capsString)
 
         // Start the pipeline
         try pipeline.play()
         print("Playing generated video (\(width)x\(height) @ \(fps)fps)...")
         print("Generating \(numFrames) frames (3 seconds)\n")
 
-        let bytesPerPixel = 4 // BGRA
-        let frameSize = width * height * bytesPerPixel
+        let pixelStride = PixelFormat.bgra.bytesPerPixel
+        let frameSize = videoInfo.byteSize
         let frameDuration: UInt64 = 1_000_000_000 / UInt64(fps) // nanoseconds
 
         // Generate and push frames
@@ -48,7 +50,7 @@ struct GstAppSrcExample {
 
             for y in 0..<height {
                 for x in 0..<width {
-                    let offset = (y * width + x) * bytesPerPixel
+                    let offset = (y * width + x) * pixelStride
 
                     // Animated gradient with moving circle
                     let centerX = Double(width) / 2 + cos(t * .pi * 4) * Double(width) / 4

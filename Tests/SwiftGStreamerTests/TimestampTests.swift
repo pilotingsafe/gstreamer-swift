@@ -70,10 +70,11 @@ struct TimestampTests {
 
     @Test("AppSource PTS is preserved")
     func appSourcePTSPreserved() async throws {
+        let capsString = "video/x-raw,format=BGRA,width=2,height=2,framerate=30/1"
         let pipeline = try Pipeline(
             """
             appsrc name=src ! \
-            video/x-raw,format=BGRA,width=2,height=2,framerate=30/1 ! \
+            \(capsString) ! \
             appsink name=sink
             """
         )
@@ -81,12 +82,12 @@ struct TimestampTests {
         let src = try AppSource(pipeline: pipeline, name: "src")
         let sink = try AppSink(pipeline: pipeline, name: "sink")
 
-        src.setCaps("video/x-raw,format=BGRA,width=2,height=2,framerate=30/1")
+        src.setCaps(capsString)
         try pipeline.play()
         defer { pipeline.stop() }
 
         // Push frames with specific timestamps
-        let pixels = [UInt8](repeating: 128, count: 2 * 2 * 4)
+        let pixels = [UInt8](repeating: 128, count: try RawVideoInfo(caps: Caps(capsString)).byteSize)
         let testPts: UInt64 = 500_000_000  // 500ms
         let testDuration: UInt64 = 33_333_333
 

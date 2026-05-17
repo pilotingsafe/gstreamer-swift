@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import GStreamer
 
@@ -57,6 +58,54 @@ struct PipelineParseTests {
         #expect(throws: GStreamerError.self) {
             _ = try Pipeline(description)
         }
+    }
+
+    @Test("Parse partial link error fails at construction")
+    func parsePartialLinkErrorFailsAtConstruction() throws {
+        // Given a gst-launch-style pipeline description with an invalid element link
+        let description = "videotestsrc ! fakesink ! fakesink"
+
+        // When a Swift caller constructs a Pipeline from the description
+        var pipeline: Pipeline?
+        let error = try #require(Self.captureError {
+            pipeline = try Pipeline(description)
+        })
+
+        // Then construction throws a parsePipeline error
+        guard case GStreamerError.parsePipeline(let message) = error else {
+            Issue.record("Expected parsePipeline for partial link error, got \(error)")
+            return
+        }
+
+        // And the caller does not receive a Pipeline instance
+        #expect(pipeline == nil)
+
+        // And the error includes a parse diagnostic message
+        Self.expectParseDiagnostic(message)
+    }
+
+    @Test("Parse property error fails at construction")
+    func parsePropertyErrorFailsAtConstruction() throws {
+        // Given a gst-launch-style pipeline description with an unknown element property
+        let description = "videotestsrc does-not-exist=1 ! fakesink"
+
+        // When a Swift caller constructs a Pipeline from the description
+        var pipeline: Pipeline?
+        let error = try #require(Self.captureError {
+            pipeline = try Pipeline(description)
+        })
+
+        // Then construction throws a parsePipeline error
+        guard case GStreamerError.parsePipeline(let message) = error else {
+            Issue.record("Expected parsePipeline for property parse error, got \(error)")
+            return
+        }
+
+        // And the caller does not receive a Pipeline instance
+        #expect(pipeline == nil)
+
+        // And the error includes a parse diagnostic message
+        Self.expectParseDiagnostic(message)
     }
 
     @Test("Set pipeline state", .tags(.state, .async))
@@ -123,5 +172,20 @@ struct PipelineParseTests {
         #expect(currentState == to || currentState == from)
 
         pipeline.stop()
+    }
+
+    private static func captureError(_ body: () throws -> Void) -> Error? {
+        do {
+            try body()
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    private static func expectParseDiagnostic(_ message: String) {
+        let diagnostic = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!diagnostic.isEmpty)
+        #expect(diagnostic != "Unknown error")
     }
 }

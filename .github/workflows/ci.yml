@@ -29,7 +29,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Swift and GStreamer dependencies (Ubuntu)
+      - name: Install Swift support dependencies (Ubuntu)
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -40,15 +40,19 @@ jobs:
             libcurl4-openssl-dev \
             pkg-config \
             python3-lldb-13 \
-            libunwind-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav
+            libunwind-dev
+
+      - name: Install Linuxbrew GStreamer dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install pkgconf gstreamer
+          echo "LD_LIBRARY_PATH=${HOMEBREW_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
 
       - name: Install Swiftly (macOS)
         if: runner.os == 'macOS'
@@ -114,9 +118,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
-          pkg-config --atleast-version=1.20 gstreamer-1.0
-          pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
+          pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0
+          printf 'gstreamer-1.0: %s\n' "$(pkg-config --modversion gstreamer-1.0)"
+          printf 'gstreamer-app-1.0: %s\n' "$(pkg-config --modversion gstreamer-app-1.0)"
+          printf 'gstreamer-video-1.0: %s\n' "$(pkg-config --modversion gstreamer-video-1.0)"
+          printf 'gstreamer-base-1.0: %s\n' "$(pkg-config --modversion gstreamer-base-1.0)"
+          pkg-config --atleast-version=1.28.2 gstreamer-1.0
+          pkg-config --atleast-version=1.28.2 gstreamer-app-1.0
+          pkg-config --atleast-version=1.28.2 gstreamer-video-1.0
+          pkg-config --atleast-version=1.28.2 gstreamer-base-1.0
           gst-inspect-1.0 --version
 
       - name: Build
@@ -125,8 +138,10 @@ jobs:
           set -euo pipefail
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
-          else
+          fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
             . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           fi
           swiftly run swift build
 
@@ -136,8 +151,10 @@ jobs:
           set -euo pipefail
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
-          else
+          fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
             . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           fi
           swiftly run swift test --no-parallel
 
@@ -147,8 +164,10 @@ jobs:
           set -euo pipefail
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             . "${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/env.sh"
-          else
+          fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
             . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           fi
           swiftly run swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members
           symbol_graph="$(find .build -path '*/symbolgraph/GStreamer.symbols.json' -print -quit)"

@@ -43,10 +43,26 @@ guint swift_gst_version_nano(void) {
 }
 
 GstElement* swift_gst_parse_launch(const gchar* pipeline_description, gchar** error_message) {
+    return swift_gst_parse_launch_with_property_error(pipeline_description, error_message, NULL);
+}
+
+GstElement* swift_gst_parse_launch_with_property_error(
+    const gchar* pipeline_description,
+    gchar** error_message,
+    gboolean* error_is_property_failure
+) {
     GError* error = NULL;
     GstElement* pipeline = gst_parse_launch(pipeline_description, &error);
 
+    if (error_is_property_failure) {
+        *error_is_property_failure = FALSE;
+    }
     if (error) {
+        if (error_is_property_failure && error->domain == GST_PARSE_ERROR) {
+            *error_is_property_failure =
+                error->code == GST_PARSE_ERROR_NO_SUCH_PROPERTY ||
+                error->code == GST_PARSE_ERROR_COULD_NOT_SET_PROPERTY;
+        }
         if (error_message) {
             *error_message = g_strdup(error->message);
         }
@@ -445,6 +461,46 @@ gboolean swift_gst_caps_is_equal(const GstCaps* first, const GstCaps* second) {
 
 void swift_gst_caps_unref(GstCaps* caps) {
     gst_caps_unref(caps);
+}
+
+GstVideoInfo* swift_gst_video_info_new_from_caps(GstCaps* caps) {
+    if (caps == NULL) {
+        return NULL;
+    }
+
+    GstVideoInfo* info = g_new0(GstVideoInfo, 1);
+    gst_video_info_init(info);
+    if (!gst_video_info_from_caps(info, caps)) {
+        g_free(info);
+        return NULL;
+    }
+    return info;
+}
+
+void swift_gst_video_info_free(GstVideoInfo* info) {
+    g_free(info);
+}
+
+gint swift_gst_video_info_width(GstVideoInfo* info) {
+    return info != NULL ? GST_VIDEO_INFO_WIDTH(info) : 0;
+}
+
+gint swift_gst_video_info_height(GstVideoInfo* info) {
+    return info != NULL ? GST_VIDEO_INFO_HEIGHT(info) : 0;
+}
+
+gsize swift_gst_video_info_size(GstVideoInfo* info) {
+    return info != NULL ? GST_VIDEO_INFO_SIZE(info) : 0;
+}
+
+const gchar* swift_gst_video_info_format_name(GstVideoInfo* info) {
+    return info != NULL
+        ? gst_video_format_to_string(GST_VIDEO_INFO_FORMAT(info))
+        : NULL;
+}
+
+GstCaps* swift_gst_video_info_to_caps_copy(GstVideoInfo* info) {
+    return info != NULL ? gst_video_info_to_caps(info) : NULL;
 }
 
 void swift_gst_element_set_bool(GstElement* element, const gchar* name, gboolean value) {

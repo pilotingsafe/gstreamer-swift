@@ -1,4 +1,3 @@
-import Foundation
 import Testing
 import CGStreamerTestSupport
 @testable import GStreamer
@@ -16,33 +15,19 @@ extension Tag {
     @Tag static var pads: Self
 }
 
-private final class FatalCriticalTrapLock: @unchecked Sendable {
-    private let rawLock = NSLock()
-
-    func lock() {
-        rawLock.lock()
-    }
-
-    func unlock() {
-        rawLock.unlock()
-    }
-}
-
 @Suite("Element Tests", .serialized)
 struct ElementTests {
-    private static let fatalCriticalLock = FatalCriticalTrapLock()
-
     init() throws {
         try GStreamer.initialize()
     }
 
     @discardableResult
     private static func withFatalGStreamerCriticalTrap<T>(_ body: () throws -> T) rethrows -> T {
-        fatalCriticalLock.lock()
+        swift_gst_test_lock_glib_log_state()
         let previous = swift_gst_test_enable_fatal_criticals()
         defer {
             swift_gst_test_restore_fatal_mask(previous)
-            fatalCriticalLock.unlock()
+            swift_gst_test_unlock_glib_log_state()
         }
 
         return try body()
