@@ -1031,16 +1031,18 @@ static gboolean swift_gst_register_base_transform_with_plugin(
         );
     }
 
-    GstElementFactory* existing_factory = gst_element_factory_find(registration->factory_name);
-    if (existing_factory != NULL) {
-        gst_object_unref(existing_factory);
-        g_mutex_unlock(&swift_gst_base_transform_registration_mutex);
-        swift_gst_base_transform_free_registration(registration);
-        return swift_gst_base_transform_fail(
-            error_message,
-            "BaseTransform factory '%s' is already registered",
-            info->factory_name
-        );
+    if (plugin == NULL) {
+        GstElementFactory* existing_factory = gst_element_factory_find(registration->factory_name);
+        if (existing_factory != NULL) {
+            gst_object_unref(existing_factory);
+            g_mutex_unlock(&swift_gst_base_transform_registration_mutex);
+            swift_gst_base_transform_free_registration(registration);
+            return swift_gst_base_transform_fail(
+                error_message,
+                "BaseTransform factory '%s' is already registered",
+                info->factory_name
+            );
+        }
     }
 
     GTypeInfo type_info = {

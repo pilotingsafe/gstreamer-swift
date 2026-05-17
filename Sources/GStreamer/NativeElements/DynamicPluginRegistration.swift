@@ -1,3 +1,5 @@
+import CGStreamerBaseShim
+
 /// A scoped borrowed GStreamer dynamic plugin context.
 ///
 /// Values of this type are valid only for the synchronous
@@ -35,7 +37,11 @@ extension GStreamer {
         into plugin: borrowing NativeElementDynamicPluginContext,
         @NativeElementPluginBuilder elements: () -> [NativeElementPluginEntry]
     ) throws {
-        let registrations = try NativeStaticPluginRegistration.validate(elements())
+        let pluginName = GLibString.borrow(swift_gst_plugin_name(plugin.rawPlugin))
+        let registrations = try NativeStaticPluginRegistration.validate(
+            elements(),
+            allowingExistingFactoriesOwnedBy: pluginName
+        )
         try NativeStaticPluginContext.registerElements(registrations, plugin: plugin.rawPlugin)
     }
 }

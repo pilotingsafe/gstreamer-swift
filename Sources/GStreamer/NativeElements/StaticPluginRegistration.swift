@@ -247,7 +247,10 @@ internal enum NativeStaticPluginEntry {
 }
 
 internal enum NativeStaticPluginRegistration {
-    static func validate(_ entries: [NativeElementPluginEntry]) throws -> [NativeStaticPluginEntry] {
+    static func validate(
+        _ entries: [NativeElementPluginEntry],
+        allowingExistingFactoriesOwnedBy allowedPluginName: String? = nil
+    ) throws -> [NativeStaticPluginEntry] {
         guard !entries.isEmpty else {
             throw GStreamerError.invalidArgument(
                 parameter: "elements",
@@ -275,11 +278,14 @@ internal enum NativeStaticPluginRegistration {
             }
         }
 
-        try preflightNames(registrations)
+        try preflightNames(registrations, allowingExistingFactoriesOwnedBy: allowedPluginName)
         return registrations
     }
 
-    private static func preflightNames(_ registrations: [NativeStaticPluginEntry]) throws {
+    private static func preflightNames(
+        _ registrations: [NativeStaticPluginEntry],
+        allowingExistingFactoriesOwnedBy allowedPluginName: String?
+    ) throws {
         var factoryNames = Set<String>()
         var typeNames = Set<String>()
 
@@ -296,7 +302,10 @@ internal enum NativeStaticPluginRegistration {
                     reason: "duplicate native element GType name '\(registration.typeName)'"
                 )
             }
-            guard !factoryNameIsRegistered(registration.factoryName) else {
+            guard !factoryNameIsRegistered(
+                registration.factoryName,
+                allowingExistingOwnerPluginNamed: allowedPluginName
+            ) else {
                 throw GStreamerError.invalidArgument(
                     parameter: "factoryName",
                     reason: "native element factory '\(registration.factoryName)' is already registered"
@@ -311,8 +320,18 @@ internal enum NativeStaticPluginRegistration {
         }
     }
 
-    private static func factoryNameIsRegistered(_ factoryName: String) -> Bool {
+    private static func factoryNameIsRegistered(
+        _ factoryName: String,
+        allowingExistingOwnerPluginNamed allowedPluginName: String?
+    ) -> Bool {
         factoryName.withCString { factoryName in
+            if let allowedPluginName,
+               allowedPluginName.withCString({
+                   swift_gst_element_factory_plugin_name_matches(factoryName, $0) != 0
+               }) {
+                return false
+            }
+
             guard let factory = gst_element_factory_find(factoryName) else {
                 return false
             }

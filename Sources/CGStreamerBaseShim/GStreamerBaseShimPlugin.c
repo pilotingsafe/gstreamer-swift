@@ -45,6 +45,29 @@ G_GNUC_INTERNAL gboolean swift_gst_base_sink_is_valid_type_name(const gchar* nam
     return TRUE;
 }
 
+const gchar* swift_gst_plugin_name(GstPlugin* plugin) {
+    return plugin != NULL ? gst_plugin_get_name(plugin) : NULL;
+}
+
+gboolean swift_gst_element_factory_plugin_name_matches(
+    const gchar* factory_name,
+    const gchar* expected_plugin_name
+) {
+    if (factory_name == NULL || expected_plugin_name == NULL) {
+        return FALSE;
+    }
+
+    GstElementFactory* factory = gst_element_factory_find(factory_name);
+    if (factory == NULL) {
+        return FALSE;
+    }
+
+    const gchar* plugin_name = gst_plugin_feature_get_plugin_name(GST_PLUGIN_FEATURE(factory));
+    gboolean result = g_strcmp0(plugin_name, expected_plugin_name) == 0;
+    gst_object_unref(factory);
+    return result;
+}
+
 gboolean swift_gst_register_static_plugin(
     const gchar* name,
     const gchar* description,

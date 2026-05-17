@@ -220,6 +220,40 @@ struct DynamicPluginSupportTests {
         ])
     }
 
+    @Test("Allows dynamic plugin registry-cache reloads during external discovery")
+    func allowsDynamicPluginRegistryCacheReloadsDuringExternalDiscovery() throws {
+        // Given external GStreamer tools may cache dynamic plugin features before loading their element classes
+        let dynamicRegistration = try Self.contents(of: "Sources/GStreamer/NativeElements/DynamicPluginRegistration.swift")
+        let staticRegistration = try Self.contents(of: "Sources/GStreamer/NativeElements/StaticPluginRegistration.swift")
+        let shimHeader = try Self.contents(of: "Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
+        let baseSinkShim = try Self.contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseSinkShim.c")
+        let baseTransformShim = try Self.contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseTransformShim.c")
+
+        // Then dynamic plugin validation ignores factories already owned by the same plugin cache entry
+        Self.expectContains(dynamicRegistration, [
+            "swift_gst_plugin_name",
+            "allowingExistingFactoriesOwnedBy",
+        ])
+        Self.expectContains(staticRegistration, [
+            "swift_gst_element_factory_plugin_name_matches",
+            "allowingExistingOwnerPluginNamed",
+        ])
+        Self.expectContains(shimHeader, [
+            "swift_gst_plugin_name",
+            "swift_gst_element_factory_plugin_name_matches",
+        ])
+
+        // And the C registration precheck keeps the stricter global lookup only for process-local registration
+        Self.expectContains(baseSinkShim, [
+            "if (plugin == NULL)",
+            "gst_element_factory_find",
+        ])
+        Self.expectContains(baseTransformShim, [
+            "if (plugin == NULL)",
+            "gst_element_factory_find",
+        ])
+    }
+
     @Test("Rejects invalid dynamic element groups before registration")
     func rejectsInvalidDynamicElementGroupsBeforeRegistration() throws {
         // Given a dynamic plugin element group is empty, invalid, duplicated, or already registered
