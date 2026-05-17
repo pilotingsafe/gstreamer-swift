@@ -8,7 +8,6 @@ import CGStreamerTestSupport
 struct DynamicPluginSupportTests {
     fileprivate static let videoCaps = "video/x-raw,format=RGB,width=2,height=2,framerate=1/1"
     private static let templateRoot = "Examples/DynamicPluginTemplate"
-    private static let sourcePath = "Sources/GStreamer/SwiftBaseSinkElement.swift"
 
     init() throws {
         try GStreamer.initialize()
@@ -182,7 +181,7 @@ struct DynamicPluginSupportTests {
     @Test("Prevents borrowed dynamic plugin context misuse")
     func preventsBorrowedDynamicPluginContextMisuse() throws {
         // Given Swift plugin init receives a borrowed GStreamer plugin pointer
-        let source = try Self.contents(of: Self.sourcePath)
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
 
         // When maintainers inspect the public dynamic plugin API
         let contextBlock = try Self.bracedDeclarationBlock(

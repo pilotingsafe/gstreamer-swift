@@ -107,7 +107,7 @@ struct SwiftBaseTransformGeneralOutOfPlaceNativeElementTests {
         #expect(try Self.isUseDefault(transform.transformSize(direction: .sink, caps: caps, size: 16, otherCaps: caps)))
 
         // Then GStreamer receives the matching default delegation, vfunc value, false result, or failure
-        let source = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         #expect(source.contains("SwiftGstBaseTransformHookStatus"))
         #expect(source.contains("SWIFT_GST_BASE_TRANSFORM_HOOK_USE_DEFAULT"))
         #expect(source.contains("SWIFT_GST_BASE_TRANSFORM_HOOK_VALUE"))
@@ -251,7 +251,7 @@ struct SwiftBaseTransformGeneralOutOfPlaceNativeElementTests {
     @Test("General caps fixation handles candidate caps safely")
     func generalCapsFixationHandlesCandidateCapsSafely() throws {
         // Given a general transform customizes caps fixation
-        let source = try Self.contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseShim.c")
+        let source = try NativeElementSourceLayoutTestSupport.baseShimCSource()
 
         // When fixation returns a Swift caps value, use default, or failure
         #expect(source.contains("swift_gst_base_transform_fixate_caps"))
@@ -269,7 +269,7 @@ struct SwiftBaseTransformGeneralOutOfPlaceNativeElementTests {
     @Test("Allocation hooks inspect and mutate queries")
     func allocationHooksCanInspectAndMutateQueries() throws {
         // Given a general out-of-place transform receives allocation negotiation callbacks
-        let source = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         let probe = Self.generalHookProbe(
             factoryName: "swiftgeneral_c_hook_allocation",
             typeName: "SwiftGstTestGeneralCHookAllocationTransform"
@@ -319,7 +319,7 @@ struct SwiftBaseTransformGeneralOutOfPlaceNativeElementTests {
     @Test("Scoped wrappers prevent pointer escape and unsafe storage")
     func scopedWrappersPreventRawPointerEscapeAndUnsafeStorage() throws {
         // Given allocation queries and buffer metadata are borrowed only for a callback
-        let source = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
 
         // When a Swift author uses the public wrapper APIs
         #expect(source.contains("public struct AllocationQuery: ~Copyable"))
@@ -432,7 +432,7 @@ struct SwiftBaseTransformGeneralOutOfPlaceNativeElementTests {
         #expect(frame.duration == duration)
 
         // And handled false rejects the requested metadata transfer
-        let source = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         #expect(source.contains("func copyMetadata("))
         #expect(source.contains("func transformMetadata("))
 
@@ -493,7 +493,7 @@ struct SwiftBaseTransformGeneralOutOfPlaceNativeElementTests {
         let appsrcExample = try Self.contents(of: "Examples/gst-appsrc/main.swift")
 
         // When the general out-of-place API is documented and demonstrated
-        let swiftSource = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let swiftSource = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         for hookName in Self.generalHookNames {
             let hookDocumentation = Self.documentationBlock(before: hookName, in: swiftSource)
             #expect(hookDocumentation.contains(".useDefault"), "Missing .useDefault docs for \(hookName)")

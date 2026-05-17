@@ -163,7 +163,7 @@ struct BaseTransformPassthroughBorrowedBufferTests {
     @Test("Borrowed buffer API documents read and conditional write access")
     func borrowedBufferAPIDocumentsReadAndConditionalWriteAccess() throws {
         // Given a Swift transform callback receives a borrowed transform buffer
-        let source = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         let documentation = try Self.contents(of: "Sources/GStreamer/Documentation.docc/NativeElements.md")
 
         // When a user reads the public API documentation

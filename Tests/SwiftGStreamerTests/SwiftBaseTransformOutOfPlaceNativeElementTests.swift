@@ -299,9 +299,7 @@ struct SwiftBaseTransformOutOfPlaceNativeElementTests {
         _ = registerInPlace
 
         let root = try Self.packageRoot()
-        let baseTransformSource = try Self.contents(
-            of: root.appendingPathComponent("Sources/GStreamer/SwiftBaseSinkElement.swift")
-        )
+        let baseTransformSource = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         let baseShimHeader = try Self.contents(
             of: root.appendingPathComponent("Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
         )
