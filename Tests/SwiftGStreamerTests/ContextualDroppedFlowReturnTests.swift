@@ -67,7 +67,7 @@ struct ContextualDroppedFlowReturnTests {
     @Test("Callback bridges use contextual flow-return conversions")
     func callbackBridgesUseContextualFlowReturnConversions() throws {
         // Given the BaseSink and BaseTransform callback bridges convert Swift flow results
-        let source = try Self.contents(of: "Sources/GStreamer/SwiftBaseSinkElement.swift")
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         let baseSinkRender = try Self.functionBody(
             named: "swiftGstBaseSinkRender",
             declarationMarker: "func swiftGstBaseSinkRender",
@@ -116,7 +116,7 @@ struct ContextualDroppedFlowReturnTests {
 
     private static func expectBaseSinkDroppedShimHelperUsesSemanticMacro() throws {
         let header = try contents(of: "Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
-        let source = try contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseShim.c")
+        let source = try NativeElementSourceLayoutTestSupport.baseShimCSource()
         let body = try functionBody(
             named: "swift_gst_base_sink_flow_dropped",
             declarationMarker: "swift_gst_base_sink_flow_dropped",
@@ -133,7 +133,7 @@ struct ContextualDroppedFlowReturnTests {
 
     private static func expectBaseTransformDroppedShimHelperUsesSemanticMacro() throws {
         let header = try contents(of: "Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
-        let source = try contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseShim.c")
+        let source = try NativeElementSourceLayoutTestSupport.baseShimCSource()
         let body = try functionBody(
             named: "swift_gst_base_transform_flow_dropped",
             declarationMarker: "swift_gst_base_transform_flow_dropped",

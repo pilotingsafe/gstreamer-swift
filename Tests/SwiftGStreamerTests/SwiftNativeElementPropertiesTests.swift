@@ -467,9 +467,7 @@ struct SwiftNativeElementPropertiesTests {
         #expect(Self.copiedString(defaults.enum_value) == "balanced")
 
         // And raw GValue pointers and borrowed C strings do not escape into public Swift APIs
-        let nativeSource = try Self.contents(
-            of: Self.packageRoot().appendingPathComponent("Sources/GStreamer/SwiftBaseSinkElement.swift")
-        )
+        let nativeSource = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
         #expect(!Self.containsRegex(#"public\s+[^\n]*(GValue|gchar|CChar)"#, in: nativeSource))
     }
 

@@ -8,7 +8,6 @@ import CGStreamerTestSupport
 struct DynamicPluginSupportTests {
     fileprivate static let videoCaps = "video/x-raw,format=RGB,width=2,height=2,framerate=1/1"
     private static let templateRoot = "Examples/DynamicPluginTemplate"
-    private static let sourcePath = "Sources/GStreamer/SwiftBaseSinkElement.swift"
 
     init() throws {
         try GStreamer.initialize()
@@ -182,7 +181,7 @@ struct DynamicPluginSupportTests {
     @Test("Prevents borrowed dynamic plugin context misuse")
     func preventsBorrowedDynamicPluginContextMisuse() throws {
         // Given Swift plugin init receives a borrowed GStreamer plugin pointer
-        let source = try Self.contents(of: Self.sourcePath)
+        let source = try NativeElementSourceLayoutTestSupport.nativeElementSwiftSource()
 
         // When maintainers inspect the public dynamic plugin API
         let contextBlock = try Self.bracedDeclarationBlock(
@@ -218,6 +217,40 @@ struct DynamicPluginSupportTests {
             "rawPlugin: OpaquePointer",
             "(borrowing NativeElementDynamicPluginContext) throws -> R",
             "into plugin: borrowing NativeElementDynamicPluginContext",
+        ])
+    }
+
+    @Test("Allows dynamic plugin registry-cache reloads during external discovery")
+    func allowsDynamicPluginRegistryCacheReloadsDuringExternalDiscovery() throws {
+        // Given external GStreamer tools may cache dynamic plugin features before loading their element classes
+        let dynamicRegistration = try Self.contents(of: "Sources/GStreamer/NativeElements/DynamicPluginRegistration.swift")
+        let staticRegistration = try Self.contents(of: "Sources/GStreamer/NativeElements/StaticPluginRegistration.swift")
+        let shimHeader = try Self.contents(of: "Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
+        let baseSinkShim = try Self.contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseSinkShim.c")
+        let baseTransformShim = try Self.contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseTransformShim.c")
+
+        // Then dynamic plugin validation ignores factories already owned by the same plugin cache entry
+        Self.expectContains(dynamicRegistration, [
+            "swift_gst_plugin_name",
+            "allowingExistingFactoriesOwnedBy",
+        ])
+        Self.expectContains(staticRegistration, [
+            "swift_gst_element_factory_plugin_name_matches",
+            "allowingExistingOwnerPluginNamed",
+        ])
+        Self.expectContains(shimHeader, [
+            "swift_gst_plugin_name",
+            "swift_gst_element_factory_plugin_name_matches",
+        ])
+
+        // And the C registration precheck keeps the stricter global lookup only for process-local registration
+        Self.expectContains(baseSinkShim, [
+            "if (plugin == NULL)",
+            "gst_element_factory_find",
+        ])
+        Self.expectContains(baseTransformShim, [
+            "if (plugin == NULL)",
+            "gst_element_factory_find",
         ])
     }
 
@@ -278,12 +311,14 @@ struct DynamicPluginSupportTests {
 
         // Then the plugin records a useful GStreamer status error
         #expect(cStatusHelper.contents.contains("gst_plugin_add_status_error"))
+        #expect(cStatusHelper.contents.contains("g_printerr"))
         Self.expectContains(swiftInit.contents, [
             "SWIFT_NATIVE_DYNAMIC_PLUGIN_FORCE_REGISTRATION_FAILURE",
             "forced Swift dynamic plugin registration failure",
         ])
         Self.expectContains(try Self.allTemplateScriptContents(), [
             "EXPECT_FAILURE_DIAGNOSTIC",
+            "GST_REGISTRY_FORK=no",
             "SWIFT_NATIVE_DYNAMIC_PLUGIN_FORCE_REGISTRATION_FAILURE",
             "forced Swift dynamic plugin registration failure",
             "missing useful Swift registration failure diagnostic",
@@ -327,6 +362,10 @@ struct DynamicPluginSupportTests {
         Self.expectContains(scripts, [
             "GStreamer",
             "GLib",
+            "/home/linuxbrew/.linuxbrew",
+            "/opt/homebrew",
+            "/usr/local/Cellar",
+            "/usr/local/opt",
         ])
 
         // And unclassified dependencies fail install validation
@@ -350,6 +389,14 @@ struct DynamicPluginSupportTests {
         Self.expectContains(scripts, [
             "runtimeLibraryPaths",
             "runtimeResourcePath",
+        ])
+        Self.expectContains(scripts, [
+            "libBlocksRuntime",
+            "libdispatch",
+            "libFoundation",
+            "libFoundationEssentials",
+            "libFoundationInternationalization",
+            "lib_FoundationICU",
         ])
 
         // And it classifies macOS dependencies with otool and Linux dependencies with ldd
@@ -422,6 +469,116 @@ struct DynamicPluginSupportTests {
                 || scripts.localizedCaseInsensitiveContains("remove")
                 || scripts.localizedCaseInsensitiveContains("delete")
         )
+    }
+
+    @Test("CI validates dynamic plugin through external GStreamer tools")
+    func ciValidatesDynamicPluginThroughExternalGStreamerTools() throws {
+        // Given the repository CI includes an external dynamic plugin validation job
+        let workflow = try Self.contents(of: ".github/workflows/ci.yml")
+        let job = try Self.workflowJob(named: "dynamic-plugin-external", in: workflow)
+
+        // Then the job is an Ubuntu-only blocking check with the expected toolchain baseline
+        Self.expectContains(job, [
+            "runs-on: ubuntu-22.04",
+            "timeout-minutes: 60",
+            "permissions:",
+            "contents: read",
+            "SWIFT_VERSION: 6.3.1",
+        ])
+        #expect(!job.contains("continue-on-error"))
+
+        // And Linux CI installs GStreamer through Linuxbrew while exporting its runtime library path
+        let linuxbrewStep = try Self.workflowStep(
+            named: "Install dynamic plugin Linuxbrew GStreamer dependencies",
+            in: job
+        )
+        Self.expectContains(linuxbrewStep, [
+            #"eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)""#,
+            "brew install pkgconf gstreamer",
+            #"echo "LD_LIBRARY_PATH=${HOMEBREW_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV""#,
+        ])
+
+        // And Linux CI installs patchelf because the staged install script requires it for Linux rpaths
+        let supportStep = try Self.workflowStep(
+            named: "Install dynamic plugin Swift support dependencies (Ubuntu)",
+            in: job
+        )
+        Self.expectContains(supportStep, [
+            "sudo apt-get remove -y libunwind-13-dev libunwind-14-dev",
+            "libcurl4-openssl-dev",
+            "pkg-config",
+            "python3-lldb-13",
+            "libunwind-dev",
+            "patchelf",
+            "patchelf --version",
+        ])
+
+        // And the dynamic preflight covers every native-element GStreamer module
+        let preflightStep = try Self.workflowStep(named: "Preflight dynamic plugin dependencies", in: job)
+        #expect(
+            Self.hasSwiftlyAndLinuxbrewEnvironmentBefore("pkg-config --exists", in: preflightStep)
+        )
+        #expect(
+            Self.hasSwiftlyAndLinuxbrewEnvironmentBefore("gst-inspect-1.0 --version", in: preflightStep)
+        )
+        #expect(
+            preflightStep.contains(
+                "pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0"
+            )
+        )
+        for module in Self.requiredGStreamerModules {
+            #expect(preflightStep.contains("pkg-config --modversion \(module)"))
+            #expect(preflightStep.contains("pkg-config --atleast-version=1.28.2 \(module)"))
+        }
+
+        // And the template is built, inspected, staged, and validated as an external plugin
+        let buildStep = try Self.workflowStep(named: "Build dynamic plugin template", in: job)
+        #expect(
+            Self.hasSwiftlyAndLinuxbrewEnvironmentBefore("swiftly run swift build -c release", in: buildStep)
+        )
+        Self.expectContains(buildStep, [
+            "cd Examples/DynamicPluginTemplate",
+            "swiftly run swift build -c release",
+        ])
+
+        let inspectStep = try Self.workflowStep(named: "Inspect dynamic plugin symbols", in: job)
+        #expect(Self.hasSwiftlyAndLinuxbrewEnvironmentBefore("nm -D", in: inspectStep))
+        Self.expectContains(inspectStep, [
+            ".build/release/libgstswiftnative.so",
+            "swift_native_dynamic_plugin_init",
+            "gst_plugin_swiftnative_(get_desc|register)",
+        ])
+
+        let stageStep = try Self.workflowStep(named: "Stage dynamic plugin template", in: job)
+        #expect(Self.hasSwiftlyAndLinuxbrewEnvironmentBefore("Scripts/stage-install.sh", in: stageStep))
+        Self.expectContains(stageStep, [
+            #"Scripts/stage-install.sh swiftnative "$RUNNER_TEMP/swiftnative-stage""#,
+        ])
+
+        let validationStep = try Self.workflowStep(named: "Validate staged dynamic plugin", in: job)
+        #expect(
+            Self.hasSwiftlyAndLinuxbrewEnvironmentBefore("Scripts/validate-staged-plugin.sh", in: validationStep)
+        )
+        Self.expectContains(validationStep, [
+            "VALIDATION_TIMEOUT_SECONDS=30",
+            #"Scripts/validate-staged-plugin.sh swiftnative "$RUNNER_TEMP/swiftnative-stage" swiftnativeidentity"#,
+        ])
+
+        let failureDiagnosticStep = try Self.workflowStep(
+            named: "Validate dynamic plugin failure diagnostics",
+            in: job
+        )
+        #expect(
+            Self.hasSwiftlyAndLinuxbrewEnvironmentBefore(
+                "Scripts/validate-staged-plugin.sh",
+                in: failureDiagnosticStep
+            )
+        )
+        Self.expectContains(failureDiagnosticStep, [
+            "EXPECT_FAILURE_DIAGNOSTIC=1",
+            "VALIDATION_TIMEOUT_SECONDS=30",
+            #"Scripts/validate-staged-plugin.sh swiftnative "$RUNNER_TEMP/swiftnative-stage" swiftnativeidentity"#,
+        ])
     }
 
     @Test("Uses template-root stage defaults independent of caller directory")
@@ -669,6 +826,74 @@ struct DynamicPluginSupportTests {
         )
     }
 
+    private static func workflowJob(named jobName: String, in workflow: String) throws -> String {
+        let jobHeader = "  \(jobName):"
+        var lines: [Substring] = []
+        var isCollecting = false
+
+        for line in workflow.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line == jobHeader {
+                isCollecting = true
+            } else if isCollecting,
+                      line.hasPrefix("  "),
+                      !line.hasPrefix("    "),
+                      line.hasSuffix(":") {
+                break
+            }
+
+            if isCollecting {
+                lines.append(line)
+            }
+        }
+
+        guard !lines.isEmpty else {
+            throw DynamicPluginSupportTestError.workflowJobNotFound(jobName)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func workflowStep(named stepName: String, in workflowOrJob: String) throws -> String {
+        let marker = "- name: \(stepName)"
+        guard let stepStart = workflowOrJob.range(of: marker)?.lowerBound else {
+            throw DynamicPluginSupportTestError.workflowStepNotFound(stepName)
+        }
+
+        let remaining = workflowOrJob[stepStart...]
+        let searchRange = remaining.index(after: remaining.startIndex)..<remaining.endIndex
+        let nextStepStart = remaining
+            .range(of: "\n      - name: ", options: [], range: searchRange)?
+            .lowerBound ?? workflowOrJob.endIndex
+
+        return String(workflowOrJob[stepStart..<nextStepStart])
+    }
+
+    private static func hasSwiftlyAndLinuxbrewEnvironmentBefore(
+        _ command: String,
+        in step: String
+    ) -> Bool {
+        snippetsAppearInOrder(
+            [
+                #". "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh""#,
+                #"eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)""#,
+                command,
+            ],
+            in: step
+        )
+    }
+
+    private static func snippetsAppearInOrder(_ snippets: [String], in source: String) -> Bool {
+        var searchStart = source.startIndex
+
+        for snippet in snippets {
+            guard let range = source.range(of: snippet, range: searchStart..<source.endIndex) else {
+                return false
+            }
+            searchStart = range.upperBound
+        }
+
+        return true
+    }
+
     private static func templateContents(_ relativePath: String) throws -> String {
         try Self.contents(of: "\(templateRoot)/\(relativePath)")
     }
@@ -861,6 +1086,13 @@ struct DynamicPluginSupportTests {
             #expect(!contents.contains(term), "Found forbidden content: \(term)")
         }
     }
+
+    private static let requiredGStreamerModules = [
+        "gstreamer-1.0",
+        "gstreamer-app-1.0",
+        "gstreamer-video-1.0",
+        "gstreamer-base-1.0",
+    ]
 }
 
 private func swiftGstTestDynamicPluginInitCallback(
@@ -1193,6 +1425,8 @@ private enum DynamicPluginSupportTestError: Error, CustomStringConvertible, Send
     case templateSourceNotFound([String])
     case declarationNotFound(String)
     case unbalancedDeclaration(String)
+    case workflowJobNotFound(String)
+    case workflowStepNotFound(String)
     case testPluginRegistrationFailed(String, String?)
     case missingPluginPointer
 
@@ -1210,6 +1444,10 @@ private enum DynamicPluginSupportTestError: Error, CustomStringConvertible, Send
             "Could not find declaration starting with \(marker)"
         case .unbalancedDeclaration(let marker):
             "Could not parse declaration block starting with \(marker)"
+        case .workflowJobNotFound(let jobName):
+            "Could not find workflow job named \(jobName)"
+        case .workflowStepNotFound(let stepName):
+            "Could not find workflow step named \(stepName)"
         case .testPluginRegistrationFailed(let name, let diagnostic):
             "Could not register test plugin \(name): \(diagnostic ?? "no callback diagnostic")"
         case .missingPluginPointer:

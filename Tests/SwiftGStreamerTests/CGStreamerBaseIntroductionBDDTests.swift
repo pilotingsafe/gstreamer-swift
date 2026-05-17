@@ -42,7 +42,7 @@ struct CGStreamerBaseIntroductionBDDTests {
         let shimTarget = try Self.packageTarget(named: "CGStreamerBaseShim", in: manifest)
         let gstreamerTarget = try Self.packageTarget(named: "GStreamer", in: manifest)
         let shimHeader = try Self.contents(of: "Sources/CGStreamerBaseShim/include/GStreamerBaseShim.h")
-        let shimSource = try Self.contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseShim.c")
+        let shimSource = try NativeElementSourceLayoutTestSupport.baseShimCSource()
 
         // When Phase 0 adds the dedicated Base shim target
         let normalizedShimTarget = Self.normalizedWhitespace(shimTarget)
@@ -57,7 +57,11 @@ struct CGStreamerBaseIntroductionBDDTests {
         #expect(shimHeader.contains("#include <gst/gst.h>"))
         #expect(shimHeader.contains("#include <gst/base/gstbasesink.h>"))
         #expect(shimHeader.contains("#include <gst/base/gstbasetransform.h>"))
-        #expect(shimSource.contains(#"#include "include/GStreamerBaseShim.h""#))
+        #expect(
+            try NativeElementSourceLayoutTestSupport
+                .contents(of: "Sources/CGStreamerBaseShim/GStreamerBaseShimInternal.h")
+                .contains(#"#include "include/GStreamerBaseShim.h""#)
+        )
 
         // And the shim exports the Phase 1 sink ABI
         #expect(shimHeader.contains("SwiftGstBaseSinkInfo"))

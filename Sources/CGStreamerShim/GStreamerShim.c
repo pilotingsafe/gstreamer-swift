@@ -668,6 +668,14 @@ gboolean swift_gst_pad_unlink(GstPad* src, GstPad* sink) {
     return gst_pad_unlink(src, sink);
 }
 
+gboolean swift_gst_pad_direction_is_source(GstPadDirection direction) {
+    return direction == GST_PAD_SRC;
+}
+
+gboolean swift_gst_pad_direction_is_sink(GstPadDirection direction) {
+    return direction == GST_PAD_SINK;
+}
+
 void swift_gst_pad_unref(GstPad* pad) {
     gst_object_unref(pad);
 }

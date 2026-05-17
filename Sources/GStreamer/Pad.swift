@@ -162,12 +162,7 @@ public final class Pad: @unchecked Sendable {
 
     /// The direction of this pad (source or sink).
     public var direction: Direction {
-        let dir = gst_pad_get_direction(pad)
-        switch dir {
-        case GST_PAD_SRC: return .source
-        case GST_PAD_SINK: return .sink
-        default: return .unknown
-        }
+        Direction(gstPadDirection: gst_pad_get_direction(pad))
     }
 
     /// Pad direction.
@@ -175,6 +170,16 @@ public final class Pad: @unchecked Sendable {
         case source
         case sink
         case unknown
+
+        internal init(gstPadDirection: GstPadDirection) {
+            if swift_gst_pad_direction_is_source(gstPadDirection) != 0 {
+                self = .source
+            } else if swift_gst_pad_direction_is_sink(gstPadDirection) != 0 {
+                self = .sink
+            } else {
+                self = .unknown
+            }
+        }
     }
 
     /// Whether this pad is currently linked.

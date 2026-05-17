@@ -294,6 +294,12 @@ gboolean swift_gst_register_static_plugin(
     gchar** error_message
 );
 
+const gchar* swift_gst_plugin_name(GstPlugin* plugin);
+gboolean swift_gst_element_factory_plugin_name_matches(
+    const gchar* factory_name,
+    const gchar* expected_plugin_name
+);
+
 GstCaps* swift_gst_allocation_query_get_caps(GstQuery* query);
 gboolean swift_gst_allocation_query_get_needs_pool(GstQuery* query);
 guint swift_gst_allocation_query_pool_count(GstQuery* query);
