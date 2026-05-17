@@ -176,3 +176,141 @@ jobs:
             exit 1
           fi
           echo "Found symbol graph: $symbol_graph"
+
+  dynamic-plugin-external:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      SWIFT_VERSION: 6.3.1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dynamic plugin Swift support dependencies (Ubuntu)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get remove -y libunwind-13-dev libunwind-14-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libcurl4-openssl-dev \
+            pkg-config \
+            python3-lldb-13 \
+            libunwind-dev \
+            patchelf
+          patchelf --version
+
+      - name: Install dynamic plugin Linuxbrew GStreamer dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install pkgconf gstreamer
+          echo "LD_LIBRARY_PATH=${HOMEBREW_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+
+      - name: Install dynamic plugin Swiftly
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSLO "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"
+          tar zxf "swiftly-$(uname -m).tar.gz"
+          ./swiftly init --skip-install --quiet-shell-followup --assume-yes
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          echo "${SWIFTLY_BIN_DIR:-$HOME/.local/share/swiftly/bin}" >> "$GITHUB_PATH"
+
+      - name: Install dynamic plugin Swift
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          swiftly install --use "$SWIFT_VERSION" --assume-yes
+
+      - name: Verify dynamic plugin Swift toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          version_output="$(swiftly run swift --version)"
+          printf '%s\n' "$version_output"
+          case "$version_output" in
+            *"Swift version $SWIFT_VERSION"*) ;;
+            *)
+              echo "Expected Swift $SWIFT_VERSION"
+              exit 1
+              ;;
+          esac
+          swiftly run which swift
+
+      - name: Preflight dynamic plugin dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          patchelf --version
+          pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-base-1.0
+          printf 'gstreamer-1.0: %s\n' "$(pkg-config --modversion gstreamer-1.0)"
+          printf 'gstreamer-app-1.0: %s\n' "$(pkg-config --modversion gstreamer-app-1.0)"
+          printf 'gstreamer-video-1.0: %s\n' "$(pkg-config --modversion gstreamer-video-1.0)"
+          printf 'gstreamer-base-1.0: %s\n' "$(pkg-config --modversion gstreamer-base-1.0)"
+          pkg-config --atleast-version=1.28.2 gstreamer-1.0
+          pkg-config --atleast-version=1.28.2 gstreamer-app-1.0
+          pkg-config --atleast-version=1.28.2 gstreamer-video-1.0
+          pkg-config --atleast-version=1.28.2 gstreamer-base-1.0
+          gst-inspect-1.0 --version
+
+      - name: Build dynamic plugin template
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          cd Examples/DynamicPluginTemplate
+          swiftly run swift build -c release
+
+      - name: Inspect dynamic plugin symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          cd Examples/DynamicPluginTemplate
+          nm -D .build/release/libgstswiftnative.so | grep swift_native_dynamic_plugin_init
+          if ! nm -D .build/release/libgstswiftnative.so | grep -E 'gst_plugin_swiftnative_(get_desc|register)'; then
+            echo "Missing GStreamer plugin descriptor or registration symbol"
+            exit 1
+          fi
+
+      - name: Stage dynamic plugin template
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          cd Examples/DynamicPluginTemplate
+          Scripts/stage-install.sh swiftnative "$RUNNER_TEMP/swiftnative-stage"
+
+      - name: Validate staged dynamic plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          cd Examples/DynamicPluginTemplate
+          VALIDATION_TIMEOUT_SECONDS=30 Scripts/validate-staged-plugin.sh swiftnative "$RUNNER_TEMP/swiftnative-stage" swiftnativeidentity
+
+      - name: Validate dynamic plugin failure diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          cd Examples/DynamicPluginTemplate
+          EXPECT_FAILURE_DIAGNOSTIC=1 VALIDATION_TIMEOUT_SECONDS=30 Scripts/validate-staged-plugin.sh swiftnative "$RUNNER_TEMP/swiftnative-stage" swiftnativeidentity
