@@ -962,19 +962,24 @@ struct APISafetyStaticTests {
         )
     }
 
-    @Test("README separates v0.1 core API surface from non-core layers")
-    func readmeSeparatesV01CoreAPISurfaceFromNonCoreLayers() throws {
+    @Test("README separates v0.2 core API surface from non-core layers")
+    func readmeSeparatesV02CoreAPISurfaceFromNonCoreLayers() throws {
+        // Given the README describes the package release scope as v0.2.
         let root = try Self.packageRoot()
         let readme = try Self.contents(of: root.appendingPathComponent("README.md"))
+
+        // When the API safety static tests inspect the README API surface.
         let missingLayers = Self.missingPositionedNonCoreLayers(in: readme)
 
+        // Then the README test accepts v0.2 core surface wording without requiring v0.1 wording.
         #expect(
-            Self.containsV01CoreCompatibilityPositioning(readme),
-            "README must explicitly describe the v0.1 core compatibility focus as low-level public surface"
+            Self.containsV02ReadmeCoreSurfacePositioning(readme),
+            "README must explicitly describe the v0.2 core surface and v0.2 release scope"
         )
+        // And the README test keeps low-level wrappers distinct from non-core layers.
         #expect(
             Self.containsCoreWrapperSurface(readme),
-            "README v0.1 core surface must name the low-level wrappers such as Pipeline, Element, Bus, buffers, AppSink, and AppSource"
+            "README v0.2 core surface must name the low-level wrappers such as Pipeline, Element, Bus, buffers, AppSink, and AppSource"
         )
         #expect(
             missingLayers.isEmpty,
@@ -1332,6 +1337,14 @@ struct APISafetyStaticTests {
     private static func containsV01CoreLanguage(_ source: String) -> Bool {
         let normalized = normalizedLowercase(source)
         return normalized.contains("v0.1") && normalized.contains("core")
+    }
+
+    private static func containsV02ReadmeCoreSurfacePositioning(_ source: String) -> Bool {
+        let normalized = normalizedLowercase(source)
+        return normalized.contains("core v0.2 surface")
+            && normalized.contains("v0.2 release scope")
+            && (normalized.contains("low-level") || normalized.contains("low level"))
+            && normalized.contains("convenience and experimental layers")
     }
 
     private static func containsCoreWrapperSurface(_ source: String) -> Bool {
