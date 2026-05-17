@@ -122,7 +122,9 @@ export GST_REGISTRY="$registry"
 
 if [ "${EXPECT_FAILURE_DIAGNOSTIC:-0}" = "1" ]; then
     set +e
+    GST_REGISTRY_FORK=no
     SWIFT_NATIVE_DYNAMIC_PLUGIN_FORCE_REGISTRATION_FAILURE=1
+    export GST_REGISTRY_FORK
     export SWIFT_NATIVE_DYNAMIC_PLUGIN_FORCE_REGISTRATION_FAILURE
     diagnostic_output=$(run_with_timeout "$validation_timeout" gst-inspect-1.0 "$plugin_id" 2>&1)
     diagnostic_status="$?"

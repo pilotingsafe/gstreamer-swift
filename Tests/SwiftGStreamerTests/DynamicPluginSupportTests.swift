@@ -311,12 +311,14 @@ struct DynamicPluginSupportTests {
 
         // Then the plugin records a useful GStreamer status error
         #expect(cStatusHelper.contents.contains("gst_plugin_add_status_error"))
+        #expect(cStatusHelper.contents.contains("g_printerr"))
         Self.expectContains(swiftInit.contents, [
             "SWIFT_NATIVE_DYNAMIC_PLUGIN_FORCE_REGISTRATION_FAILURE",
             "forced Swift dynamic plugin registration failure",
         ])
         Self.expectContains(try Self.allTemplateScriptContents(), [
             "EXPECT_FAILURE_DIAGNOSTIC",
+            "GST_REGISTRY_FORK=no",
             "SWIFT_NATIVE_DYNAMIC_PLUGIN_FORCE_REGISTRATION_FAILURE",
             "forced Swift dynamic plugin registration failure",
             "missing useful Swift registration failure diagnostic",

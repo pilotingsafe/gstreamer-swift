@@ -7,11 +7,15 @@
 void swift_native_dynamic_plugin_link_anchor(void) {}
 
 void swift_native_dynamic_plugin_record_status_error(GstPlugin* plugin, const gchar* message) {
-    if (plugin == NULL || message == NULL || message[0] == '\0') {
+    if (message == NULL || message[0] == '\0') {
         return;
     }
 
-    gst_plugin_add_status_error(plugin, message);
+    g_printerr("Swift native dynamic plugin registration failed: %s\n", message);
+
+    if (plugin != NULL) {
+        gst_plugin_add_status_error(plugin, message);
+    }
 }
 
 static gboolean swiftnative_plugin_init(GstPlugin* plugin) {
