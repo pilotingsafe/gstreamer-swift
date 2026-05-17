@@ -1507,15 +1507,3 @@ private func swiftGstBaseTransformBoolFailure() -> SwiftGstBaseTransformBoolResu
         value: 0
     )
 }
-private extension Pad.Direction {
-    init(gstPadDirection: GstPadDirection) {
-        switch gstPadDirection {
-        case GST_PAD_SRC:
-            self = .source
-        case GST_PAD_SINK:
-            self = .sink
-        default:
-            self = .unknown
-        }
-    }
-}

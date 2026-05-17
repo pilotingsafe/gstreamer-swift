@@ -227,6 +227,12 @@ gboolean swift_gst_pad_link(GstPad* src, GstPad* sink);
 /// Unlink two pads
 gboolean swift_gst_pad_unlink(GstPad* src, GstPad* sink);
 
+/// Check whether a pad direction is GST_PAD_SRC
+gboolean swift_gst_pad_direction_is_source(GstPadDirection direction);
+
+/// Check whether a pad direction is GST_PAD_SINK
+gboolean swift_gst_pad_direction_is_sink(GstPadDirection direction);
+
 /// Unref a pad
 void swift_gst_pad_unref(GstPad* pad);
 
