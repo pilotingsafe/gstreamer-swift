@@ -1,10 +1,10 @@
 # Release Scope
 
-This file summarizes the v0.1 release scope and known limitations.
+This file summarizes the v0.2 release scope and known limitations.
 
-## Stable v0.1 Surface
+## Stable Core Surface
 
-The stable v0.1 surface is the low-level Swift wrapper layer:
+The stable v0.2 core surface remains the low-level Swift wrapper layer:
 
 - `Pipeline`
 - `Element`
@@ -19,11 +19,28 @@ The stable v0.1 surface is the low-level Swift wrapper layer:
 These APIs stay close to GStreamer and preserve its ownership, bus-consumption,
 and backpressure model.
 
+## Native Elements Stability
+
+Native Elements are available from the main `GStreamer` target in v0.2, with
+stability split by workflow:
+
+- In-process `BaseSink` registration through `SwiftBaseSinkElement` is preview
+  but usable for local pipelines that register factories before constructing
+  pipeline descriptions.
+- In-place `BaseTransform` registration through
+  `SwiftBaseTransformElement.inPlace(...)` is preview but usable for local
+  pipelines that inspect or mutate callback-scoped buffers.
+- Out-of-place transforms, Native Element properties, and static plugin grouping
+  are experimental and may continue to evolve.
+- The dynamic plugin template in `Examples/DynamicPluginTemplate` is preview.
+  Validate staged plugin builds externally with `gst-inspect-1.0` and
+  `gst-launch-1.0` before treating them as deployable GStreamer plugins.
+
 ## Non-Core and Experimental Layers
 
 Source and sink builders are non-core convenience layers. They are useful when
 their platform and plugin choices fit an application, but direct `Pipeline`
-construction remains the stable v0.1 foundation for custom graphs.
+construction remains the stable v0.2 foundation for custom graphs.
 
 The typed pipeline DSL is experimental and non-core. Its result-builder syntax
 and typed frame wrappers may continue to evolve around the stable low-level

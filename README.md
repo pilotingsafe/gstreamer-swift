@@ -10,7 +10,7 @@ concurrency-friendly helpers.
 
 ## Features
 
-### Core v0.1 Surface
+### Core v0.2 Surface
 
 - Low-level `Pipeline`, `Element`, and `Bus` wrappers around GStreamer primitives
 - `AppSink` and `AppSource` helpers for pulling frames and pushing data
@@ -23,18 +23,18 @@ concurrency-friendly helpers.
 - Explicit packet-delivery contracts for realtime best-effort and reliable streams
 - Convenience builders for common audio/video source and sink workflows
 
-For the exact v0.1 release scope and known limitations, see
+For the exact v0.2 release scope and known limitations, see
 [RELEASE.md](RELEASE.md).
 
 ## Requirements
 
 - Swift 6.3.1+
-- v0.1 documentation and verification focus on macOS and Linux
+- v0.2 documentation and verification focus on macOS and Linux
 - GitHub Actions CI runs Swift 6.3.1 on ubuntu-22.04 and macos-26 (arm64)
   with GStreamer system dependencies installed
 - `Package.swift` declares Apple platform minimums for macOS, iOS, tvOS,
   watchOS, and visionOS 26.0; those declarations are not the same as CI-tested
-  v0.1 support
+  v0.2 support
 - `pkgconf`/`pkg-config` available on PATH
 - GStreamer 1.28.2+ development headers and libraries installed on your system
 - `pkg-config` metadata for the SwiftPM system-library targets:
@@ -113,11 +113,11 @@ dependencies: [
 ]
 ```
 
-After a v0.1 tag exists, prefer:
+After the v0.2 tag is published, prefer:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/pilotingsafe/gstreamer-swift.git", from: "0.1.0")
+    .package(url: "https://github.com/pilotingsafe/gstreamer-swift.git", from: "0.2.0")
 ]
 ```
 
@@ -239,7 +239,7 @@ for await frame in sink.frames() {
 
 ### Type-Safe Pipelines
 
-Status: the typed pipeline DSL is an experimental, non-core v0.1 convenience
+Status: the typed pipeline DSL is an experimental, non-core v0.2 convenience
 layer. The low-level `Pipeline`, `Element`, and appsink/appsrc APIs above are
 the stable foundation for direct GStreamer work.
 
@@ -261,7 +261,7 @@ try await withPipeline {
 
 ## Convenience APIs
 
-Status: source and sink builders are non-core v0.1 convenience layers over the
+Status: source and sink builders are non-core v0.2 convenience layers over the
 lower-level wrappers. Use them when their platform/plugin choices fit your
 application; use manual `Pipeline` construction when you need direct GStreamer
 control.
@@ -307,7 +307,7 @@ dropped under slow-consumer backpressure.
 
 ### Reliable Live Audio Packets
 
-Status: reliable packet delivery is a non-core v0.1 convenience layer for
+Status: reliable packet delivery is a non-core v0.2 convenience layer for
 encoded audio. It documents explicit delivery policy, but it does not make live
 devices indefinitely lossless.
 
@@ -347,7 +347,7 @@ immediate shutdown; `finalize(timeout:)` is the reliable EOS-drain path.
 
 ### Reliable File Audio Packets
 
-Status: file reliable packet delivery is a non-core v0.1 convenience layer for
+Status: file reliable packet delivery is a non-core v0.2 convenience layer for
 finite local file/decode workflows where backpressure is possible.
 
 Use `AudioSource.file(path:)` for finite file/decode workloads where every
@@ -402,6 +402,26 @@ let microphones = try AudioSource.availableMicrophones()
 let speakers = try AudioSink.availableSpeakers()
 ```
 
+## Native Elements
+
+Native Elements let Swift code implement selected GStreamer element behavior
+inside the current process or through the dynamic plugin template. They are
+available from the main `GStreamer` target in v0.2, but their stability differs
+by workflow:
+
+- In-process `BaseSink` registration with `SwiftBaseSinkElement` is preview but
+  usable for local pipelines that register factories before creating pipeline
+  descriptions.
+- In-place `BaseTransform` registration with
+  `SwiftBaseTransformElement.inPlace(...)` is preview but usable for local
+  pipelines that inspect or mutate callback-scoped buffers.
+- Out-of-place transforms, Native Element properties, and static plugin grouping
+  are experimental and may continue to change.
+- The dynamic plugin template in `Examples/DynamicPluginTemplate` is preview.
+  Validate staged plugin builds from outside the Swift process with
+  `gst-inspect-1.0` and `gst-launch-1.0` before depending on external GStreamer
+  discovery.
+
 ## Examples
 
 - `Examples/gst-video-source`: ergonomic webcam capture with encoding fallback
@@ -423,8 +443,8 @@ if let src = pipeline.element(named: "src") {
 
 ## Manual Platform Notes
 
-These notes are platform-specific starting points, not v0.1 support guarantees.
-The first-class v0.1 setup path is macOS/Homebrew or Ubuntu/Debian with the
+These notes are platform-specific starting points, not v0.2 support guarantees.
+The first-class v0.2 setup path is macOS/Homebrew or Ubuntu/Debian with the
 required GStreamer development packages available through `pkg-config`.
 
 ### Fedora/RHEL Setup
