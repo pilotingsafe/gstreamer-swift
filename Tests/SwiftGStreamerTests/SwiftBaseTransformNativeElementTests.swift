@@ -431,8 +431,8 @@ struct SwiftBaseTransformNativeElementTests {
         #expect(observation.deepCopyPrefix != observation.retainedPrefix)
     }
 
-    @Test("Native transform rejects missing or non-writable buffers safely")
-    func nativeTransformRejectsMissingOrNonWritableBuffersSafely() {
+    @Test("Native transform rejects missing buffers and accepts non-writable buffers safely")
+    func nativeTransformRejectsMissingBuffersAndAcceptsNonWritableBuffersSafely() {
         // Given the native transform bridge receives no buffer or a non-writable buffer
         let result = Self.bufferRejectionProbe(
             factoryName: "swiftbasetransform_c_buffer_rejection",
@@ -443,12 +443,15 @@ struct SwiftBaseTransformNativeElementTests {
         #expect(result.registration_succeeded != 0)
         #expect(result.element_created != 0)
 
-        // Then transform_ip returns a GStreamer flow error
+        // Then transform_ip returns a GStreamer flow error for the missing buffer
         #expect(result.nil_buffer_returned_flow_error != 0)
-        #expect(result.non_writable_buffer_returned_flow_error != 0)
+        #expect(result.nil_buffer_callback_count == 0)
 
-        // And Swift transformInPlace is not called for that buffer
-        #expect(result.callback_counts.transform_ip_count == 0)
+        // And the non-writable buffer reaches the Swift transform callback
+        #expect(result.non_writable_buffer_was_not_writable != 0)
+        #expect(result.non_writable_buffer_returned_ok != 0)
+        #expect(result.non_writable_buffer_callback_count == 1)
+        #expect(result.callback_counts.transform_ip_count == 1)
 
         // And no Swift error escapes across the C callback boundary
         #expect(result.callback_counts.start_count == 0)

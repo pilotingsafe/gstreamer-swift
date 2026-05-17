@@ -84,8 +84,20 @@ typedef struct {
     gboolean element_created;
     gboolean nil_buffer_returned_flow_error;
     gboolean non_writable_buffer_returned_flow_error;
+    gboolean non_writable_buffer_was_not_writable;
+    gboolean non_writable_buffer_returned_ok;
+    guint nil_buffer_callback_count;
+    guint non_writable_buffer_callback_count;
     SwiftGstTestBaseTransformCallbackCounts callback_counts;
 } SwiftGstTestBaseTransformBufferRejectionProbeResult;
+
+typedef struct {
+    gboolean element_created;
+    gboolean transform_ip_on_passthrough;
+    gboolean non_writable_buffer_was_not_writable;
+    gboolean transform_ip_returned_ok;
+    gboolean transform_ip_returned_flow_error;
+} SwiftGstTestBaseTransformNonWritableInvocationResult;
 
 typedef struct {
     gboolean registration_succeeded;
@@ -337,6 +349,13 @@ SwiftGstTestBaseTransformOwnershipProbeResult swift_gst_test_base_transform_clas
 SwiftGstTestBaseTransformBufferRejectionProbeResult swift_gst_test_base_transform_buffer_rejection_probe(
     const gchar* factory_name,
     const gchar* type_name
+);
+
+SwiftGstTestBaseTransformNonWritableInvocationResult
+swift_gst_test_base_transform_invoke_non_writable_transform_ip(
+    const gchar* factory_name,
+    const guint8* data,
+    gsize size
 );
 
 SwiftGstTestBaseTransformMissingInstanceProbeResult swift_gst_test_base_transform_missing_instance_probe(

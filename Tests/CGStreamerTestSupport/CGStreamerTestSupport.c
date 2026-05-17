@@ -1838,9 +1838,13 @@ SwiftGstTestBaseTransformBufferRejectionProbeResult swift_gst_test_base_transfor
     GstFlowReturn nil_buffer_result = transform_class && transform_class->transform_ip
         ? transform_class->transform_ip(transform, NULL)
         : GST_FLOW_ERROR;
+    SwiftGstTestBaseTransformCallbackCounts counts_after_nil_buffer =
+        swift_gst_test_base_transform_counts(context);
 
     GstBuffer* buffer = gst_buffer_new_allocate(NULL, 1, NULL);
     GstBuffer* extra_ref = buffer ? gst_buffer_ref(buffer) : NULL;
+    gboolean non_writable_buffer_was_not_writable =
+        buffer && extra_ref ? !gst_buffer_is_writable(buffer) : FALSE;
     GstFlowReturn non_writable_result = transform_class && transform_class->transform_ip && buffer
         ? transform_class->transform_ip(transform, buffer)
         : GST_FLOW_ERROR;
@@ -1855,7 +1859,59 @@ SwiftGstTestBaseTransformBufferRejectionProbeResult swift_gst_test_base_transfor
 
     result.nil_buffer_returned_flow_error = nil_buffer_result == GST_FLOW_ERROR;
     result.non_writable_buffer_returned_flow_error = non_writable_result == GST_FLOW_ERROR;
+    result.non_writable_buffer_was_not_writable = non_writable_buffer_was_not_writable;
+    result.non_writable_buffer_returned_ok = non_writable_result == GST_FLOW_OK;
     result.callback_counts = swift_gst_test_base_transform_counts(context);
+    result.nil_buffer_callback_count = counts_after_nil_buffer.transform_ip_count;
+    result.non_writable_buffer_callback_count =
+        result.callback_counts.transform_ip_count >= counts_after_nil_buffer.transform_ip_count
+            ? result.callback_counts.transform_ip_count - counts_after_nil_buffer.transform_ip_count
+            : 0;
+    return result;
+}
+
+SwiftGstTestBaseTransformNonWritableInvocationResult
+swift_gst_test_base_transform_invoke_non_writable_transform_ip(
+    const gchar* factory_name,
+    const guint8* data,
+    gsize size
+) {
+    SwiftGstTestBaseTransformNonWritableInvocationResult result = {0};
+
+    GstElement* element = gst_element_factory_make(factory_name, NULL);
+    if (!element) {
+        return result;
+    }
+    result.element_created = TRUE;
+
+    GstBaseTransform* transform = GST_BASE_TRANSFORM(element);
+    GstBaseTransformClass* transform_class = GST_BASE_TRANSFORM_GET_CLASS(transform);
+    result.transform_ip_on_passthrough =
+        transform_class ? transform_class->transform_ip_on_passthrough : FALSE;
+
+    GstBuffer* buffer = gst_buffer_new_allocate(NULL, size, NULL);
+    if (buffer && data && size > 0) {
+        gst_buffer_fill(buffer, 0, data, size);
+    }
+    GstBuffer* extra_ref = buffer ? gst_buffer_ref(buffer) : NULL;
+
+    result.non_writable_buffer_was_not_writable =
+        buffer && extra_ref ? !gst_buffer_is_writable(buffer) : FALSE;
+    GstFlowReturn transform_ip_result = transform_class && transform_class->transform_ip && buffer
+        ? transform_class->transform_ip(transform, buffer)
+        : GST_FLOW_ERROR;
+
+    result.transform_ip_returned_ok = transform_ip_result == GST_FLOW_OK;
+    result.transform_ip_returned_flow_error = transform_ip_result == GST_FLOW_ERROR;
+
+    if (extra_ref) {
+        gst_buffer_unref(extra_ref);
+    }
+    if (buffer) {
+        gst_buffer_unref(buffer);
+    }
+    gst_object_unref(element);
+
     return result;
 }
 

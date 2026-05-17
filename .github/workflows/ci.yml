@@ -38,6 +38,7 @@ jobs:
           sudo apt-get remove -y libunwind-13-dev libunwind-14-dev
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             libcurl4-openssl-dev \
+            pkg-config \
             python3-lldb-13 \
             libunwind-dev
 

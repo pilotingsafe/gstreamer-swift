@@ -302,11 +302,13 @@ public struct SwiftBaseTransformPassthroughOptions: Sendable {
     }
 }
 
-/// A writable borrowed GStreamer buffer valid only for the transform callback scope.
+/// A borrowed GStreamer buffer valid only for the transform callback scope.
 ///
-/// Raw pointers received through ``withUnsafeMutableBytes(_:)`` must not escape
-/// the closure. Use ``retainedReference()`` or ``deepCopy()`` when data must
-/// outlive the callback.
+/// Raw pointers received through ``withUnsafeBytes(_:)`` or
+/// ``withUnsafeMutableBytes(_:)`` must not escape the closure. Read-only access
+/// is attempted with ``withUnsafeBytes(_:)``. Mutable access is available only
+/// when GStreamer provides a writable buffer. Use ``retainedReference()`` or
+/// ``deepCopy()`` when data must outlive the callback.
 public struct MutableBorrowedBuffer: ~Copyable {
     private let buffer: UnsafeMutablePointer<GstBuffer>
 
@@ -331,7 +333,28 @@ public struct MutableBorrowedBuffer: ~Copyable {
         return swift_gst_clock_time_is_valid(value) != 0 ? UInt64(value) : nil
     }
 
+    /// Maps the borrowed buffer for read access during the closure.
+    ///
+    /// The raw buffer pointer is invalid after the closure returns and must not
+    /// be stored or used outside the closure.
+    public func withUnsafeBytes<R>(
+        _ body: (UnsafeRawBufferPointer) throws -> R
+    ) throws -> R {
+        var mapInfo = GstMapInfo()
+        guard swift_gst_buffer_map_read(buffer, &mapInfo) != 0 else {
+            throw GStreamerError.bufferMapFailed
+        }
+        defer { swift_gst_buffer_unmap(buffer, &mapInfo) }
+
+        let bytes = UnsafeRawBufferPointer(start: mapInfo.data, count: Int(mapInfo.size))
+        return try body(bytes)
+    }
+
     /// Maps the borrowed buffer for write access during the closure.
+    ///
+    /// Passthrough `transform_ip_on_passthrough` callbacks may receive a
+    /// non-writable buffer. In that case, write mapping fails and this method
+    /// throws ``GStreamerError/bufferMapFailed``.
     ///
     /// The raw buffer pointer is invalid after the closure returns and must not
     /// be stored or used outside the closure.

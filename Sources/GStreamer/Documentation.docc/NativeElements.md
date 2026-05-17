@@ -34,13 +34,14 @@ try GStreamer.register(
 
 ### SwiftBaseTransformElement.inPlace
 
-Use `SwiftBaseTransformElement.inPlace` when Swift needs to mutate buffers
-without replacing them. Implement
-``SwiftBaseTransformInstance/transformInPlace(_:)`` to edit the
-callback-scoped ``MutableBorrowedBuffer`` and return a ``FlowReturn``. Provide
-sink and source caps, register the element with `GStreamer.register(_:)`, then
-use the transform factory name in pipeline descriptions created in the same
-process.
+Use `SwiftBaseTransformElement.inPlace` when Swift needs to inspect or mutate
+buffers without replacing them. Implement
+``SwiftBaseTransformInstance/transformInPlace(_:)`` to read the callback-scoped
+``MutableBorrowedBuffer`` with `withUnsafeBytes(_:)`, or to edit it with
+`withUnsafeMutableBytes(_:)` when GStreamer provides a writable buffer, and
+return a ``FlowReturn``. Provide sink and source caps, register the element with
+`GStreamer.register(_:)`, then use the transform factory name in pipeline
+descriptions created in the same process.
 
 ### BorrowedBuffer and MutableBorrowedBuffer Lifetime
 
@@ -49,6 +50,12 @@ callback that receives them. Raw pointers from `withUnsafeBytes(_:)` or
 `withUnsafeMutableBytes(_:)` must not escape their closures. Use
 `retainedReference()` or `deepCopy()` when data or buffers need to outlive the
 callback.
+
+Passthrough in-place transforms that opt into `transform_ip_on_passthrough` may
+receive a non-writable buffer. Read-only `MutableBorrowedBuffer` access is still
+available through `withUnsafeBytes(_:)`; mutable access through
+`withUnsafeMutableBytes(_:)` throws a buffer map error when the borrowed buffer
+is not writable.
 
 ### Synchronous Callback Rule
 

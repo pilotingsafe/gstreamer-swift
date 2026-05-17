@@ -1490,7 +1490,7 @@ static GstFlowReturn swift_gst_base_transform_transform_ip(
     GstBaseTransform* transform,
     GstBuffer* buffer
 ) {
-    if (buffer == NULL || !gst_buffer_is_writable(buffer)) {
+    if (buffer == NULL) {
         return GST_FLOW_ERROR;
     }
 
