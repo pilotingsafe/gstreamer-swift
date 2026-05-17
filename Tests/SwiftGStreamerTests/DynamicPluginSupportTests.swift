@@ -326,6 +326,10 @@ struct DynamicPluginSupportTests {
         Self.expectContains(scripts, [
             "GStreamer",
             "GLib",
+            "/home/linuxbrew/.linuxbrew",
+            "/opt/homebrew",
+            "/usr/local/Cellar",
+            "/usr/local/opt",
         ])
 
         // And unclassified dependencies fail install validation

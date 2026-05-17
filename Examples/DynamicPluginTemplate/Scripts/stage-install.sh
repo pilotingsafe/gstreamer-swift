@@ -113,6 +113,9 @@ classify_dependency() {
         /System/Library/* | /usr/lib/* | /lib/* | /lib64/* | /usr/lib64/*)
             return 0
             ;;
+        /home/linuxbrew/.linuxbrew/* | /opt/homebrew/* | /usr/local/Cellar/* | /usr/local/opt/*)
+            return 0
+            ;;
         *libgst* | *libgstreamer* | *libgobject* | *libglib* | *libgio* | *libgmodule* | *libintl* | *gettext*)
             return 0
             ;;
