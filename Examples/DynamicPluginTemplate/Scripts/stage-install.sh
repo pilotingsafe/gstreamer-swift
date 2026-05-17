@@ -65,7 +65,15 @@ copy_swift_runtime_libraries() {
     for runtime_path in $runtime_library_paths "$runtime_resource_path"
     do
         if [ -d "$runtime_path" ]; then
-            find "$runtime_path" -maxdepth 1 -type f -name "libswift*.$extension" -exec cp {} "$swift_dir/" \;
+            find "$runtime_path" -maxdepth 1 -type f \( \
+                -name "libswift*.$extension" \
+                -o -name "libBlocksRuntime.$extension" \
+                -o -name "libdispatch.$extension" \
+                -o -name "libFoundation.$extension" \
+                -o -name "libFoundationEssentials.$extension" \
+                -o -name "libFoundationInternationalization.$extension" \
+                -o -name "lib_FoundationICU.$extension" \
+            \) -exec cp {} "$swift_dir/" \;
         fi
     done
 }

@@ -350,6 +350,14 @@ struct DynamicPluginSupportTests {
             "runtimeLibraryPaths",
             "runtimeResourcePath",
         ])
+        Self.expectContains(scripts, [
+            "libBlocksRuntime",
+            "libdispatch",
+            "libFoundation",
+            "libFoundationEssentials",
+            "libFoundationInternationalization",
+            "lib_FoundationICU",
+        ])
 
         // And it classifies macOS dependencies with otool and Linux dependencies with ldd
         Self.expectContains(scripts, [
